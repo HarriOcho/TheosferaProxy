@@ -1,6 +1,8 @@
 package com.theosfera.proxy.messaging;
 
+import com.theosfera.protocol.codec.ProtocolCodecException;
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
+import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.ServerConnection;
@@ -11,11 +13,26 @@ import java.util.Objects;
 public final class ProtocolMessageListener {
 
     private final Logger logger;
+    private final ProtocolMessageDecoder decoder;
 
     public ProtocolMessageListener(Logger logger) {
+        this(
+                logger,
+                new ProtocolMessageDecoder()
+        );
+    }
+
+    ProtocolMessageListener(
+            Logger logger,
+            ProtocolMessageDecoder decoder
+    ) {
         this.logger = Objects.requireNonNull(
                 logger,
                 "logger cannot be null"
+        );
+        this.decoder = Objects.requireNonNull(
+                decoder,
+                "decoder cannot be null"
         );
     }
 
@@ -41,11 +58,13 @@ public final class ProtocolMessageListener {
         }
 
         byte[] data = event.getData();
+        String serverName =
+                serverConnection.getServerInfo().getName();
 
         if (data.length == 0) {
             logger.warn(
                     "Mensaje de protocolo vacío rechazado desde {}.",
-                    serverConnection.getServerInfo().getName()
+                    serverName
             );
             return;
         }
@@ -54,16 +73,32 @@ public final class ProtocolMessageListener {
             logger.warn(
                     "Mensaje de protocolo sobredimensionado "
                             + "rechazado desde {}: {} bytes.",
-                    serverConnection.getServerInfo().getName(),
+                    serverName,
                     data.length
             );
             return;
         }
 
+        final ProtocolEnvelope<?> envelope;
+
+        try {
+            envelope = decoder.decode(data);
+        } catch (ProtocolCodecException exception) {
+            logger.warn(
+                    "Mensaje de protocolo inválido rechazado "
+                            + "desde {}.",
+                    serverName
+            );
+            return;
+        }
+
         logger.debug(
-                "Mensaje de protocolo recibido desde {}: {} bytes.",
-                serverConnection.getServerInfo().getName(),
-                data.length
+                "Mensaje de protocolo {} recibido desde {}: "
+                        + "{} bytes (requestId: {}).",
+                envelope.type(),
+                serverName,
+                data.length,
+                envelope.requestId()
         );
     }
 }
