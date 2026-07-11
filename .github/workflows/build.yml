@@ -17,8 +17,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout TheosferaProxy
         uses: actions/checkout@v4
+        with:
+          path: TheosferaProxy
+
+      - name: Checkout TheosferaProtocol
+        uses: actions/checkout@v4
+        with:
+          repository: HarriOcho/TheosferaProtocol
+          path: TheosferaProtocol
 
       - name: Set up Java 21
         uses: actions/setup-java@v4
@@ -28,7 +36,9 @@ jobs:
           cache: gradle
 
       - name: Grant execute permission to Gradle wrapper
+        working-directory: TheosferaProxy
         run: chmod +x gradlew
 
       - name: Build with Gradle
+        working-directory: TheosferaProxy
         run: ./gradlew clean build --no-daemon
