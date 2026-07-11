@@ -1,6 +1,8 @@
 package com.theosfera.proxy;
 
 import com.google.inject.Inject;
+import com.theosfera.proxy.messaging.ProtocolChannel;
+import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
@@ -24,6 +26,7 @@ public final class TheosferaProxy {
     private final ProxyServer proxyServer;
     private final Logger logger;
     private final Path dataDirectory;
+    private final ProtocolChannelRegistration channelRegistration;
 
     @Inject
     public TheosferaProxy(
@@ -34,12 +37,22 @@ public final class TheosferaProxy {
         this.proxyServer = proxyServer;
         this.logger = logger;
         this.dataDirectory = dataDirectory;
+        this.channelRegistration =
+                new ProtocolChannelRegistration(
+                        proxyServer.getChannelRegistrar()
+                );
     }
 
     @Subscribe
     public void onProxyInitialization(
             final ProxyInitializeEvent event
     ) {
+        channelRegistration.register();
+
+        logger.info(
+                "Canal de protocolo registrado: {}.",
+                ProtocolChannel.IDENTIFIER.getId()
+        );
         logger.info("TheosferaProxy iniciado correctamente.");
     }
 
@@ -47,6 +60,12 @@ public final class TheosferaProxy {
     public void onProxyShutdown(
             final ProxyShutdownEvent event
     ) {
+        channelRegistration.unregister();
+
+        logger.info(
+                "Canal de protocolo desregistrado: {}.",
+                ProtocolChannel.IDENTIFIER.getId()
+        );
         logger.info("TheosferaProxy apagado correctamente.");
     }
 
