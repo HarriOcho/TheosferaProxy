@@ -1,5 +1,6 @@
 plugins {
     java
+    id("com.gradleup.shadow") version "9.3.2"
 }
 
 group = "com.theosfera"
@@ -28,6 +29,24 @@ tasks {
     }
 
     jar {
+        enabled = false
+    }
+
+    shadowJar {
         archiveBaseName.set("TheosferaProxy")
+        archiveClassifier.set("")
+
+        relocate(
+            "com.google.gson",
+            "com.theosfera.proxy.libs.gson"
+        )
+
+        exclude("META-INF/*.SF")
+        exclude("META-INF/*.DSA")
+        exclude("META-INF/*.RSA")
+    }
+
+    build {
+        dependsOn(shadowJar)
     }
 }
