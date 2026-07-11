@@ -1,6 +1,10 @@
 package com.theosfera.proxy.messaging;
 
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
+import com.theosfera.protocol.codec.ProtocolCodecException;
+import com.theosfera.protocol.message.ProtocolEnvelope;
+import com.theosfera.protocol.message.ProtocolMessageType;
+import com.theosfera.protocol.message.payload.PingPayload;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
@@ -12,6 +16,7 @@ import org.slf4j.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -23,8 +28,14 @@ class ProtocolMessageListenerTest {
     private final ChannelMessageSink sink =
             mock(ChannelMessageSink.class);
 
+    private final ProtocolMessageDecoder decoder =
+            mock(ProtocolMessageDecoder.class);
+
     private final ProtocolMessageListener listener =
-            new ProtocolMessageListener(logger);
+            new ProtocolMessageListener(
+                    logger,
+                    decoder
+            );
 
     @Test
     void ignoresMessagesFromOtherChannels() {
@@ -115,11 +126,53 @@ class ProtocolMessageListenerTest {
     }
 
     @Test
+    void handlesAndRejectsInvalidBackendMessages() {
+        ServerConnection serverConnection =
+                createServerConnection("lobby-1");
+
+        byte[] data = new byte[]{1, 2, 3};
+
+        when(decoder.decode(data)).thenThrow(
+                new ProtocolCodecException(
+                        "Untrusted invalid message details"
+                )
+        );
+
+        PluginMessageEvent event = new PluginMessageEvent(
+                serverConnection,
+                sink,
+                ProtocolChannel.IDENTIFIER,
+                data
+        );
+
+        listener.onPluginMessage(event);
+
+        assertFalse(event.getResult().isAllowed());
+        verify(logger).warn(
+                "Mensaje de protocolo inválido rechazado "
+                        + "desde {}.",
+                "lobby-1"
+        );
+    }
+
+    @Test
     void handlesValidSizedBackendMessagesWithoutForwarding() {
         ServerConnection serverConnection =
                 createServerConnection("lobby-1");
 
         byte[] data = new byte[]{1, 2, 3};
+
+        ProtocolEnvelope<PingPayload> envelope =
+                ProtocolEnvelope.create(
+                        ProtocolMessageType.PING,
+                        new PingPayload(
+                                1_750_000_000_000L
+                        )
+                );
+
+        doReturn(envelope)
+                .when(decoder)
+                .decode(data);
 
         PluginMessageEvent event = new PluginMessageEvent(
                 serverConnection,
@@ -132,9 +185,12 @@ class ProtocolMessageListenerTest {
 
         assertFalse(event.getResult().isAllowed());
         verify(logger).debug(
-                "Mensaje de protocolo recibido desde {}: {} bytes.",
+                "Mensaje de protocolo {} recibido desde {}: "
+                        + "{} bytes (requestId: {}).",
+                ProtocolMessageType.PING,
                 "lobby-1",
-                data.length
+                data.length,
+                envelope.requestId()
         );
     }
 
