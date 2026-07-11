@@ -1,0 +1,6 @@
+name: TheosferaPluginTemplate
+version: '${version}'
+main: com.theosfera.template.TheosferaPluginTemplate
+api-version: '1.21'
+author: HarriOcho
+description: Professional foundation template for Theosfera Minecraft plugins.

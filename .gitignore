@@ -1,0 +1,51 @@
+# Gradle
+.gradle/
+build/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Local Minecraft servers / runtime
+run/
+server/
+servers/
+logs/
+plugins/
+world/
+world_nether/
+world_the_end/
+
+# Server files
+eula.txt
+server.properties
+banned-ips.json
+banned-players.json
+ops.json
+usercache.json
+whitelist.json
+
+# Operating systems
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+*.swp
+*~
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Generated reports
+reports/

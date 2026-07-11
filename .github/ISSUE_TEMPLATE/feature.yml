@@ -1,0 +1,69 @@
+name: Nueva funcionalidad
+description: Propón una nueva característica o mejora para TheosferaCore.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por proponer una mejora para TheosferaCore.
+
+        Describe la necesidad antes de plantear la implementación.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problema o necesidad
+      description: ¿Qué problema resuelve esta funcionalidad?
+      placeholder: Actualmente...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Propuesta
+      description: Describe el comportamiento esperado.
+      placeholder: La funcionalidad debería...
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Alcance
+      description: Indica qué debe incluir y qué no debe incluir.
+      placeholder: |
+        Incluye:
+        - 
+
+        No incluye:
+        -
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Criterios de aceptación
+      description: Define condiciones verificables para considerar terminada la tarea.
+      placeholder: |
+        - [ ] 
+        - [ ] 
+        - [ ]
+    validations:
+      required: true
+
+  - type: textarea
+    id: risks
+    attributes:
+      label: Riesgos o dependencias
+      description: Dependencias externas, compatibilidad, rendimiento o posibles riesgos.
+      placeholder: Ninguno conocido.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Información adicional
+      description: Capturas, ejemplos, referencias o contexto adicional.
