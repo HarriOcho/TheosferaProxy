@@ -3,6 +3,7 @@ package com.theosfera.proxy;
 import com.google.inject.Inject;
 import com.theosfera.proxy.messaging.ProtocolChannel;
 import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
+import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
 import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
@@ -13,6 +14,7 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
+import java.util.List;
 
 @Plugin(
         id = "theosferaproxy",
@@ -43,8 +45,14 @@ public final class TheosferaProxy {
                 new ProtocolChannelRegistration(
                         proxyServer.getChannelRegistrar()
                 );
+        ProtocolMessageDispatcher dispatcher =
+                new ProtocolMessageDispatcher(List.of());
+
         this.protocolMessageListener =
-                new ProtocolMessageListener(logger);
+                new ProtocolMessageListener(
+                        logger,
+                        dispatcher
+                );
     }
 
     @Subscribe

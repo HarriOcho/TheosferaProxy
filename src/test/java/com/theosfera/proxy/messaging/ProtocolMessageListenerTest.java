@@ -13,7 +13,9 @@ import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
+import org.mockito.ArgumentCaptor;
 
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.doReturn;
@@ -31,10 +33,14 @@ class ProtocolMessageListenerTest {
     private final ProtocolMessageDecoder decoder =
             mock(ProtocolMessageDecoder.class);
 
+    private final ProtocolMessageDispatcher dispatcher =
+            mock(ProtocolMessageDispatcher.class);
+
     private final ProtocolMessageListener listener =
             new ProtocolMessageListener(
                     logger,
-                    decoder
+                    decoder,
+                    dispatcher
             );
 
     @Test
@@ -156,7 +162,57 @@ class ProtocolMessageListenerTest {
     }
 
     @Test
-    void handlesValidSizedBackendMessagesWithoutForwarding() {
+    void dispatchesValidBackendMessagesWithoutForwarding() {
+        ServerConnection serverConnection =
+                createServerConnection("lobby-1");
+
+        byte[] data = new byte[]{1, 2, 3};
+
+        ProtocolEnvelope<PingPayload> envelope =
+                ProtocolEnvelope.create(
+                        ProtocolMessageType.PING,
+                        new PingPayload(
+                                1_750_000_000_000L
+                        )
+                );
+
+        doReturn(envelope)
+                .when(decoder)
+                .decode(data);
+
+        when(dispatcher.dispatch(
+                org.mockito.ArgumentMatchers.any(
+                        ProtocolMessageContext.class
+                )
+        )).thenReturn(true);
+
+        PluginMessageEvent event = new PluginMessageEvent(
+                serverConnection,
+                sink,
+                ProtocolChannel.IDENTIFIER,
+                data
+        );
+
+        listener.onPluginMessage(event);
+
+        assertFalse(event.getResult().isAllowed());
+
+        ArgumentCaptor<ProtocolMessageContext> captor =
+                ArgumentCaptor.forClass(
+                        ProtocolMessageContext.class
+                );
+
+        verify(dispatcher).dispatch(captor.capture());
+
+        ProtocolMessageContext context =
+                captor.getValue();
+
+        assertSame(serverConnection, context.source());
+        assertSame(envelope, context.envelope());
+    }
+
+    @Test
+    void logsValidMessagesWithoutRegisteredHandler() {
         ServerConnection serverConnection =
                 createServerConnection("lobby-1");
 
@@ -184,12 +240,13 @@ class ProtocolMessageListenerTest {
         listener.onPluginMessage(event);
 
         assertFalse(event.getResult().isAllowed());
+
         verify(logger).debug(
-                "Mensaje de protocolo {} recibido desde {}: "
-                        + "{} bytes (requestId: {}).",
+                "Mensaje de protocolo {} sin handler "
+                        + "recibido desde {} "
+                        + "(requestId: {}).",
                 ProtocolMessageType.PING,
                 "lobby-1",
-                data.length,
                 envelope.requestId()
         );
     }

@@ -14,17 +14,23 @@ public final class ProtocolMessageListener {
 
     private final Logger logger;
     private final ProtocolMessageDecoder decoder;
+    private final ProtocolMessageDispatcher dispatcher;
 
-    public ProtocolMessageListener(Logger logger) {
+    public ProtocolMessageListener(
+            Logger logger,
+            ProtocolMessageDispatcher dispatcher
+    ) {
         this(
                 logger,
-                new ProtocolMessageDecoder()
+                new ProtocolMessageDecoder(),
+                dispatcher
         );
     }
 
     ProtocolMessageListener(
             Logger logger,
-            ProtocolMessageDecoder decoder
+            ProtocolMessageDecoder decoder,
+            ProtocolMessageDispatcher dispatcher
     ) {
         this.logger = Objects.requireNonNull(
                 logger,
@@ -33,6 +39,10 @@ public final class ProtocolMessageListener {
         this.decoder = Objects.requireNonNull(
                 decoder,
                 "decoder cannot be null"
+        );
+        this.dispatcher = Objects.requireNonNull(
+                dispatcher,
+                "dispatcher cannot be null"
         );
     }
 
@@ -92,13 +102,21 @@ public final class ProtocolMessageListener {
             return;
         }
 
-        logger.debug(
-                "Mensaje de protocolo {} recibido desde {}: "
-                        + "{} bytes (requestId: {}).",
-                envelope.type(),
-                serverName,
-                data.length,
-                envelope.requestId()
-        );
+        ProtocolMessageContext context =
+                new ProtocolMessageContext(
+                        serverConnection,
+                        envelope
+                );
+
+        if (!dispatcher.dispatch(context)) {
+            logger.debug(
+                    "Mensaje de protocolo {} sin handler "
+                            + "recibido desde {} "
+                            + "(requestId: {}).",
+                    envelope.type(),
+                    context.serverName(),
+                    envelope.requestId()
+            );
+        }
     }
 }
