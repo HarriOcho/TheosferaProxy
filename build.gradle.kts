@@ -16,6 +16,14 @@ dependencies {
 
     compileOnly("com.velocitypowered:velocity-api:3.5.0-SNAPSHOT")
     annotationProcessor("com.velocitypowered:velocity-api:3.5.0-SNAPSHOT")
+
+    testImplementation(platform("org.junit:junit-bom:5.14.4"))
+    testImplementation("org.junit.jupiter:junit-jupiter")
+    testImplementation("org.mockito:mockito-core:5.23.0")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    testImplementation(
+        "com.velocitypowered:velocity-api:3.5.0-SNAPSHOT"
+    )
 }
 
 java {
@@ -26,6 +34,10 @@ tasks {
     compileJava {
         options.encoding = "UTF-8"
         options.release.set(21)
+    }
+
+    test {
+        useJUnitPlatform()
     }
 
     jar {

@@ -3,6 +3,7 @@ package com.theosfera.proxy;
 import com.google.inject.Inject;
 import com.theosfera.proxy.messaging.ProtocolChannel;
 import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
+import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
@@ -27,6 +28,7 @@ public final class TheosferaProxy {
     private final Logger logger;
     private final Path dataDirectory;
     private final ProtocolChannelRegistration channelRegistration;
+    private final ProtocolMessageListener protocolMessageListener;
 
     @Inject
     public TheosferaProxy(
@@ -41,6 +43,8 @@ public final class TheosferaProxy {
                 new ProtocolChannelRegistration(
                         proxyServer.getChannelRegistrar()
                 );
+        this.protocolMessageListener =
+                new ProtocolMessageListener(logger);
     }
 
     @Subscribe
@@ -48,6 +52,10 @@ public final class TheosferaProxy {
             final ProxyInitializeEvent event
     ) {
         channelRegistration.register();
+        proxyServer.getEventManager().register(
+                this,
+                protocolMessageListener
+        );
 
         logger.info(
                 "Canal de protocolo registrado: {}.",
@@ -60,6 +68,10 @@ public final class TheosferaProxy {
     public void onProxyShutdown(
             final ProxyShutdownEvent event
     ) {
+        proxyServer.getEventManager().unregisterListener(
+                this,
+                protocolMessageListener
+        );
         channelRegistration.unregister();
 
         logger.info(
