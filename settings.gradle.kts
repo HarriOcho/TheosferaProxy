@@ -1,1 +1,1 @@
-rootProject.name = "TheosferaPluginTemplate"
+rootProject.name = "TheosferaProxy"

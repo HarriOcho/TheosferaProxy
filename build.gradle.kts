@@ -11,7 +11,8 @@ repositories {
 }
 
 dependencies {
-    compileOnly("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
+    compileOnly("com.velocitypowered:velocity-api:3.5.0-SNAPSHOT")
+    annotationProcessor("com.velocitypowered:velocity-api:3.5.0-SNAPSHOT")
 }
 
 java {
@@ -24,21 +25,7 @@ tasks {
         options.release.set(21)
     }
 
-    processResources {
-        filteringCharset = "UTF-8"
-
-        val properties = mapOf(
-            "version" to project.version.toString()
-        )
-
-        inputs.properties(properties)
-
-        filesMatching("plugin.yml") {
-            expand(properties)
-        }
-    }
-
     jar {
-        archiveBaseName.set("TheosferaPluginTemplate")
+        archiveBaseName.set("TheosferaProxy")
     }
 }

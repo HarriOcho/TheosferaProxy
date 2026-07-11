@@ -1,72 +1,80 @@
-# TheosferaPluginTemplate
+# TheosferaProxy
 
-Professional foundation template for Minecraft plugins developed for
-Theosfera.
+Proxy y coordinador global de la network Theosfera.
 
-## Technology
+## Propósito
 
--   Java 21
--   Gradle Kotlin DSL
--   Paper API 1.21.11
--   GitHub Actions
--   Gradle Configuration Cache compatible
+TheosferaProxy es el componente Velocity encargado de coordinar servicios
+globales entre Auth, Lobby, Skyblock y futuras modalidades.
 
-## Creating a new plugin
+Responsabilidades previstas:
 
-Create a new repository from this template using GitHub's **Use this
-template** option.
+- presencia global;
+- servidor y modalidad actual;
+- sesiones autenticadas;
+- movimiento entre servidores;
+- comunicación con TheosferaCore;
+- amigos;
+- parties;
+- escuadrones;
+- eventos distribuidos.
 
-After creating the repository, replace the template-specific values:
+La lógica específica de Paper, mundos o modalidades no pertenece a este
+repositorio.
 
--   Project name in `settings.gradle.kts`
--   Maven group and version in `build.gradle.kts`
--   JAR name in `build.gradle.kts`
--   Java package under `src/main/java`
--   Main class name and package
--   Plugin metadata in `src/main/resources/plugin.yml`
--   Project-specific architecture and rules in `AGENTS.md`
+## Tecnología
 
-## Building
+- Java 21
+- Gradle Kotlin DSL
+- Gradle Wrapper
+- Velocity API 3.5.0-SNAPSHOT
+- GitHub Actions
+- Gradle Configuration Cache
+
+## Construcción
 
 ### Windows PowerShell
 
-``` powershell
-.\gradlew.bat build
+```powershell
+.\gradlew.bat clean build --no-daemon
 ```
 
-### Linux or macOS
+### Linux o macOS
 
-``` bash
-./gradlew build
+```bash
+./gradlew clean build --no-daemon
 ```
 
-The compiled JAR is generated inside:
+El JAR se genera en:
 
-``` text
+```text
 build/libs/
 ```
 
-## Development workflow
+## Flujo de desarrollo
 
-1.  Update `main`.
-2.  Create a dedicated branch.
-3.  Implement one focused change.
-4.  Run the build.
-5.  Commit using a descriptive message.
-6.  Push the branch.
-7.  Open a Pull Request.
-8.  Wait for GitHub Actions.
-9.  Review the complete diff.
-10. Merge using **Squash and merge**.
+1. Actualizar `main`.
+2. Crear una rama enfocada.
+3. Implementar un único cambio.
+4. Ejecutar el build.
+5. Revisar el diff.
+6. Crear un commit descriptivo.
+7. Hacer push.
+8. Abrir un Pull Request.
+9. Esperar GitHub Actions.
+10. Fusionar mediante Squash and merge.
 
-See `CONTRIBUTING.md` for the complete workflow.
+Consulta `AGENTS.md` y `CONTRIBUTING.md` antes de modificar el
+proyecto.
 
-## Template scope
+## Estado inicial
 
-This repository is a generic foundation.
+La fundación Velocity contiene únicamente:
 
-Do not add plugin-specific systems, commands, menus, integrations, or
-business logic directly to this template.
+- metadata mediante `@Plugin`;
+- inyección de `ProxyServer`, logger y directorio de datos;
+- eventos de inicialización y apagado;
+- build compatible con Java 21.
 
-Reusable project-wide conventions may be added when they are appropriate
-for all Theosfera plugins.
+Redis, base de datos, comunicación Core–Proxy y sistemas sociales se
+implementarán en ramas independientes.
