@@ -113,6 +113,40 @@ public final class PlayerServerPresenceRegistry {
         );
     }
 
+    public boolean removeIfBackend(
+            UUID playerId,
+            String backendName
+    ) {
+        Objects.requireNonNull(
+                playerId,
+                "playerId cannot be null"
+        );
+
+        String nonNullBackendName =
+                Objects.requireNonNull(
+                        backendName,
+                        "backendName cannot be null"
+                );
+
+        AtomicReference<Boolean> removed =
+                new AtomicReference<>(false);
+
+        presences.computeIfPresent(
+                playerId,
+                (ignored, existing) -> {
+                    if (!existing.backendName()
+                            .equals(nonNullBackendName)) {
+                        return existing;
+                    }
+
+                    removed.set(true);
+                    return null;
+                }
+        );
+
+        return removed.get();
+    }
+
     public Map<UUID, PlayerServerPresence> snapshot() {
         return Map.copyOf(presences);
     }

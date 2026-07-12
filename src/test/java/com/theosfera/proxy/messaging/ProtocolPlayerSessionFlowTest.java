@@ -18,6 +18,7 @@ import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.Player;
@@ -72,6 +73,9 @@ class ProtocolPlayerSessionFlowTest {
                         sessionRegistry
                 );
 
+        PendingPlayerTransferRegistry transferRegistry =
+                new PendingPlayerTransferRegistry();
+
         BackendMessageAuthorizer authorizer =
                 new BackendMessageAuthorizer(
                         identityRegistry
@@ -108,6 +112,7 @@ class ProtocolPlayerSessionFlowTest {
                 new PlayerDisconnectListener(
                         sessionRegistry,
                         presenceRegistry,
+                        transferRegistry,
                         logger
                 );
 

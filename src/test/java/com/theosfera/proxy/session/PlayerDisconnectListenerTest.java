@@ -1,5 +1,7 @@
 package com.theosfera.proxy.session;
 
+import com.theosfera.proxy.transfer.PendingPlayerTransfer;
+import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.proxy.Player;
 import org.junit.jupiter.api.BeforeEach;
@@ -21,9 +23,14 @@ class PlayerDisconnectListenerTest {
             UUID.fromString(
                     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
             );
+    private static final UUID REQUEST_ID =
+            UUID.fromString(
+                    "11111111-2222-3333-4444-555555555555"
+            );
 
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
     private PlayerServerPresenceRegistry presenceRegistry;
+    private PendingPlayerTransferRegistry transferRegistry;
     private Logger logger;
     private PlayerDisconnectListener listener;
 
@@ -35,10 +42,13 @@ class PlayerDisconnectListenerTest {
                 new PlayerServerPresenceRegistry(
                         sessionRegistry
                 );
+        transferRegistry =
+                new PendingPlayerTransferRegistry();
         logger = mock(Logger.class);
         listener = new PlayerDisconnectListener(
                 sessionRegistry,
                 presenceRegistry,
+                transferRegistry,
                 logger
         );
     }
@@ -46,6 +56,15 @@ class PlayerDisconnectListenerTest {
     @Test
     void removesSessionAndPresenceWhenPlayerDisconnects() {
         registerPlayerState();
+        transferRegistry.register(
+                new PendingPlayerTransfer(
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        "lobby-1",
+                        "skyblock-1",
+                        3_000L
+                )
+        );
 
         listener.onDisconnect(disconnectEvent());
 
@@ -54,6 +73,11 @@ class PlayerDisconnectListenerTest {
         );
         assertFalse(
                 presenceRegistry.find(PLAYER_ID).isPresent()
+        );
+        assertFalse(
+                transferRegistry
+                        .findByPlayer(PLAYER_ID)
+                        .isPresent()
         );
 
         verify(logger).debug(
@@ -115,6 +139,7 @@ class PlayerDisconnectListenerTest {
                 () -> new PlayerDisconnectListener(
                         null,
                         presenceRegistry,
+                        transferRegistry,
                         logger
                 )
         );
@@ -123,6 +148,17 @@ class PlayerDisconnectListenerTest {
                 NullPointerException.class,
                 () -> new PlayerDisconnectListener(
                         sessionRegistry,
+                        null,
+                        transferRegistry,
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerDisconnectListener(
+                        sessionRegistry,
+                        presenceRegistry,
                         null,
                         logger
                 )
@@ -133,6 +169,7 @@ class PlayerDisconnectListenerTest {
                 () -> new PlayerDisconnectListener(
                         sessionRegistry,
                         presenceRegistry,
+                        transferRegistry,
                         null
                 )
         );

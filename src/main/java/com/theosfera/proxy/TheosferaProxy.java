@@ -14,9 +14,14 @@ import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PingMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
+import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
+import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
+import com.theosfera.proxy.transfer.PlayerTransferExecutor;
+import com.theosfera.proxy.transfer.TransferResultSender;
+import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
@@ -45,6 +50,7 @@ public final class TheosferaProxy {
     private final BackendIdentityRegistry identityRegistry;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
+    private final PendingPlayerTransferRegistry transferRegistry;
     private final PlayerDisconnectListener playerDisconnectListener;
 
     private ProtocolMessageListener protocolMessageListener;
@@ -70,10 +76,13 @@ public final class TheosferaProxy {
                 new PlayerServerPresenceRegistry(
                         sessionRegistry
                 );
+        this.transferRegistry =
+                new PendingPlayerTransferRegistry();
         this.playerDisconnectListener =
                 new PlayerDisconnectListener(
                         sessionRegistry,
                         presenceRegistry,
+                        transferRegistry,
                         logger
                 );
     }
@@ -118,6 +127,7 @@ public final class TheosferaProxy {
                 playerDisconnectListener
         );
 
+        transferRegistry.clear();
         presenceRegistry.clear();
         sessionRegistry.clear();
         identityRegistry.clear();
@@ -150,6 +160,22 @@ public final class TheosferaProxy {
         ProtocolMessageSender messageSender =
                 new ProtocolMessageSender();
 
+        TransferTargetResolver targetResolver =
+                new TransferTargetResolver(
+                        proxyServer,
+                        authorizationPolicy,
+                        identityRegistry
+                );
+
+        PlayerTransferExecutor transferExecutor =
+                new PlayerTransferExecutor();
+
+        TransferResultSender transferResultSender =
+                new TransferResultSender(
+                        messageSender,
+                        logger
+                );
+
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
@@ -169,6 +195,16 @@ public final class TheosferaProxy {
                                 ),
                                 new PlayerServerReadyMessageHandler(
                                         presenceRegistry,
+                                        logger
+                                ),
+                                new TransferRequestMessageHandler(
+                                        proxyServer,
+                                        sessionRegistry,
+                                        presenceRegistry,
+                                        transferRegistry,
+                                        targetResolver,
+                                        transferExecutor,
+                                        transferResultSender,
                                         logger
                                 )
                         )
