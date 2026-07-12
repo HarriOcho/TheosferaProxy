@@ -3,13 +3,14 @@ package com.theosfera.proxy.messaging;
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
-import com.theosfera.protocol.message.payload.PingPayload;
-import com.theosfera.protocol.message.payload.PongPayload;
-import com.theosfera.proxy.messaging.handler.PingMessageHandler;
+import com.theosfera.protocol.message.payload.BackendHelloAckPayload;
+import com.theosfera.protocol.message.payload.BackendHelloPayload;
+import com.theosfera.protocol.message.payload.BackendType;
+import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
-import com.theosfera.protocol.message.payload.BackendType;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.messages.ChannelMessageSink;
@@ -19,6 +20,7 @@ import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -29,38 +31,39 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class ProtocolHeartbeatFlowTest {
-
-    private static final long PING_SENT_AT =
-            1_750_000_000_000L;
+class ProtocolBackendHandshakeFlowTest {
 
     @Test
-    void receivesPingAndSendsCorrelatedPong() {
+    void receivesHelloRegistersIdentityAndSendsAck() {
         Logger logger = mock(Logger.class);
         ProtocolMessageSender sender =
                 mock(ProtocolMessageSender.class);
 
-        PingMessageHandler pingHandler =
-                new PingMessageHandler(sender, logger);
+        BackendAuthorizationPolicy policy =
+                new BackendAuthorizationPolicy(
+                        Map.of(
+                                "lobby-1",
+                                BackendType.LOBBY
+                        )
+                );
+
+        BackendIdentityRegistry registry =
+                new BackendIdentityRegistry();
+
+        BackendMessageAuthorizer authorizer =
+                new BackendMessageAuthorizer(registry);
+
+        BackendHelloMessageHandler helloHandler =
+                new BackendHelloMessageHandler(
+                        policy,
+                        registry,
+                        sender,
+                        logger
+                );
 
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
-                        List.of(pingHandler)
-                );
-
-        BackendIdentityRegistry identityRegistry =
-                new BackendIdentityRegistry();
-
-        identityRegistry.register(
-                new BackendIdentity(
-                        "lobby-1",
-                        BackendType.LOBBY
-                )
-        );
-
-        BackendMessageAuthorizer authorizer =
-                new BackendMessageAuthorizer(
-                        identityRegistry
+                        List.of(helloHandler)
                 );
 
         ProtocolMessageListener listener =
@@ -78,25 +81,36 @@ class ProtocolHeartbeatFlowTest {
                 any(ProtocolEnvelope.class)
         )).thenReturn(true);
 
-        ProtocolEnvelope<PingPayload> ping =
+        ProtocolEnvelope<BackendHelloPayload> hello =
                 ProtocolEnvelope.create(
-                        ProtocolMessageType.PING,
-                        new PingPayload(PING_SENT_AT)
+                        ProtocolMessageType.BACKEND_HELLO,
+                        new BackendHelloPayload(
+                                "lobby-1",
+                                BackendType.LOBBY
+                        )
                 );
 
-        byte[] encodedPing =
-                new ProtocolJsonCodec().encode(ping);
+        byte[] encodedHello =
+                new ProtocolJsonCodec().encode(hello);
 
         PluginMessageEvent event = new PluginMessageEvent(
                 source,
                 mock(ChannelMessageSink.class),
                 ProtocolChannel.IDENTIFIER,
-                encodedPing
+                encodedHello
         );
 
         listener.onPluginMessage(event);
 
         assertFalse(event.getResult().isAllowed());
+
+        BackendIdentity identity =
+                registry.find("lobby-1").orElseThrow();
+
+        assertEquals(
+                BackendType.LOBBY,
+                identity.backendType()
+        );
 
         ArgumentCaptor<ProtocolEnvelope<?>> captor =
                 ArgumentCaptor.forClass(
@@ -108,30 +122,26 @@ class ProtocolHeartbeatFlowTest {
                 captor.capture()
         );
 
-        ProtocolEnvelope<?> pong = captor.getValue();
+        ProtocolEnvelope<?> acknowledgement =
+                captor.getValue();
 
         assertEquals(
-                ProtocolMessageType.PONG,
-                pong.type()
+                ProtocolMessageType.BACKEND_HELLO_ACK,
+                acknowledgement.type()
         );
         assertEquals(
-                ping.requestId(),
-                pong.requestId()
+                hello.requestId(),
+                acknowledgement.requestId()
         );
 
-        PongPayload payload =
-                (PongPayload) pong.payload();
+        BackendHelloAckPayload payload =
+                (BackendHelloAckPayload)
+                        acknowledgement.payload();
 
+        assertTrue(payload.accepted());
         assertEquals(
-                PING_SENT_AT,
-                payload.pingSentAt()
-        );
-        assertTrue(
-                payload.respondedAt() >= PING_SENT_AT
-        );
-        assertEquals(
-                payload.respondedAt(),
-                pong.timestamp()
+                "Backend registered",
+                payload.message()
         );
     }
 

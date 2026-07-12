@@ -3,6 +3,7 @@ package com.theosfera.proxy.messaging;
 import com.theosfera.protocol.codec.ProtocolCodecException;
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.message.ProtocolEnvelope;
+import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.ServerConnection;
@@ -14,15 +15,18 @@ public final class ProtocolMessageListener {
 
     private final Logger logger;
     private final ProtocolMessageDecoder decoder;
+    private final BackendMessageAuthorizer authorizer;
     private final ProtocolMessageDispatcher dispatcher;
 
     public ProtocolMessageListener(
             Logger logger,
+            BackendMessageAuthorizer authorizer,
             ProtocolMessageDispatcher dispatcher
     ) {
         this(
                 logger,
                 new ProtocolMessageDecoder(),
+                authorizer,
                 dispatcher
         );
     }
@@ -30,6 +34,7 @@ public final class ProtocolMessageListener {
     ProtocolMessageListener(
             Logger logger,
             ProtocolMessageDecoder decoder,
+            BackendMessageAuthorizer authorizer,
             ProtocolMessageDispatcher dispatcher
     ) {
         this.logger = Objects.requireNonNull(
@@ -39,6 +44,10 @@ public final class ProtocolMessageListener {
         this.decoder = Objects.requireNonNull(
                 decoder,
                 "decoder cannot be null"
+        );
+        this.authorizer = Objects.requireNonNull(
+                authorizer,
+                "authorizer cannot be null"
         );
         this.dispatcher = Objects.requireNonNull(
                 dispatcher,
@@ -107,6 +116,19 @@ public final class ProtocolMessageListener {
                         serverConnection,
                         envelope
                 );
+
+        if (!authorizer.isAuthorized(
+                context.serverName(),
+                envelope.type()
+        )) {
+            logger.warn(
+                    "Mensaje de protocolo {} no autorizado "
+                            + "rechazado desde {}.",
+                    envelope.type(),
+                    context.serverName()
+            );
+            return;
+        }
 
         if (!dispatcher.dispatch(context)) {
             logger.debug(
