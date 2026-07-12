@@ -5,6 +5,7 @@ import com.theosfera.protocol.codec.ProtocolCodecException;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
 import com.theosfera.protocol.message.payload.PingPayload;
+import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
@@ -12,12 +13,14 @@ import com.velocitypowered.api.proxy.messages.ChannelMessageSink;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.slf4j.Logger;
 import org.mockito.ArgumentCaptor;
 
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
@@ -33,6 +36,9 @@ class ProtocolMessageListenerTest {
     private final ProtocolMessageDecoder decoder =
             mock(ProtocolMessageDecoder.class);
 
+    private final BackendMessageAuthorizer authorizer =
+            mock(BackendMessageAuthorizer.class);
+
     private final ProtocolMessageDispatcher dispatcher =
             mock(ProtocolMessageDispatcher.class);
 
@@ -40,8 +46,17 @@ class ProtocolMessageListenerTest {
             new ProtocolMessageListener(
                     logger,
                     decoder,
+                    authorizer,
                     dispatcher
             );
+
+    @BeforeEach
+    void authorizeDecodedMessagesByDefault() {
+        when(authorizer.isAuthorized(
+                anyString(),
+                anyString()
+        )).thenReturn(true);
+    }
 
     @Test
     void ignoresMessagesFromOtherChannels() {
@@ -159,6 +174,51 @@ class ProtocolMessageListenerTest {
                         + "desde {}.",
                 "lobby-1"
         );
+    }
+
+    @Test
+    void rejectsDecodedMessageWithoutBackendAuthorization() {
+        ServerConnection serverConnection =
+                createServerConnection("lobby-1");
+
+        byte[] data = new byte[]{1, 2, 3};
+
+        ProtocolEnvelope<PingPayload> envelope =
+                ProtocolEnvelope.create(
+                        ProtocolMessageType.PING,
+                        new PingPayload(
+                                1_750_000_000_000L
+                        )
+                );
+
+        doReturn(envelope)
+                .when(decoder)
+                .decode(data);
+
+        when(authorizer.isAuthorized(
+                "lobby-1",
+                ProtocolMessageType.PING
+        )).thenReturn(false);
+
+        PluginMessageEvent event = new PluginMessageEvent(
+                serverConnection,
+                sink,
+                ProtocolChannel.IDENTIFIER,
+                data
+        );
+
+        listener.onPluginMessage(event);
+
+        assertFalse(event.getResult().isAllowed());
+
+        verify(logger).warn(
+                "Mensaje de protocolo {} no autorizado "
+                        + "rechazado desde {}.",
+                ProtocolMessageType.PING,
+                "lobby-1"
+        );
+
+        verifyNoInteractions(dispatcher);
     }
 
     @Test

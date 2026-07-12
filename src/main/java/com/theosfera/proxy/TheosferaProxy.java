@@ -1,11 +1,16 @@
 package com.theosfera.proxy;
 
 import com.google.inject.Inject;
+import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendMessageAuthorizer;
+import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
 import com.theosfera.proxy.messaging.ProtocolChannel;
 import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
 import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
 import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
+import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PingMessageHandler;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
@@ -32,7 +37,9 @@ public final class TheosferaProxy {
     private final Logger logger;
     private final Path dataDirectory;
     private final ProtocolChannelRegistration channelRegistration;
-    private final ProtocolMessageListener protocolMessageListener;
+    private final BackendIdentityRegistry identityRegistry;
+
+    private ProtocolMessageListener protocolMessageListener;
 
     @Inject
     public TheosferaProxy(
@@ -47,30 +54,16 @@ public final class TheosferaProxy {
                 new ProtocolChannelRegistration(
                         proxyServer.getChannelRegistrar()
                 );
-        ProtocolMessageSender messageSender =
-                new ProtocolMessageSender();
-
-        ProtocolMessageDispatcher dispatcher =
-                new ProtocolMessageDispatcher(
-                        List.of(
-                                new PingMessageHandler(
-                                        messageSender,
-                                        logger
-                                )
-                        )
-                );
-
-        this.protocolMessageListener =
-                new ProtocolMessageListener(
-                        logger,
-                        dispatcher
-                );
+        this.identityRegistry =
+                new BackendIdentityRegistry();
     }
 
     @Subscribe
     public void onProxyInitialization(
             final ProxyInitializeEvent event
     ) {
+        initializeProtocolMessaging();
+
         channelRegistration.register();
         proxyServer.getEventManager().register(
                 this,
@@ -88,10 +81,14 @@ public final class TheosferaProxy {
     public void onProxyShutdown(
             final ProxyShutdownEvent event
     ) {
-        proxyServer.getEventManager().unregisterListener(
-                this,
-                protocolMessageListener
-        );
+        if (protocolMessageListener != null) {
+            proxyServer.getEventManager().unregisterListener(
+                    this,
+                    protocolMessageListener
+            );
+        }
+
+        identityRegistry.clear();
         channelRegistration.unregister();
 
         logger.info(
@@ -99,6 +96,57 @@ public final class TheosferaProxy {
                 ProtocolChannel.IDENTIFIER.getId()
         );
         logger.info("TheosferaProxy apagado correctamente.");
+    }
+
+    private void initializeProtocolMessaging() {
+        if (protocolMessageListener != null) {
+            throw new IllegalStateException(
+                    "Protocol messaging is already initialized"
+            );
+        }
+
+        BackendAuthorizationPolicy authorizationPolicy =
+                new BackendPolicyConfigLoader(
+                        dataDirectory
+                ).load();
+
+        BackendMessageAuthorizer messageAuthorizer =
+                new BackendMessageAuthorizer(
+                        identityRegistry
+                );
+
+        ProtocolMessageSender messageSender =
+                new ProtocolMessageSender();
+
+        ProtocolMessageDispatcher dispatcher =
+                new ProtocolMessageDispatcher(
+                        List.of(
+                                new BackendHelloMessageHandler(
+                                        authorizationPolicy,
+                                        identityRegistry,
+                                        messageSender,
+                                        logger
+                                ),
+                                new PingMessageHandler(
+                                        messageSender,
+                                        logger
+                                )
+                        )
+                );
+
+        protocolMessageListener =
+                new ProtocolMessageListener(
+                        logger,
+                        messageAuthorizer,
+                        dispatcher
+                );
+
+        logger.info(
+                "Política de backends cargada: {} autorizados.",
+                authorizationPolicy
+                        .allowedBackends()
+                        .size()
+        );
     }
 
     public ProxyServer getProxyServer() {
