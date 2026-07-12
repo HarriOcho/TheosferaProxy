@@ -317,14 +317,82 @@ Los eventos anteriores al estado actual no reemplazan presencia nueva.
 
 Dos estados diferentes con el mismo timestamp se consideran conflicto.
 
-## 14. Limpieza por desconexión
+## 14. Transferencias seguras de jugadores
+
+La coordinación de transferencias está implementada en memoria.
+
+Contratos utilizados desde TheosferaProtocol:
+
+- `TransferRequestPayload`;
+- `TransferResultPayload`;
+- `TransferResultStatus`;
+- `TRANSFER_REQUEST`;
+- `TRANSFER_RESULT`.
+
+Componentes:
+
+- `PendingPlayerTransfer`;
+- `PlayerTransferRegistrationResult`;
+- `PendingPlayerTransferRegistry`;
+- `TransferTargetResolutionStatus`;
+- `TransferTargetResolution`;
+- `TransferTargetResolver`;
+- `PlayerTransferCompletion`;
+- `PlayerTransferExecutor`;
+- `TransferResultSender`;
+- `TransferRequestMessageHandler`.
+
+Flujo:
+
+1. Lobby o Skyblock envía `TRANSFER_REQUEST`;
+2. el UUID solicitado debe coincidir con el jugador propietario del
+   `ServerConnection`;
+3. el jugador debe poseer una sesión autenticada;
+4. la presencia y conexión actual deben coincidir con el backend de
+   origen;
+5. el destino debe estar autorizado por la política;
+6. el destino debe existir en Velocity;
+7. el destino debe haber completado un handshake válido;
+8. el jugador no puede ser enviado a Auth ni al backend actual;
+9. la solicitud se registra como transferencia pendiente;
+10. Velocity ejecuta la conexión de forma asíncrona;
+11. la operación expira después de diez segundos;
+12. el proxy responde `TRANSFER_RESULT` conservando el `requestId`;
+13. una transferencia exitosa elimina la presencia anterior únicamente
+    si todavía pertenece al backend de origen.
+
+Resultados del protocolo:
+
+- `SUCCESS`;
+- `REJECTED`;
+- `FAILED`;
+- `TIMED_OUT`.
+
+Protecciones actuales:
+
+- solicitudes simultáneas para el mismo jugador son rechazadas;
+- conflictos de `requestId` son rechazados;
+- los dos índices del registro pendiente se actualizan atómicamente;
+- un resultado tardío no altera una transferencia ya retirada;
+- un evento `PLAYER_SERVER_READY` adelantado del destino no es
+  eliminado por el callback de la transferencia;
+- fallos síncronos y asíncronos de Velocity se convierten en resultados
+  controlados;
+- los detalles internos de excepciones no se exponen a los backends.
+
+La selección entre varias instancias autenticadas del mismo tipo es
+determinista por nombre hasta introducir una estrategia de balanceo.
+
+
+## 15. Limpieza por desconexión
 
 `PlayerDisconnectListener` escucha `DisconnectEvent`.
 
 Orden de limpieza:
 
-1. eliminar presencia del backend;
-2. eliminar sesión autenticada.
+1. eliminar transferencia pendiente;
+2. eliminar presencia del backend;
+3. eliminar sesión autenticada.
 
 El listener:
 
@@ -334,11 +402,12 @@ El listener:
 
 Durante el apagado también se limpian:
 
-1. presencias;
-2. sesiones;
-3. identidades de backends.
+1. transferencias pendientes;
+2. presencias;
+3. sesiones;
+4. identidades de backends.
 
-## 15. Pruebas confirmadas
+## 16. Pruebas confirmadas
 
 Existen pruebas para:
 
@@ -356,7 +425,14 @@ Existen pruebas para:
 - sesiones autenticadas;
 - presencia de jugadores;
 - handlers de ciclo de jugador;
-- limpieza por desconexión.
+- limpieza por desconexión;
+- registro de transferencias pendientes;
+- resolución segura del backend destino;
+- ejecución asíncrona, rechazo, fallo y timeout;
+- correlación de `TRANSFER_RESULT`;
+- validaciones del handler de transferencia;
+- conservación segura de presencia durante carreras;
+- flujo integral de transferencia.
 
 Flujos integrales confirmados:
 
@@ -365,6 +441,7 @@ BACKEND_HELLO → BACKEND_HELLO_ACK
 PING → PONG
 auth-1 → PLAYER_AUTHENTICATED
 lobby-1 → PLAYER_SERVER_READY
+lobby-1 → TRANSFER_REQUEST → skyblock-1 → TRANSFER_RESULT
 DisconnectEvent → eliminación de presencia y sesión
 ```
 
@@ -391,7 +468,7 @@ Resultado:
 BUILD SUCCESSFUL
 ```
 
-## 16. Prueba runtime confirmada
+## 17. Prueba runtime confirmada
 
 TheosferaProxy fue instalado en Velocity `3.5.0-SNAPSHOT`.
 
@@ -411,7 +488,7 @@ pertenecen al entorno o a Velocity y no impidieron la prueba.
 Player information forwarding deberá configurarse y verificarse antes
 de conectar backends reales.
 
-## 17. Git y ramas fusionadas
+## 18. Git y ramas fusionadas
 
 Bloques principales fusionados en TheosferaProxy:
 
@@ -425,7 +502,8 @@ Bloques principales fusionados en TheosferaProxy:
 - Message Sender;
 - Heartbeat Handler;
 - Backend Handshake;
-- Player Sessions.
+- Player Sessions;
+- Player Transfers.
 
 Bloques de contrato fusionados en TheosferaProtocol:
 
@@ -440,13 +518,14 @@ Bloques de contrato fusionados en TheosferaProtocol:
 Los cambios importantes se realizan mediante ramas y Pull Requests con
 squash merge.
 
-## 18. Estado transitorio y persistencia
+## 19. Estado transitorio y persistencia
 
 Actualmente son únicamente memoria local del proceso:
 
 - identidades de backends;
 - sesiones autenticadas;
-- presencia de jugadores.
+- presencia de jugadores;
+- transferencias pendientes.
 
 Todavía no existen:
 
@@ -468,7 +547,7 @@ Redis coordinará estado temporal y eventos cuando sea introducido.
 
 Un fallo de Redis no debe causar pérdida de perfiles o progreso.
 
-## 19. Restricciones arquitectónicas
+## 20. Restricciones arquitectónicas
 
 - El proxy valida operaciones globales.
 - Auth es un estado restringido.
@@ -481,7 +560,7 @@ Un fallo de Redis no debe causar pérdida de perfiles o progreso.
 - Los contratos Core–Proxy deben permanecer versionados.
 - Seguridad e integridad tienen prioridad sobre estética.
 
-## 20. Punto exacto de reanudación
+## 21. Punto exacto de reanudación
 
 La infraestructura Core–Proxy básica está operativa:
 
@@ -495,38 +574,36 @@ Backend
   → ProtocolMessageHandler
 ```
 
-El handshake, heartbeat, autenticación, presencia y desconexión ya están
-implementados.
+El handshake, heartbeat, autenticación, presencia, desconexión y
+coordinación segura de transferencias están implementados.
 
-El siguiente bloque es la coordinación de transferencias de jugadores.
-
-Contratos disponibles en TheosferaProtocol:
-
-- `TransferRequestPayload`;
-- `TransferResultPayload`;
-- `TransferResultStatus`;
-- `TRANSFER_REQUEST`;
-- `TRANSFER_RESULT`.
-
-La siguiente fase debe definir e implementar:
-
-1. validación de sesión autenticada;
-2. validación del backend de origen;
-3. resolución del backend destino en Velocity;
-4. protección contra solicitudes repetidas;
-5. estado de transferencia pendiente;
-6. ejecución mediante la API de conexión de Velocity;
-7. resultado correlacionado mediante `requestId`;
-8. respuesta `TRANSFER_RESULT`;
-9. manejo de destino inexistente o no disponible;
-10. manejo de rechazo o fallo de conexión;
-11. actualización segura de presencia;
-12. pruebas unitarias e integrales.
-
-No introducir todavía Redis, base de datos, parties, amigos o perfiles.
-
-Nombre sugerido para la siguiente rama:
+Flujo de transferencia confirmado:
 
 ```text
-feature/protocol-player-transfer
+Lobby o Skyblock
+  → TRANSFER_REQUEST
+  → validación de origen
+  → validación de sesión y presencia
+  → resolución de destino autenticado
+  → registro pendiente
+  → ConnectionRequest de Velocity
+  → TRANSFER_RESULT correlacionado
 ```
+
+Limitaciones actuales:
+
+- el estado continúa siendo local al proceso;
+- no existe Redis ni coordinación entre múltiples proxies;
+- no existe selección por carga entre varias instancias;
+- falta validación runtime con backends reales y TheosferaCore.
+
+El siguiente bloque debe definirse después del checkpoint. Las opciones
+arquitectónicas inmediatas son:
+
+1. integración de transferencias desde TheosferaCore;
+2. recuperación y confirmación runtime de presencia entre backends;
+3. definición de persistencia temporal y Redis;
+4. inicio del perfil global de jugador.
+
+No introducir parties, amigos o escuadrones sin definir primero su
+persistencia y consistencia distribuida.
