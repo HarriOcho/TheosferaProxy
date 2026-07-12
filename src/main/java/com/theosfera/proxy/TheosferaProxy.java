@@ -12,6 +12,11 @@ import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PingMessageHandler;
+import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
+import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
+import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
@@ -38,6 +43,9 @@ public final class TheosferaProxy {
     private final Path dataDirectory;
     private final ProtocolChannelRegistration channelRegistration;
     private final BackendIdentityRegistry identityRegistry;
+    private final AuthenticatedPlayerSessionRegistry sessionRegistry;
+    private final PlayerServerPresenceRegistry presenceRegistry;
+    private final PlayerDisconnectListener playerDisconnectListener;
 
     private ProtocolMessageListener protocolMessageListener;
 
@@ -56,6 +64,18 @@ public final class TheosferaProxy {
                 );
         this.identityRegistry =
                 new BackendIdentityRegistry();
+        this.sessionRegistry =
+                new AuthenticatedPlayerSessionRegistry();
+        this.presenceRegistry =
+                new PlayerServerPresenceRegistry(
+                        sessionRegistry
+                );
+        this.playerDisconnectListener =
+                new PlayerDisconnectListener(
+                        sessionRegistry,
+                        presenceRegistry,
+                        logger
+                );
     }
 
     @Subscribe
@@ -68,6 +88,11 @@ public final class TheosferaProxy {
         proxyServer.getEventManager().register(
                 this,
                 protocolMessageListener
+        );
+
+        proxyServer.getEventManager().register(
+                this,
+                playerDisconnectListener
         );
 
         logger.info(
@@ -88,6 +113,13 @@ public final class TheosferaProxy {
             );
         }
 
+        proxyServer.getEventManager().unregisterListener(
+                this,
+                playerDisconnectListener
+        );
+
+        presenceRegistry.clear();
+        sessionRegistry.clear();
         identityRegistry.clear();
         channelRegistration.unregister();
 
@@ -129,6 +161,14 @@ public final class TheosferaProxy {
                                 ),
                                 new PingMessageHandler(
                                         messageSender,
+                                        logger
+                                ),
+                                new PlayerAuthenticatedMessageHandler(
+                                        sessionRegistry,
+                                        logger
+                                ),
+                                new PlayerServerReadyMessageHandler(
+                                        presenceRegistry,
                                         logger
                                 )
                         )
