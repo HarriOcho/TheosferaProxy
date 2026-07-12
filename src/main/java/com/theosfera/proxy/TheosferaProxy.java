@@ -5,6 +5,8 @@ import com.theosfera.proxy.messaging.ProtocolChannel;
 import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
 import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
 import com.theosfera.proxy.messaging.ProtocolMessageListener;
+import com.theosfera.proxy.messaging.ProtocolMessageSender;
+import com.theosfera.proxy.messaging.handler.PingMessageHandler;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
@@ -45,8 +47,18 @@ public final class TheosferaProxy {
                 new ProtocolChannelRegistration(
                         proxyServer.getChannelRegistrar()
                 );
+        ProtocolMessageSender messageSender =
+                new ProtocolMessageSender();
+
         ProtocolMessageDispatcher dispatcher =
-                new ProtocolMessageDispatcher(List.of());
+                new ProtocolMessageDispatcher(
+                        List.of(
+                                new PingMessageHandler(
+                                        messageSender,
+                                        logger
+                                )
+                        )
+                );
 
         this.protocolMessageListener =
                 new ProtocolMessageListener(
