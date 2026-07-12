@@ -14,41 +14,47 @@
 - Java objetivo: Java 21.
 - Build: Gradle Kotlin DSL mediante Gradle Wrapper.
 - Package raíz: `com.theosfera.proxy`.
-- Versión inicial: `0.1.0-SNAPSHOT`.
+- Versión actual: `0.1.0-SNAPSHOT`.
 - Plugin ID: `theosferaproxy`.
 
 TheosferaProxy es el proxy y coordinador global de la network Theosfera.
 
-## 2. Topología prevista
+## 2. Topología inicial
 
 La primera etapa de la network contiene:
 
 ```text
 Theosfera Network
 ├── Proxy
-├── Auth
-├── Lobby
-└── Skyblock
+├── auth-1
+├── lobby-1
+└── skyblock-1
 ```
 
-La arquitectura debe permitir añadir nuevas modalidades sin introducir
-su lógica específica dentro del proxy.
+Tipos de backend definidos:
 
-## 3. Responsabilidades previstas
+- `AUTH`;
+- `LOBBY`;
+- `SKYBLOCK`.
 
-TheosferaProxy coordinará:
+La arquitectura debe permitir añadir servidores y modalidades sin
+introducir su lógica específica dentro del proxy.
 
+## 3. Separación de responsabilidades
+
+TheosferaProxy coordina o coordinará:
+
+- autenticación confirmada por Auth;
+- sesiones autenticadas;
 - presencia global;
-- servidor y modalidad actual;
-- sesiones;
-- autenticación habilitada por el flujo de Auth;
+- backend actual;
 - movimientos entre servidores;
-- comunicación con TheosferaCore;
+- comunicación distribuida;
 - amigos;
 - parties;
 - escuadrones;
 - invitaciones;
-- eventos distribuidos.
+- eventos globales.
 
 No pertenecen al proxy:
 
@@ -60,216 +66,467 @@ No pertenecen al proxy:
 - almacenamiento de ítems;
 - integración directa con SuperiorSkyblock2.
 
+Paper y Velocity permanecen separados. Las clases dependientes de
+plataforma no se comparten entre plugins.
+
 ## 4. Fundación Velocity
 
-La plantilla Paper fue reemplazada por una fundación Velocity.
+La fundación Velocity está implementada y probada.
 
-Cambios confirmados:
+Confirmado:
 
-- Paper API eliminada;
-- Velocity API `3.5.0-SNAPSHOT` añadida como `compileOnly`;
-- annotation processor de Velocity añadido;
-- proyecto renombrado a `TheosferaProxy`;
-- package cambiado a `com.theosfera.proxy`;
-- clase Paper eliminada;
-- `plugin.yml` eliminado;
-- metadata definida mediante `@Plugin`;
-- JAR denominado `TheosferaProxy`;
-- README, AGENTS y CONTRIBUTING adaptados.
+- Velocity API `3.5.0-SNAPSHOT` como `compileOnly`;
+- annotation processor de Velocity;
+- metadata generada mediante `@Plugin`;
+- inyección de `ProxyServer`, `Logger` y `@DataDirectory`;
+- inicialización mediante `ProxyInitializeEvent`;
+- apagado mediante `ProxyShutdownEvent`;
+- Gradle Wrapper;
+- Java 21;
+- configuración cache de Gradle;
+- GitHub Actions;
+- pruebas con JUnit 5 y Mockito.
 
-La metadata de Velocity se genera mediante el procesador de anotaciones.
 No existe un `velocity-plugin.json` mantenido manualmente.
 
-## 5. Clase principal
+## 5. Dependencia de TheosferaProtocol
 
-Clase:
+El contrato compartido vive en el repositorio independiente:
 
-`com.theosfera.proxy.TheosferaProxy`
+`HarriOcho/TheosferaProtocol`
 
-Dependencias inyectadas:
+TheosferaProxy lo consume mediante:
 
-- `ProxyServer`;
-- `Logger`;
-- directorio de datos mediante `@DataDirectory`.
+- dependencia Gradle;
+- composite build local con el repositorio hermano;
+- resolución publicada para GitHub Actions;
+- empaquetado runtime mediante Shadow.
 
-La clase conserva referencias mediante inyección por constructor.
+TheosferaProtocol es Java puro y no depende de Velocity, Paper o Bukkit.
 
-No registra servicios, listeners, comandos o tareas desde el
-constructor.
+No duplicar contratos del protocolo dentro de TheosferaProxy.
 
-## 6. Ciclo de vida
+## 6. Empaquetado runtime
 
-Inicialización:
+El JAR ejecutable se genera mediante Shadow.
 
-`ProxyInitializeEvent`
+Confirmado:
 
-Apagado:
+- el JAR normal está desactivado;
+- `build` depende de `shadowJar`;
+- el artefacto conserva el nombre esperado de TheosferaProxy;
+- TheosferaProtocol se incluye en runtime;
+- Gson se incluye y se relocaliza bajo el namespace privado del proxy;
+- las APIs proporcionadas por Velocity no se empaquetan;
+- las firmas de dependencias se excluyen.
 
-`ProxyShutdownEvent`
+El JAR fue probado en una instancia local real de Velocity.
 
-Mensajes confirmados:
+## 7. Canal de protocolo
+
+Canal oficial:
 
 ```text
-TheosferaProxy iniciado correctamente.
-TheosferaProxy apagado correctamente.
+theosfera:network
 ```
 
-El constructor pertenece únicamente a la fase de construcción.
+La clase `ProtocolChannelRegistration` controla su ciclo de vida.
 
-Las operaciones que requieren la API de Velocity deben comenzar durante
-o después de `ProxyInitializeEvent`.
+Durante la inicialización:
 
-## 7. Build confirmado
+1. se crea la infraestructura de mensajería;
+2. se registra el canal;
+3. se registra el listener de mensajes;
+4. se registran los listeners de ciclo de jugador.
 
-Comando utilizado:
+Durante el apagado:
+
+1. se desregistran los listeners;
+2. se limpian los registros temporales;
+3. se desregistra el canal.
+
+## 8. Recepción y decodificación
+
+`ProtocolMessageListener` recibe mensajes de Plugin Messaging.
+
+Comportamiento confirmado:
+
+- solo procesa `theosfera:network`;
+- solo acepta como origen un `ServerConnection`;
+- consume los mensajes del protocolo sin reenviarlos;
+- rechaza mensajes sobredimensionados;
+- decodifica envelopes registrados;
+- aplica autorización antes del dispatch;
+- no permite que payloads arbitrarios controlen su clase de
+  deserialización.
+
+`ProtocolMessageDecoder` encapsula la decodificación registrada.
+
+`ProtocolJsonCodec.decodeRegistered()` resuelve el payload mediante
+`ProtocolMessageRegistry`.
+
+## 9. Dispatch y envío
+
+La infraestructura incluye:
+
+- `ProtocolMessageContext`;
+- `ProtocolMessageHandler`;
+- `ProtocolMessageDispatcher`;
+- `ProtocolMessageSender`.
+
+El dispatcher:
+
+- registra un único handler por tipo;
+- rechaza handlers duplicados;
+- entrega mensajes mediante su tipo registrado;
+- conserva el origen mediante `ProtocolMessageContext`.
+
+El sender:
+
+- codifica envelopes;
+- usa el canal oficial;
+- informa si el backend aceptó el envío.
+
+## 10. Heartbeat
+
+`PingMessageHandler` implementa:
+
+```text
+PING → PONG
+```
+
+El handler:
+
+- responde al mismo backend;
+- conserva el `requestId`;
+- utiliza `ProtocolMessageSender`;
+- está compuesto en el dispatcher principal.
+
+Existen pruebas unitarias y una prueba integral del flujo heartbeat.
+
+## 11. Handshake seguro de backends
+
+El handshake de backends está implementado.
+
+Componentes:
+
+- `BackendAuthorizationPolicy`;
+- `BackendPolicyConfigLoader`;
+- `BackendIdentity`;
+- `BackendIdentityRegistry`;
+- `BackendRegistrationResult`;
+- `BackendHelloMessageHandler`;
+- `BackendMessageAuthorizer`.
+
+Archivo runtime:
+
+```text
+plugins/theosferaproxy/backends.properties
+```
+
+Configuración inicial:
+
+```properties
+auth-1=AUTH
+lobby-1=LOBBY
+skyblock-1=SKYBLOCK
+```
+
+El archivo se crea con valores predeterminados si no existe.
+
+Flujo:
+
+1. un backend envía `BACKEND_HELLO`;
+2. su nombre debe coincidir con el origen Velocity;
+3. nombre y tipo deben estar autorizados por la política;
+4. la identidad se registra de forma concurrente;
+5. el proxy responde `BACKEND_HELLO_ACK`;
+6. los mensajes posteriores se autorizan según la identidad registrada.
+
+Reglas actuales:
+
+- `BACKEND_HELLO`: permitido antes del registro para ejecutar el
+  handshake;
+- `PING` y `PONG`: permitidos para cualquier backend registrado;
+- `PLAYER_AUTHENTICATED`: únicamente `AUTH`;
+- `PLAYER_SERVER_READY`: únicamente `LOBBY` o `SKYBLOCK`;
+- `TRANSFER_REQUEST`: únicamente `LOBBY` o `SKYBLOCK`;
+- mensajes reservados de respuesta no se aceptan arbitrariamente como
+  entrada.
+
+## 12. Sesiones autenticadas
+
+Las sesiones autenticadas están implementadas en memoria.
+
+Componentes:
+
+- `AuthenticatedPlayerSession`;
+- `PlayerSessionRegistrationResult`;
+- `AuthenticatedPlayerSessionRegistry`;
+- `PlayerAuthenticatedMessageHandler`.
+
+Flujo:
+
+1. `auth-1` autentica al jugador;
+2. envía `PLAYER_AUTHENTICATED`;
+3. el authorizer confirma que el origen registrado es `AUTH`;
+4. el handler registra la sesión global.
+
+La sesión contiene:
+
+- UUID del jugador;
+- nombre validado;
+- instante de autenticación.
+
+El registro es concurrente y distingue:
+
+- `REGISTERED`;
+- `ALREADY_REGISTERED`;
+- `CONFLICT`.
+
+Un conflicto no reemplaza silenciosamente la sesión existente.
+
+## 13. Presencia en backends
+
+La presencia del jugador está implementada en memoria.
+
+Componentes:
+
+- `PlayerServerPresence`;
+- `PlayerPresenceUpdateResult`;
+- `PlayerServerPresenceRegistry`;
+- `PlayerServerReadyMessageHandler`.
+
+Flujo:
+
+1. el jugador debe tener una sesión autenticada;
+2. Lobby o Skyblock envía `PLAYER_SERVER_READY`;
+3. el backend declarado debe coincidir con el origen Velocity;
+4. el registro actualiza la presencia global.
+
+Resultados posibles:
+
+- `RECORDED`;
+- `ALREADY_RECORDED`;
+- `UPDATED`;
+- `NOT_AUTHENTICATED`;
+- `STALE`;
+- `CONFLICT`.
+
+Los eventos anteriores al estado actual no reemplazan presencia nueva.
+
+Dos estados diferentes con el mismo timestamp se consideran conflicto.
+
+## 14. Limpieza por desconexión
+
+`PlayerDisconnectListener` escucha `DisconnectEvent`.
+
+Orden de limpieza:
+
+1. eliminar presencia del backend;
+2. eliminar sesión autenticada.
+
+El listener:
+
+- se registra durante `ProxyInitializeEvent`;
+- se desregistra durante `ProxyShutdownEvent`;
+- evita mantener sesiones o presencias fantasma.
+
+Durante el apagado también se limpian:
+
+1. presencias;
+2. sesiones;
+3. identidades de backends.
+
+## 15. Pruebas confirmadas
+
+Existen pruebas para:
+
+- registro y ciclo del canal;
+- recepción segura;
+- decodificación registrada;
+- dispatcher y contexto;
+- sender;
+- heartbeat;
+- política de backends;
+- carga de `backends.properties`;
+- registro de identidades;
+- autorización por rol;
+- handshake;
+- sesiones autenticadas;
+- presencia de jugadores;
+- handlers de ciclo de jugador;
+- limpieza por desconexión.
+
+Flujos integrales confirmados:
+
+```text
+BACKEND_HELLO → BACKEND_HELLO_ACK
+PING → PONG
+auth-1 → PLAYER_AUTHENTICATED
+lobby-1 → PLAYER_SERVER_READY
+DisconnectEvent → eliminación de presencia y sesión
+```
+
+El flujo integral de jugador atraviesa:
+
+- codec;
+- listener;
+- autorización;
+- dispatcher;
+- handlers;
+- registros;
+- limpieza por desconexión.
+
+Última validación local confirmada:
 
 ```powershell
-.\gradlew.bat build --no-daemon
+git diff --check
+.\gradlew.bat clean build --no-daemon
 ```
 
 Resultado:
 
 ```text
-BUILD SUCCESSFUL in 9s
-2 actionable tasks: 1 executed, 1 from cache
-Configuration cache entry stored.
+BUILD SUCCESSFUL
 ```
 
-También se verificó:
+## 16. Prueba runtime confirmada
 
-```powershell
-git diff --check
-```
+TheosferaProxy fue instalado en Velocity `3.5.0-SNAPSHOT`.
 
-El comando no reportó errores de formato.
+Confirmado:
 
-## 8. Prueba real confirmada
+- carga correcta del plugin;
+- carga de tres backends autorizados;
+- registro de `theosfera:network`;
+- inicio correcto;
+- apagado correcto;
+- desregistro del canal;
+- ausencia de errores del plugin.
 
-TheosferaProxy fue instalado en una instancia local de Velocity
-`3.5.0-SNAPSHOT`.
+Las advertencias sobre acceso nativo, mutación reflectiva y forwarding
+pertenecen al entorno o a Velocity y no impidieron la prueba.
 
-Pruebas aprobadas:
+Player information forwarding deberá configurarse y verificarse antes
+de conectar backends reales.
 
-- Velocity inició correctamente;
-- TheosferaProxy apareció en `velocity plugins`;
-- el evento de inicialización se ejecutó;
-- el directorio `plugins/theosferaproxy` fue creado;
-- no aparecieron errores de Bukkit, Paper o `JavaPlugin`;
-- no aparecieron errores de metadata o `@Plugin`;
-- el evento de apagado se ejecutó;
-- no se registraron stack traces relacionados.
+## 17. Git y ramas fusionadas
 
-## 9. Advertencias conocidas
+Bloques principales fusionados en TheosferaProxy:
 
-### Native access
+- Foundation;
+- Protocol Dependency;
+- Runtime Packaging;
+- Channel Registration;
+- Message Receiver;
+- Message Decoding;
+- Message Dispatch;
+- Message Sender;
+- Heartbeat Handler;
+- Backend Handshake;
+- Player Sessions.
 
-Java mostró una advertencia de acceso nativo relacionada con Jansi.
+Bloques de contrato fusionados en TheosferaProtocol:
 
-No pertenece a TheosferaProxy y no afectó la carga del plugin.
+- Foundation;
+- Handshake and Heartbeat Payloads;
+- Player Lifecycle Payloads;
+- Transfer Payloads;
+- Message Registry;
+- Registered Message Decoding;
+- Contract Checkpoint.
 
-### Player information forwarding
+Los cambios importantes se realizan mediante ramas y Pull Requests con
+squash merge.
 
-Velocity informó que player information forwarding está desactivado.
+## 18. Estado transitorio y persistencia
 
-Este estado es aceptable para la prueba aislada.
+Actualmente son únicamente memoria local del proceso:
 
-Antes de conectar servidores backend reales se debe configurar y
-verificar forwarding seguro.
-
-### Windows y OneDrive
-
-OneDrive o IntelliJ pueden bloquear temporalmente carpetas dentro de:
-
-- `build`;
-- referencias internas de `.git`;
-- carpetas vacías de packages eliminados.
-
-Procedimiento utilizado:
-
-```powershell
-.\gradlew.bat --stop
-Remove-Item -Recurse -Force .\build
-.\gradlew.bat build --no-daemon
-```
-
-Los avisos de eliminación no implican pérdida de cambios si `git status`
-termina limpio.
-
-## 10. Git y GitHub
-
-La fundación profesional heredada incluye:
-
-- GitHub Actions;
-- plantilla de Pull Request;
-- plantillas de issues;
-- `.gitignore`;
-- Gradle Wrapper;
-- `AGENTS.md`;
-- `CONTRIBUTING.md`;
-- `README.md`.
-
-Los cambios importantes deben realizarse mediante ramas y Pull Requests.
-
-## 11. Elementos no implementados
+- identidades de backends;
+- sesiones autenticadas;
+- presencia de jugadores.
 
 Todavía no existen:
 
-- comunicación Core–Proxy;
-- protocolo versionado;
-- plugin messaging;
-- presencia global;
-- mapa de servidores y modalidades;
-- estado de autenticación;
 - base de datos;
 - Redis;
-- perfiles;
+- recuperación tras reinicio;
+- replicación entre múltiples proxies;
+- perfiles persistentes;
 - amigos;
 - parties;
 - escuadrones;
-- comandos;
+- invitaciones;
 - permisos;
-- configuración propia del plugin;
-- sistema de mensajes o localización.
+- localización propia.
 
-No asumir que alguno de estos sistemas está disponible.
+La base de datos será la fuente permanente.
 
-## 12. Decisiones arquitectónicas
+Redis coordinará estado temporal y eventos cuando sea introducido.
 
-- Paper y Velocity permanecen separados.
-- No compartir clases dependientes de plataforma.
+Un fallo de Redis no debe causar pérdida de perfiles o progreso.
+
+## 19. Restricciones arquitectónicas
+
 - El proxy valida operaciones globales.
 - Auth es un estado restringido.
-- No permitir movimientos sociales antes de autenticar.
-- La base de datos será la fuente permanente.
-- Redis coordinará estado temporal y eventos.
-- Un fallo de Redis no debe causar pérdida de perfiles o progreso.
-- Los contratos Core–Proxy deben ser versionados.
+- No permitir acciones sociales antes de autenticar.
+- No confiar en nombres o roles declarados sin validar su origen.
+- No aceptar presencia para jugadores no autenticados.
+- No duplicar clases de TheosferaProtocol.
+- No introducir dependencias de Paper o Bukkit en el proxy.
+- No implementar lógica específica de modalidad en el proxy.
+- Los contratos Core–Proxy deben permanecer versionados.
 - Seguridad e integridad tienen prioridad sobre estética.
 
-## 13. Punto exacto de reanudación
+## 20. Punto exacto de reanudación
 
-La fundación Velocity está compilada y probada en runtime.
+La infraestructura Core–Proxy básica está operativa:
 
-El siguiente paso es diseñar el contrato versionado entre
-TheosferaCore y TheosferaProxy antes de implementar presencia, Redis o
-sistemas sociales.
+```text
+Backend
+  → Plugin Messaging
+  → ProtocolMessageListener
+  → Registered Decoding
+  → BackendMessageAuthorizer
+  → ProtocolMessageDispatcher
+  → ProtocolMessageHandler
+```
 
-La fase de diseño debe definir:
+El handshake, heartbeat, autenticación, presencia y desconexión ya están
+implementados.
 
-1. responsabilidades de cada lado;
-2. transporte inicial;
-3. formato de mensajes;
-4. versión del protocolo;
-5. correlación de solicitudes y respuestas;
-6. validación de origen;
-7. manejo de errores y timeouts;
-8. compatibilidad futura;
-9. comportamiento durante Auth;
-10. pruebas del canal.
+El siguiente bloque es la coordinación de transferencias de jugadores.
 
-No implementar parties, amigos, perfiles o escuadrones antes de disponer
-de una comunicación Core–Proxy validada.
+Contratos disponibles en TheosferaProtocol:
 
-Nombre de rama sugerido para documentar el contrato:
+- `TransferRequestPayload`;
+- `TransferResultPayload`;
+- `TransferResultStatus`;
+- `TRANSFER_REQUEST`;
+- `TRANSFER_RESULT`.
 
-`docs/core-proxy-protocol`
+La siguiente fase debe definir e implementar:
+
+1. validación de sesión autenticada;
+2. validación del backend de origen;
+3. resolución del backend destino en Velocity;
+4. protección contra solicitudes repetidas;
+5. estado de transferencia pendiente;
+6. ejecución mediante la API de conexión de Velocity;
+7. resultado correlacionado mediante `requestId`;
+8. respuesta `TRANSFER_RESULT`;
+9. manejo de destino inexistente o no disponible;
+10. manejo de rechazo o fallo de conexión;
+11. actualización segura de presencia;
+12. pruebas unitarias e integrales.
+
+No introducir todavía Redis, base de datos, parties, amigos o perfiles.
+
+Nombre sugerido para la siguiente rama:
+
+```text
+feature/protocol-player-transfer
+```
