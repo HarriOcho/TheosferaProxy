@@ -210,6 +210,52 @@ class PlayerServerPresenceRegistryTest {
     }
 
     @Test
+    void removesPresenceOnlyWhenBackendMatches() {
+        presenceRegistry.update(
+                createPresence(
+                        "lobby-1",
+                        FIRST_READY_AT
+                )
+        );
+
+        assertTrue(
+                presenceRegistry.removeIfBackend(
+                        PLAYER_ID,
+                        "lobby-1"
+                )
+        );
+
+        assertTrue(
+                presenceRegistry.find(PLAYER_ID).isEmpty()
+        );
+    }
+
+    @Test
+    void preservesPresenceWhenBackendDoesNotMatch() {
+        PlayerServerPresence current =
+                createPresence(
+                        "skyblock-1",
+                        FIRST_READY_AT
+                );
+
+        presenceRegistry.update(current);
+
+        assertFalse(
+                presenceRegistry.removeIfBackend(
+                        PLAYER_ID,
+                        "lobby-1"
+                )
+        );
+
+        assertEquals(
+                current,
+                presenceRegistry
+                        .find(PLAYER_ID)
+                        .orElseThrow()
+        );
+    }
+
+    @Test
     void rejectsNullDependenciesAndInputs() {
         assertThrows(
                 NullPointerException.class,
@@ -226,6 +272,21 @@ class PlayerServerPresenceRegistryTest {
         assertThrows(
                 NullPointerException.class,
                 () -> presenceRegistry.remove(null)
+        );
+        assertThrows(
+                NullPointerException.class,
+                () -> presenceRegistry.removeIfBackend(
+                        null,
+                        "lobby-1"
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> presenceRegistry.removeIfBackend(
+                        PLAYER_ID,
+                        null
+                )
         );
     }
 
