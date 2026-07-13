@@ -16,8 +16,9 @@ import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
-import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
+import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.TransferResultSender;
@@ -51,6 +52,7 @@ public final class TheosferaProxy {
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
+    private final BackendBootstrapRegistry bootstrapRegistry;
     private final PlayerDisconnectListener playerDisconnectListener;
 
     private ProtocolMessageListener protocolMessageListener;
@@ -64,20 +66,29 @@ public final class TheosferaProxy {
         this.proxyServer = proxyServer;
         this.logger = logger;
         this.dataDirectory = dataDirectory;
+
         this.channelRegistration =
                 new ProtocolChannelRegistration(
                         proxyServer.getChannelRegistrar()
                 );
+
         this.identityRegistry =
                 new BackendIdentityRegistry();
+
         this.sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
+
         this.presenceRegistry =
                 new PlayerServerPresenceRegistry(
                         sessionRegistry
                 );
+
         this.transferRegistry =
                 new PendingPlayerTransferRegistry();
+
+        this.bootstrapRegistry =
+                new BackendBootstrapRegistry();
+
         this.playerDisconnectListener =
                 new PlayerDisconnectListener(
                         sessionRegistry,
@@ -94,6 +105,7 @@ public final class TheosferaProxy {
         initializeProtocolMessaging();
 
         channelRegistration.register();
+
         proxyServer.getEventManager().register(
                 this,
                 protocolMessageListener
@@ -108,7 +120,10 @@ public final class TheosferaProxy {
                 "Canal de protocolo registrado: {}.",
                 ProtocolChannel.IDENTIFIER.getId()
         );
-        logger.info("TheosferaProxy iniciado correctamente.");
+
+        logger.info(
+                "TheosferaProxy iniciado correctamente."
+        );
     }
 
     @Subscribe
@@ -127,6 +142,7 @@ public final class TheosferaProxy {
                 playerDisconnectListener
         );
 
+        bootstrapRegistry.clear();
         transferRegistry.clear();
         presenceRegistry.clear();
         sessionRegistry.clear();
@@ -137,7 +153,10 @@ public final class TheosferaProxy {
                 "Canal de protocolo desregistrado: {}.",
                 ProtocolChannel.IDENTIFIER.getId()
         );
-        logger.info("TheosferaProxy apagado correctamente.");
+
+        logger.info(
+                "TheosferaProxy apagado correctamente."
+        );
     }
 
     private void initializeProtocolMessaging() {
@@ -182,6 +201,7 @@ public final class TheosferaProxy {
                                 new BackendHelloMessageHandler(
                                         authorizationPolicy,
                                         identityRegistry,
+                                        bootstrapRegistry,
                                         messageSender,
                                         logger
                                 ),
@@ -202,6 +222,7 @@ public final class TheosferaProxy {
                                         sessionRegistry,
                                         presenceRegistry,
                                         transferRegistry,
+                                        bootstrapRegistry,
                                         targetResolver,
                                         transferExecutor,
                                         transferResultSender,

@@ -11,6 +11,8 @@ import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapReservation;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
@@ -33,9 +35,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -65,6 +65,7 @@ class TransferRequestMessageHandlerTest {
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
     private PlayerServerPresenceRegistry presenceRegistry;
     private PendingPlayerTransferRegistry transferRegistry;
+    private BackendBootstrapRegistry bootstrapRegistry;
     private TransferTargetResolver targetResolver;
     private PlayerTransferExecutor transferExecutor;
     private TransferResultSender resultSender;
@@ -88,6 +89,9 @@ class TransferRequestMessageHandlerTest {
 
         transferRegistry =
                 new PendingPlayerTransferRegistry();
+
+        bootstrapRegistry =
+                new BackendBootstrapRegistry();
 
         targetResolver =
                 mock(TransferTargetResolver.class);
@@ -116,6 +120,7 @@ class TransferRequestMessageHandlerTest {
                 sessionRegistry,
                 presenceRegistry,
                 transferRegistry,
+                bootstrapRegistry,
                 targetResolver,
                 transferExecutor,
                 resultSender,
@@ -172,6 +177,137 @@ class TransferRequestMessageHandlerTest {
                 presenceRegistry
                         .find(PLAYER_ID)
                         .isPresent()
+        );
+    }
+
+    @Test
+    void reservesBootstrapForColdTargetAndKeepsItOnSuccess() {
+        registerPlayerState();
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        ProtocolMessageContext context =
+                transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        BackendBootstrapReservation reservation =
+                bootstrapRegistry
+                        .findByTarget("skyblock-1")
+                        .orElseThrow();
+
+        assertEquals(
+                REQUEST_ID,
+                reservation.requestId()
+        );
+
+        assertEquals(
+                PLAYER_ID,
+                reservation.playerId()
+        );
+
+        verify(transferExecutor).execute(
+                player,
+                target
+        );
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.SUCCESS,
+                "Player transferred successfully"
+        );
+    }
+
+    @Test
+    void releasesBootstrapWhenTransferFails() {
+        registerPlayerState();
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+
+        ProtocolMessageContext context =
+                transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByTarget("skyblock-1")
+                        .isEmpty()
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+    }
+
+    @Test
+    void rejectsBootstrapWhenTargetIsAlreadyReserved() {
+        registerPlayerState();
+
+        bootstrapRegistry.register(
+                new BackendBootstrapReservation(
+                        "skyblock-1",
+                        UUID.randomUUID(),
+                        OTHER_PLAYER_ID,
+                        NOW - 1_000L
+                )
+        );
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+
+        ProtocolMessageContext context =
+                transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Target backend bootstrap is already in progress"
+        );
+
+        verify(
+                transferExecutor,
+                never()
+        ).execute(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+
+        assertTrue(
+                transferRegistry
+                        .findByPlayer(PLAYER_ID)
+                        .isEmpty()
         );
     }
 

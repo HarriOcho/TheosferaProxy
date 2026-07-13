@@ -12,6 +12,7 @@ import com.theosfera.proxy.backend.BackendRegistrationResult;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import org.slf4j.Logger;
 
 import java.time.Clock;
@@ -23,6 +24,7 @@ public final class BackendHelloMessageHandler
 
     private final BackendAuthorizationPolicy authorizationPolicy;
     private final BackendIdentityRegistry identityRegistry;
+    private final BackendBootstrapRegistry bootstrapRegistry;
     private final ProtocolMessageSender sender;
     private final Logger logger;
     private final Clock clock;
@@ -30,12 +32,14 @@ public final class BackendHelloMessageHandler
     public BackendHelloMessageHandler(
             BackendAuthorizationPolicy authorizationPolicy,
             BackendIdentityRegistry identityRegistry,
+            BackendBootstrapRegistry bootstrapRegistry,
             ProtocolMessageSender sender,
             Logger logger
     ) {
         this(
                 authorizationPolicy,
                 identityRegistry,
+                bootstrapRegistry,
                 sender,
                 logger,
                 Clock.systemUTC()
@@ -45,6 +49,7 @@ public final class BackendHelloMessageHandler
     BackendHelloMessageHandler(
             BackendAuthorizationPolicy authorizationPolicy,
             BackendIdentityRegistry identityRegistry,
+            BackendBootstrapRegistry bootstrapRegistry,
             ProtocolMessageSender sender,
             Logger logger,
             Clock clock
@@ -53,18 +58,27 @@ public final class BackendHelloMessageHandler
                 authorizationPolicy,
                 "authorizationPolicy cannot be null"
         );
+
         this.identityRegistry = Objects.requireNonNull(
                 identityRegistry,
                 "identityRegistry cannot be null"
         );
+
+        this.bootstrapRegistry = Objects.requireNonNull(
+                bootstrapRegistry,
+                "bootstrapRegistry cannot be null"
+        );
+
         this.sender = Objects.requireNonNull(
                 sender,
                 "sender cannot be null"
         );
+
         this.logger = Objects.requireNonNull(
                 logger,
                 "logger cannot be null"
         );
+
         this.clock = Objects.requireNonNull(
                 clock,
                 "clock cannot be null"
@@ -84,7 +98,9 @@ public final class BackendHelloMessageHandler
         );
 
         BackendHelloPayload helloPayload =
-                requireHelloPayload(context.envelope());
+                requireHelloPayload(
+                        context.envelope()
+                );
 
         Optional<BackendIdentity> authorizedIdentity =
                 authorizationPolicy.authorize(
@@ -113,6 +129,10 @@ public final class BackendHelloMessageHandler
 
         switch (registrationResult) {
             case REGISTERED -> {
+                bootstrapRegistry.removeByTarget(
+                        context.serverName()
+                );
+
                 sendAcknowledgement(
                         context,
                         true,
@@ -125,11 +145,17 @@ public final class BackendHelloMessageHandler
                         helloPayload.backendType()
                 );
             }
-            case ALREADY_REGISTERED -> sendAcknowledgement(
-                    context,
-                    true,
-                    "Backend already registered"
-            );
+            case ALREADY_REGISTERED -> {
+                bootstrapRegistry.removeByTarget(
+                        context.serverName()
+                );
+
+                sendAcknowledgement(
+                        context,
+                        true,
+                        "Backend already registered"
+                );
+            }
             case CONFLICT -> {
                 sendAcknowledgement(
                         context,

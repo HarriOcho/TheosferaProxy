@@ -6,19 +6,18 @@ import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
 import com.theosfera.protocol.message.payload.BackendHelloPayload;
 import com.theosfera.protocol.message.payload.BackendType;
-import com.theosfera.protocol.message.payload.PlayerAuthenticatedPayload;
 import com.theosfera.protocol.message.payload.PlayerServerReadyPayload;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
-import com.theosfera.protocol.message.payload.TransferResultPayload;
-import com.theosfera.protocol.message.payload.TransferResultStatus;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
-import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
+import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
@@ -34,7 +33,6 @@ import com.velocitypowered.api.proxy.messages.ChannelMessageSink;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
 import java.util.List;
@@ -47,12 +45,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-class ProtocolPlayerTransferFlowTest {
+class ProtocolColdBackendBootstrapFlowTest {
 
     private static final UUID PLAYER_ID =
             UUID.fromString(
@@ -65,7 +62,7 @@ class ProtocolPlayerTransferFlowTest {
             );
 
     @Test
-    void authenticatesAuthorizesAndTransfersPlayer() {
+    void bootstrapsEmptyBackendThenAcceptsHandshakeAndPresence() {
         Logger logger = mock(Logger.class);
         ProxyServer proxyServer = mock(ProxyServer.class);
 
@@ -78,8 +75,6 @@ class ProtocolPlayerTransferFlowTest {
         BackendAuthorizationPolicy policy =
                 new BackendAuthorizationPolicy(
                         Map.of(
-                                "auth-1",
-                                BackendType.AUTH,
                                 "lobby-1",
                                 BackendType.LOBBY,
                                 "skyblock-1",
@@ -90,13 +85,36 @@ class ProtocolPlayerTransferFlowTest {
         BackendIdentityRegistry identityRegistry =
                 new BackendIdentityRegistry();
 
+        identityRegistry.register(
+                new BackendIdentity(
+                        "lobby-1",
+                        BackendType.LOBBY
+                )
+        );
+
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
+
+        sessionRegistry.register(
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_000L
+                )
+        );
 
         PlayerServerPresenceRegistry presenceRegistry =
                 new PlayerServerPresenceRegistry(
                         sessionRegistry
                 );
+
+        presenceRegistry.update(
+                new PlayerServerPresence(
+                        PLAYER_ID,
+                        "lobby-1",
+                        2_000L
+                )
+        );
 
         PendingPlayerTransferRegistry transferRegistry =
                 new PendingPlayerTransferRegistry();
@@ -105,9 +123,6 @@ class ProtocolPlayerTransferFlowTest {
                 new BackendBootstrapRegistry();
 
         Player player = mock(Player.class);
-
-        ServerConnection authSource =
-                serverConnection("auth-1");
 
         ServerConnection lobbySource =
                 serverConnection("lobby-1");
@@ -119,6 +134,7 @@ class ProtocolPlayerTransferFlowTest {
                 registeredServer("skyblock-1");
 
         when(lobbySource.getPlayer()).thenReturn(player);
+        when(skyblockSource.getPlayer()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
 
         when(player.getCurrentServer())
@@ -129,6 +145,9 @@ class ProtocolPlayerTransferFlowTest {
 
         when(proxyServer.getServer("skyblock-1"))
                 .thenReturn(Optional.of(skyblockTarget));
+
+        when(skyblockTarget.getPlayersConnected())
+                .thenReturn(List.of());
 
         when(messageSender.send(
                 any(ServerConnection.class),
@@ -167,10 +186,6 @@ class ProtocolPlayerTransferFlowTest {
                                         messageSender,
                                         logger
                                 ),
-                                new PlayerAuthenticatedMessageHandler(
-                                        sessionRegistry,
-                                        logger
-                                ),
                                 new PlayerServerReadyMessageHandler(
                                         presenceRegistry,
                                         logger
@@ -197,68 +212,6 @@ class ProtocolPlayerTransferFlowTest {
                         ),
                         dispatcher
                 );
-
-        send(
-                listener,
-                authSource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "auth-1",
-                                BackendType.AUTH
-                        )
-                )
-        );
-
-        send(
-                listener,
-                lobbySource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "lobby-1",
-                                BackendType.LOBBY
-                        )
-                )
-        );
-
-        send(
-                listener,
-                skyblockSource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "skyblock-1",
-                                BackendType.SKYBLOCK
-                        )
-                )
-        );
-
-        send(
-                listener,
-                authSource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.PLAYER_AUTHENTICATED,
-                        new PlayerAuthenticatedPayload(
-                                PLAYER_ID,
-                                "HarriOcho",
-                                1_000L
-                        )
-                )
-        );
-
-        send(
-                listener,
-                lobbySource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.PLAYER_SERVER_READY,
-                        new PlayerServerReadyPayload(
-                                PLAYER_ID,
-                                "lobby-1",
-                                2_000L
-                        )
-                )
-        );
 
         ProtocolEnvelope<TransferRequestPayload>
                 transferRequest =
@@ -290,57 +243,68 @@ class ProtocolPlayerTransferFlowTest {
         );
 
         assertTrue(
-                transferRegistry.snapshotByPlayer().isEmpty()
+                bootstrapRegistry
+                        .findByTarget("skyblock-1")
+                        .isPresent()
         );
 
         assertTrue(
-                presenceRegistry.find(PLAYER_ID).isEmpty()
+                identityRegistry
+                        .find("skyblock-1")
+                        .isEmpty()
         );
 
-        ArgumentCaptor<ProtocolEnvelope<?>> envelopeCaptor =
-                ArgumentCaptor.forClass(
-                        ProtocolEnvelope.class
-                );
-
-        verify(
-                messageSender,
-                atLeastOnce()
-        ).send(
-                any(ServerConnection.class),
-                envelopeCaptor.capture()
-        );
-
-        ProtocolEnvelope<?> transferResult =
-                envelopeCaptor
-                        .getAllValues()
-                        .stream()
-                        .filter(envelope ->
-                                ProtocolMessageType
-                                        .TRANSFER_RESULT
-                                        .equals(envelope.type())
+        send(
+                listener,
+                skyblockSource,
+                ProtocolEnvelope.create(
+                        ProtocolMessageType.BACKEND_HELLO,
+                        new BackendHelloPayload(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
                         )
-                        .findFirst()
-                        .orElseThrow();
-
-        assertEquals(
-                TRANSFER_REQUEST_ID,
-                transferResult.requestId()
-        );
-
-        TransferResultPayload resultPayload =
-                (TransferResultPayload)
-                        transferResult.payload();
-
-        assertEquals(PLAYER_ID, resultPayload.playerId());
-
-        assertEquals(
-                TransferResultStatus.SUCCESS,
-                resultPayload.status()
+                )
         );
 
         assertEquals(
-                "Player transferred successfully",
-                resultPayload.message()
+                BackendType.SKYBLOCK,
+                identityRegistry
+                        .find("skyblock-1")
+                        .orElseThrow()
+                        .backendType()
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByTarget("skyblock-1")
+                        .isEmpty()
+        );
+
+        send(
+                listener,
+                skyblockSource,
+                ProtocolEnvelope.create(
+                        ProtocolMessageType.PLAYER_SERVER_READY,
+                        new PlayerServerReadyPayload(
+                                PLAYER_ID,
+                                "skyblock-1",
+                                4_000L
+                        )
+                )
+        );
+
+        assertEquals(
+                "skyblock-1",
+                presenceRegistry
+                        .find(PLAYER_ID)
+                        .orElseThrow()
+                        .backendName()
+        );
+
+        assertTrue(
+                transferRegistry
+                        .snapshotByPlayer()
+                        .isEmpty()
         );
     }
 
@@ -373,7 +337,8 @@ class ProtocolPlayerTransferFlowTest {
         ServerInfo serverInfo =
                 mock(ServerInfo.class);
 
-        when(serverInfo.getName()).thenReturn(serverName);
+        when(serverInfo.getName())
+                .thenReturn(serverName);
 
         when(connection.getServerInfo())
                 .thenReturn(serverInfo);
@@ -390,7 +355,8 @@ class ProtocolPlayerTransferFlowTest {
         ServerInfo serverInfo =
                 mock(ServerInfo.class);
 
-        when(serverInfo.getName()).thenReturn(serverName);
+        when(serverInfo.getName())
+                .thenReturn(serverName);
 
         when(server.getServerInfo())
                 .thenReturn(serverInfo);

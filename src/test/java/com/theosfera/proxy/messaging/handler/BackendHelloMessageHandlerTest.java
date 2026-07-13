@@ -10,6 +10,8 @@ import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
+import com.theosfera.proxy.transfer.BackendBootstrapReservation;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.Test;
@@ -20,6 +22,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Map;
+import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -34,6 +37,9 @@ class BackendHelloMessageHandlerTest {
 
     private static final long RESPONSE_TIMESTAMP =
             1_750_000_000_000L;
+
+    private final BackendBootstrapRegistry bootstrapRegistry =
+            new BackendBootstrapRegistry();
 
     private final BackendAuthorizationPolicy policy =
             new BackendAuthorizationPolicy(
@@ -55,6 +61,7 @@ class BackendHelloMessageHandlerTest {
             new BackendHelloMessageHandler(
                     policy,
                     registry,
+                    bootstrapRegistry,
                     sender,
                     logger,
                     Clock.fixed(
@@ -133,6 +140,110 @@ class BackendHelloMessageHandlerTest {
                 "Backend registrado: {} ({})",
                 "lobby-1",
                 BackendType.LOBBY
+        );
+    }
+
+    @Test
+    void clearsBootstrapAfterAuthorizedHandshake() {
+        UUID bootstrapRequestId =
+                UUID.fromString(
+                        "11111111-2222-3333-4444-555555555555"
+                );
+
+        bootstrapRegistry.register(
+                new BackendBootstrapReservation(
+                        "lobby-1",
+                        bootstrapRequestId,
+                        UUID.fromString(
+                                "417e98b4-74a1-467e-b453-a15be3af8996"
+                        ),
+                        RESPONSE_TIMESTAMP - 1_000L
+                )
+        );
+
+        ServerConnection source =
+                createServerConnection("lobby-1");
+
+        ProtocolEnvelope<BackendHelloPayload> request =
+                createHelloEnvelope(
+                        "lobby-1",
+                        BackendType.LOBBY
+                );
+
+        when(sender.send(
+                eq(source),
+                any(ProtocolEnvelope.class)
+        )).thenReturn(true);
+
+        handler.handle(
+                new ProtocolMessageContext(
+                        source,
+                        request
+                )
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByTarget("lobby-1")
+                        .isEmpty()
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(bootstrapRequestId)
+                        .isEmpty()
+        );
+    }
+
+    @Test
+    void preservesBootstrapAfterRejectedHandshake() {
+        UUID bootstrapRequestId =
+                UUID.fromString(
+                        "11111111-2222-3333-4444-555555555555"
+                );
+
+        bootstrapRegistry.register(
+                new BackendBootstrapReservation(
+                        "auth-1",
+                        bootstrapRequestId,
+                        UUID.fromString(
+                                "417e98b4-74a1-467e-b453-a15be3af8996"
+                        ),
+                        RESPONSE_TIMESTAMP - 1_000L
+                )
+        );
+
+        ServerConnection source =
+                createServerConnection("auth-1");
+
+        ProtocolEnvelope<BackendHelloPayload> request =
+                createHelloEnvelope(
+                        "auth-1",
+                        BackendType.LOBBY
+                );
+
+        when(sender.send(
+                eq(source),
+                any(ProtocolEnvelope.class)
+        )).thenReturn(true);
+
+        handler.handle(
+                new ProtocolMessageContext(
+                        source,
+                        request
+                )
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByTarget("auth-1")
+                        .isPresent()
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(bootstrapRequestId)
+                        .isPresent()
         );
     }
 
