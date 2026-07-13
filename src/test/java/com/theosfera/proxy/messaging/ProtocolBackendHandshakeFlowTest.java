@@ -11,6 +11,7 @@ import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.messages.ChannelMessageSink;
@@ -57,9 +58,11 @@ class ProtocolBackendHandshakeFlowTest {
                 new BackendHelloMessageHandler(
                         policy,
                         registry,
+                        new BackendBootstrapRegistry(),
                         sender,
                         logger
                 );
+
 
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(

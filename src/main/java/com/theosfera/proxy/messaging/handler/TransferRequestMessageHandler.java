@@ -9,6 +9,9 @@ import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
@@ -34,6 +37,7 @@ public final class TransferRequestMessageHandler
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
+    private final BackendBootstrapRegistry bootstrapRegistry;
     private final TransferTargetResolver targetResolver;
     private final PlayerTransferExecutor transferExecutor;
     private final TransferResultSender resultSender;
@@ -45,6 +49,7 @@ public final class TransferRequestMessageHandler
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
+            BackendBootstrapRegistry bootstrapRegistry,
             TransferTargetResolver targetResolver,
             PlayerTransferExecutor transferExecutor,
             TransferResultSender resultSender,
@@ -55,6 +60,7 @@ public final class TransferRequestMessageHandler
                 sessionRegistry,
                 presenceRegistry,
                 transferRegistry,
+                bootstrapRegistry,
                 targetResolver,
                 transferExecutor,
                 resultSender,
@@ -68,6 +74,7 @@ public final class TransferRequestMessageHandler
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
+            BackendBootstrapRegistry bootstrapRegistry,
             TransferTargetResolver targetResolver,
             PlayerTransferExecutor transferExecutor,
             TransferResultSender resultSender,
@@ -92,6 +99,11 @@ public final class TransferRequestMessageHandler
         this.transferRegistry = Objects.requireNonNull(
                 transferRegistry,
                 "transferRegistry cannot be null"
+        );
+
+        this.bootstrapRegistry = Objects.requireNonNull(
+                bootstrapRegistry,
+                "bootstrapRegistry cannot be null"
         );
 
         this.targetResolver = Objects.requireNonNull(
@@ -215,7 +227,7 @@ public final class TransferRequestMessageHandler
                 );
                 return;
             }
-            case RESOLVED -> {
+            case RESOLVED, BOOTSTRAP_REQUIRED -> {
                 // Continúa debajo.
             }
         }
@@ -237,13 +249,15 @@ public final class TransferRequestMessageHandler
             return;
         }
 
+        long createdAt = clock.millis();
+
         PendingPlayerTransfer transfer =
                 new PendingPlayerTransfer(
                         context.envelope().requestId(),
                         playerId,
                         sourceBackendName,
                         targetBackendName,
-                        clock.millis()
+                        createdAt
                 );
 
         PlayerTransferRegistrationResult registrationResult =
@@ -257,6 +271,42 @@ public final class TransferRequestMessageHandler
                     registrationResult
             );
             return;
+        }
+
+        if (targetResolution.requiresBootstrap()) {
+            BackendBootstrapReservation reservation =
+                    new BackendBootstrapReservation(
+                            targetBackendName,
+                            transfer.requestId(),
+                            playerId,
+                            createdAt
+                    );
+
+            BackendBootstrapRegistrationResult
+                    bootstrapRegistration =
+                    bootstrapRegistry.register(reservation);
+
+            if (bootstrapRegistration
+                    != BackendBootstrapRegistrationResult.RESERVED) {
+                transferRegistry.remove(
+                        transfer.requestId()
+                );
+
+                rejectBootstrapRegistration(
+                        context,
+                        playerId,
+                        bootstrapRegistration
+                );
+                return;
+            }
+
+            logger.info(
+                    "Bootstrap reservado para {} "
+                            + "(requestId: {}, playerId: {}).",
+                    targetBackendName,
+                    transfer.requestId(),
+                    playerId
+            );
         }
 
         Player player = onlinePlayer.orElseThrow();
@@ -307,6 +357,10 @@ public final class TransferRequestMessageHandler
                     transfer.playerId(),
                     transfer.sourceBackendName()
             );
+        } else {
+            bootstrapRegistry.removeByRequest(
+                    transfer.requestId()
+            );
         }
 
         resultSender.send(
@@ -347,6 +401,27 @@ public final class TransferRequestMessageHandler
             case REGISTERED ->
                     throw new IllegalStateException(
                             "Registered transfer cannot be rejected"
+                    );
+        };
+
+        reject(context, playerId, message);
+    }
+
+    private void rejectBootstrapRegistration(
+            ProtocolMessageContext context,
+            UUID playerId,
+            BackendBootstrapRegistrationResult result
+    ) {
+        String message = switch (result) {
+            case TARGET_BUSY ->
+                    "Target backend bootstrap is already in progress";
+            case REQUEST_ID_CONFLICT ->
+                    "Bootstrap request identifier conflict";
+            case ALREADY_RESERVED ->
+                    "Bootstrap request is already pending";
+            case RESERVED ->
+                    throw new IllegalStateException(
+                            "Reserved bootstrap cannot be rejected"
                     );
         };
 

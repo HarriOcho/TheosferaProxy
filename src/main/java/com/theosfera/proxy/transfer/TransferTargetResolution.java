@@ -16,17 +16,23 @@ public record TransferTargetResolution(
                 "status cannot be null"
         );
 
-        if (status == TransferTargetResolutionStatus.RESOLVED
-                && target == null) {
+        boolean requiresTarget =
+                status == TransferTargetResolutionStatus.RESOLVED
+                        || status
+                        == TransferTargetResolutionStatus
+                        .BOOTSTRAP_REQUIRED;
+
+        if (requiresTarget && target == null) {
             throw new IllegalArgumentException(
-                    "target is required when status is RESOLVED"
+                    "target is required for a resolved "
+                            + "or bootstrap resolution"
             );
         }
 
-        if (status != TransferTargetResolutionStatus.RESOLVED
-                && target != null) {
+        if (!requiresTarget && target != null) {
             throw new IllegalArgumentException(
-                    "target must be null when status is not RESOLVED"
+                    "target must be null when the resolution "
+                            + "does not identify a destination"
             );
         }
     }
@@ -36,6 +42,18 @@ public record TransferTargetResolution(
     ) {
         return new TransferTargetResolution(
                 TransferTargetResolutionStatus.RESOLVED,
+                Objects.requireNonNull(
+                        target,
+                        "target cannot be null"
+                )
+        );
+    }
+
+    public static TransferTargetResolution bootstrapRequired(
+            RegisteredServer target
+    ) {
+        return new TransferTargetResolution(
+                TransferTargetResolutionStatus.BOOTSTRAP_REQUIRED,
                 Objects.requireNonNull(
                         target,
                         "target cannot be null"
@@ -59,5 +77,11 @@ public record TransferTargetResolution(
 
     public Optional<RegisteredServer> resolvedTarget() {
         return Optional.ofNullable(target);
+    }
+
+    public boolean requiresBootstrap() {
+        return status
+                == TransferTargetResolutionStatus
+                .BOOTSTRAP_REQUIRED;
     }
 }

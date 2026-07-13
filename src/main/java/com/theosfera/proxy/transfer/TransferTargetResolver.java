@@ -52,43 +52,55 @@ public final class TransferTargetResolver {
         }
 
         List<RegisteredServer> configuredTargets =
-                authorizationPolicy
-                        .allowedBackends()
-                        .entrySet()
-                        .stream()
-                        .filter(entry ->
-                                entry.getValue()
-                                        == nonNullTargetType
-                        )
-                        .map(entry ->
-                                proxyServer.getServer(entry.getKey())
-                        )
-                        .flatMap(optional -> optional.stream())
-                        .sorted(
-                                Comparator.comparing(server ->
-                                        server.getServerInfo()
-                                                .getName()
-                                )
-                        )
-                        .toList();
+                configuredTargets(nonNullTargetType);
 
         if (configuredTargets.isEmpty()) {
             return TransferTargetResolution.notConfigured();
         }
 
-        return configuredTargets
+        for (RegisteredServer server : configuredTargets) {
+            if (isAuthenticatedTarget(
+                    server,
+                    nonNullTargetType
+            )) {
+                return TransferTargetResolution.resolved(
+                        server
+                );
+            }
+        }
+
+        for (RegisteredServer server : configuredTargets) {
+            if (isEligibleColdTarget(server)) {
+                return TransferTargetResolution
+                        .bootstrapRequired(server);
+            }
+        }
+
+        return TransferTargetResolution.notAuthenticated();
+    }
+
+    private List<RegisteredServer> configuredTargets(
+            BackendType targetBackendType
+    ) {
+        return authorizationPolicy
+                .allowedBackends()
+                .entrySet()
                 .stream()
-                .filter(server ->
-                        isAuthenticatedTarget(
-                                server,
-                                nonNullTargetType
+                .filter(entry ->
+                        entry.getValue()
+                                == targetBackendType
+                )
+                .map(entry ->
+                        proxyServer.getServer(entry.getKey())
+                )
+                .flatMap(optional -> optional.stream())
+                .sorted(
+                        Comparator.comparing(server ->
+                                server.getServerInfo()
+                                        .getName()
                         )
                 )
-                .findFirst()
-                .map(TransferTargetResolution::resolved)
-                .orElseGet(
-                        TransferTargetResolution::notAuthenticated
-                );
+                .toList();
     }
 
     private boolean isAuthenticatedTarget(
@@ -108,6 +120,19 @@ public final class TransferTargetResolver {
                         )
                 )
                 .isPresent();
+    }
+
+    private boolean isEligibleColdTarget(
+            RegisteredServer server
+    ) {
+        String serverName =
+                server.getServerInfo().getName();
+
+        if (identityRegistry.find(serverName).isPresent()) {
+            return false;
+        }
+
+        return server.getPlayersConnected().isEmpty();
     }
 
     private boolean matchesExpectedIdentity(
