@@ -5,6 +5,7 @@ import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
 import com.theosfera.protocol.message.payload.BackendHelloPayload;
 import com.theosfera.protocol.message.payload.BackendType;
+import com.theosfera.protocol.message.payload.PlayerAuthenticatedAckPayload;
 import com.theosfera.protocol.message.payload.PlayerAuthenticatedPayload;
 import com.theosfera.protocol.message.payload.PlayerServerReadyPayload;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
@@ -15,6 +16,7 @@ import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
@@ -27,6 +29,7 @@ import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.messages.ChannelMessageSink;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
 import java.util.List;
@@ -35,8 +38,11 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class ProtocolPlayerSessionFlowTest {
@@ -49,6 +55,7 @@ class ProtocolPlayerSessionFlowTest {
     @Test
     void authenticatesTracksReadyBackendAndCleansOnDisconnect() {
         Logger logger = mock(Logger.class);
+
         ProtocolMessageSender sender =
                 mock(ProtocolMessageSender.class);
 
@@ -81,6 +88,12 @@ class ProtocolPlayerSessionFlowTest {
                         identityRegistry
                 );
 
+        PlayerAuthenticationAckSender acknowledgementSender =
+                new PlayerAuthenticationAckSender(
+                        sender,
+                        logger
+                );
+
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
@@ -93,6 +106,7 @@ class ProtocolPlayerSessionFlowTest {
                                 ),
                                 new PlayerAuthenticatedMessageHandler(
                                         sessionRegistry,
+                                        acknowledgementSender,
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(
@@ -152,19 +166,23 @@ class ProtocolPlayerSessionFlowTest {
                 )
         );
 
+        ProtocolEnvelope<PlayerAuthenticatedPayload>
+                authenticationRequest =
+                ProtocolEnvelope.create(
+                        ProtocolMessageType
+                                .PLAYER_AUTHENTICATED,
+                        new PlayerAuthenticatedPayload(
+                                PLAYER_ID,
+                                "HarriOcho",
+                                1_000L
+                        )
+                );
+
         PluginMessageEvent authenticatedEvent =
                 send(
                         listener,
                         authSource,
-                        ProtocolEnvelope.create(
-                                ProtocolMessageType
-                                        .PLAYER_AUTHENTICATED,
-                                new PlayerAuthenticatedPayload(
-                                        PLAYER_ID,
-                                        "HarriOcho",
-                                        1_000L
-                                )
-                        )
+                        authenticationRequest
                 );
 
         assertFalse(
@@ -172,10 +190,58 @@ class ProtocolPlayerSessionFlowTest {
         );
 
         AuthenticatedPlayerSession session =
-                sessionRegistry.find(PLAYER_ID).orElseThrow();
+                sessionRegistry
+                        .find(PLAYER_ID)
+                        .orElseThrow();
 
-        assertEquals("HarriOcho", session.playerName());
-        assertEquals(1_000L, session.authenticatedAt());
+        assertEquals(
+                "HarriOcho",
+                session.playerName()
+        );
+
+        assertEquals(
+                1_000L,
+                session.authenticatedAt()
+        );
+
+        ArgumentCaptor<ProtocolEnvelope<?>> envelopeCaptor =
+                ArgumentCaptor.forClass(
+                        ProtocolEnvelope.class
+                );
+
+        verify(sender, times(3)).send(
+                any(ServerConnection.class),
+                envelopeCaptor.capture()
+        );
+
+        ProtocolEnvelope<?> acknowledgement =
+                envelopeCaptor
+                        .getAllValues()
+                        .get(2);
+
+        assertEquals(
+                ProtocolMessageType
+                        .PLAYER_AUTHENTICATED_ACK,
+                acknowledgement.type()
+        );
+
+        assertEquals(
+                authenticationRequest.requestId(),
+                acknowledgement.requestId()
+        );
+
+        PlayerAuthenticatedAckPayload acknowledgementPayload =
+                (PlayerAuthenticatedAckPayload)
+                        acknowledgement.payload();
+
+        assertEquals(
+                PLAYER_ID,
+                acknowledgementPayload.playerId()
+        );
+
+        assertTrue(
+                acknowledgementPayload.accepted()
+        );
 
         PluginMessageEvent readyEvent =
                 send(
@@ -192,30 +258,49 @@ class ProtocolPlayerSessionFlowTest {
                         )
                 );
 
-        assertFalse(readyEvent.getResult().isAllowed());
+        assertFalse(
+                readyEvent.getResult().isAllowed()
+        );
 
         PlayerServerPresence presence =
-                presenceRegistry.find(PLAYER_ID).orElseThrow();
+                presenceRegistry
+                        .find(PLAYER_ID)
+                        .orElseThrow();
 
-        assertEquals("lobby-1", presence.backendName());
-        assertEquals(2_000L, presence.readyAt());
+        assertEquals(
+                "lobby-1",
+                presence.backendName()
+        );
+
+        assertEquals(
+                2_000L,
+                presence.readyAt()
+        );
 
         Player player = mock(Player.class);
+
         DisconnectEvent disconnectEvent =
                 mock(DisconnectEvent.class);
 
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
-        when(disconnectEvent.getPlayer()).thenReturn(player);
+
+        when(disconnectEvent.getPlayer())
+                .thenReturn(player);
 
         disconnectListener.onDisconnect(
                 disconnectEvent
         );
 
         assertFalse(
-                sessionRegistry.find(PLAYER_ID).isPresent()
+                sessionRegistry
+                        .find(PLAYER_ID)
+                        .isPresent()
         );
+
         assertFalse(
-                presenceRegistry.find(PLAYER_ID).isPresent()
+                presenceRegistry
+                        .find(PLAYER_ID)
+                        .isPresent()
         );
     }
 
@@ -245,11 +330,25 @@ class ProtocolPlayerSessionFlowTest {
     ) {
         ServerConnection source =
                 mock(ServerConnection.class);
+
         ServerInfo serverInfo =
                 mock(ServerInfo.class);
 
+        Player player = mock(Player.class);
+
         when(serverInfo.getName()).thenReturn(serverName);
-        when(source.getServerInfo()).thenReturn(serverInfo);
+
+        when(source.getServerInfo())
+                .thenReturn(serverInfo);
+
+        when(source.getPlayer())
+                .thenReturn(player);
+
+        when(player.getUniqueId())
+                .thenReturn(PLAYER_ID);
+
+        when(player.getUsername())
+                .thenReturn("HarriOcho");
 
         return source;
     }

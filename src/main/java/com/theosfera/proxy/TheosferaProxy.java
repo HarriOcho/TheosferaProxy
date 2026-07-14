@@ -16,6 +16,7 @@ import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
@@ -179,6 +180,13 @@ public final class TheosferaProxy {
         ProtocolMessageSender messageSender =
                 new ProtocolMessageSender();
 
+        PlayerAuthenticationAckSender
+                authenticationAckSender =
+                new PlayerAuthenticationAckSender(
+                        messageSender,
+                        logger
+                );
+
         TransferTargetResolver targetResolver =
                 new TransferTargetResolver(
                         proxyServer,
@@ -211,6 +219,7 @@ public final class TheosferaProxy {
                                 ),
                                 new PlayerAuthenticatedMessageHandler(
                                         sessionRegistry,
+                                        authenticationAckSender,
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(

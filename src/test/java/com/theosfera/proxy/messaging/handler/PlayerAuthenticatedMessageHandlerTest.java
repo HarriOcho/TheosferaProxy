@@ -7,6 +7,8 @@ import com.theosfera.protocol.message.payload.PlayerAuthenticatedPayload;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
+import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.BeforeEach;
@@ -19,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -29,9 +32,15 @@ class PlayerAuthenticatedMessageHandlerTest {
                     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
             );
 
+    private static final UUID OTHER_PLAYER_ID =
+            UUID.fromString(
+                    "11111111-2222-3333-4444-555555555555"
+            );
+
     private static final long AUTHENTICATED_AT = 1_000L;
 
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
+    private PlayerAuthenticationAckSender acknowledgementSender;
     private Logger logger;
     private PlayerAuthenticatedMessageHandler handler;
 
@@ -39,9 +48,15 @@ class PlayerAuthenticatedMessageHandlerTest {
     void setUp() {
         sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
+
+        acknowledgementSender =
+                mock(PlayerAuthenticationAckSender.class);
+
         logger = mock(Logger.class);
+
         handler = new PlayerAuthenticatedMessageHandler(
                 sessionRegistry,
+                acknowledgementSender,
                 logger
         );
     }
@@ -58,7 +73,10 @@ class PlayerAuthenticatedMessageHandlerTest {
     void registersAuthenticatedPlayerSession() {
         ProtocolMessageContext context = createContext(
                 "auth-1",
+                PLAYER_ID,
+                "HarriOcho",
                 authenticatedEnvelope(
+                        PLAYER_ID,
                         "HarriOcho",
                         AUTHENTICATED_AT
                 )
@@ -67,13 +85,26 @@ class PlayerAuthenticatedMessageHandlerTest {
         handler.handle(context);
 
         AuthenticatedPlayerSession session =
-                sessionRegistry.find(PLAYER_ID).orElseThrow();
+                sessionRegistry
+                        .find(PLAYER_ID)
+                        .orElseThrow();
 
         assertEquals(PLAYER_ID, session.playerId());
-        assertEquals("HarriOcho", session.playerName());
+        assertEquals(
+                "HarriOcho",
+                session.playerName()
+        );
+
         assertEquals(
                 AUTHENTICATED_AT,
                 session.authenticatedAt()
+        );
+
+        verify(acknowledgementSender).send(
+                context,
+                PLAYER_ID,
+                true,
+                "Player session registered"
         );
 
         verify(logger).info(
@@ -89,7 +120,10 @@ class PlayerAuthenticatedMessageHandlerTest {
     void treatsRepeatedSessionAsAlreadyRegistered() {
         ProtocolMessageContext context = createContext(
                 "auth-1",
+                PLAYER_ID,
+                "HarriOcho",
                 authenticatedEnvelope(
+                        PLAYER_ID,
                         "HarriOcho",
                         AUTHENTICATED_AT
                 )
@@ -98,7 +132,17 @@ class PlayerAuthenticatedMessageHandlerTest {
         handler.handle(context);
         handler.handle(context);
 
-        assertEquals(1, sessionRegistry.snapshot().size());
+        assertEquals(
+                1,
+                sessionRegistry.snapshot().size()
+        );
+
+        verify(acknowledgementSender).send(
+                context,
+                PLAYER_ID,
+                true,
+                "Player session already registered"
+        );
 
         verify(logger).debug(
                 "Sesión autenticada ya registrada para {} "
@@ -121,8 +165,11 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         ProtocolMessageContext context = createContext(
                 "auth-1",
+                PLAYER_ID,
+                "HarriOcho",
                 authenticatedEnvelope(
-                        "OtroNombre",
+                        PLAYER_ID,
+                        "HarriOcho",
                         AUTHENTICATED_AT + 1
                 )
         );
@@ -131,7 +178,16 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         assertEquals(
                 existingSession,
-                sessionRegistry.find(PLAYER_ID).orElseThrow()
+                sessionRegistry
+                        .find(PLAYER_ID)
+                        .orElseThrow()
+        );
+
+        verify(acknowledgementSender).send(
+                context,
+                PLAYER_ID,
+                false,
+                "Player session conflict"
         );
 
         verify(logger).warn(
@@ -139,6 +195,88 @@ class PlayerAuthenticatedMessageHandlerTest {
                         + "recibido desde {}.",
                 PLAYER_ID,
                 "auth-1"
+        );
+    }
+
+    @Test
+    void rejectsPayloadForDifferentPlayerId() {
+        ProtocolMessageContext context = createContext(
+                "auth-1",
+                OTHER_PLAYER_ID,
+                "HarriOcho",
+                authenticatedEnvelope(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                )
+        );
+
+        handler.handle(context);
+
+        assertTrue(
+                sessionRegistry
+                        .find(PLAYER_ID)
+                        .isEmpty()
+        );
+
+        verify(acknowledgementSender).send(
+                context,
+                PLAYER_ID,
+                false,
+                "Player identity mismatch"
+        );
+
+        verify(logger).warn(
+                "PLAYER_AUTHENTICATED rechazado desde {}: "
+                        + "la identidad declarada ({}, {}) "
+                        + "no coincide con el jugador portador "
+                        + "({}, {}).",
+                "auth-1",
+                PLAYER_ID,
+                "HarriOcho",
+                OTHER_PLAYER_ID,
+                "HarriOcho"
+        );
+    }
+
+    @Test
+    void rejectsPayloadForDifferentPlayerName() {
+        ProtocolMessageContext context = createContext(
+                "auth-1",
+                PLAYER_ID,
+                "OtroNombre",
+                authenticatedEnvelope(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                )
+        );
+
+        handler.handle(context);
+
+        assertTrue(
+                sessionRegistry
+                        .find(PLAYER_ID)
+                        .isEmpty()
+        );
+
+        verify(acknowledgementSender).send(
+                context,
+                PLAYER_ID,
+                false,
+                "Player identity mismatch"
+        );
+
+        verify(logger).warn(
+                "PLAYER_AUTHENTICATED rechazado desde {}: "
+                        + "la identidad declarada ({}, {}) "
+                        + "no coincide con el jugador portador "
+                        + "({}, {}).",
+                "auth-1",
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "OtroNombre"
         );
     }
 
@@ -152,6 +290,8 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         ProtocolMessageContext context = createContext(
                 "auth-1",
+                PLAYER_ID,
+                "HarriOcho",
                 envelope
         );
 
@@ -165,6 +305,16 @@ class PlayerAuthenticatedMessageHandlerTest {
                 exception.getMessage().contains(
                         "PlayerAuthenticatedPayload"
                 )
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                context,
+                PLAYER_ID,
+                true,
+                "Player session registered"
         );
     }
 
@@ -182,6 +332,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                 NullPointerException.class,
                 () -> new PlayerAuthenticatedMessageHandler(
                         null,
+                        acknowledgementSender,
                         logger
                 )
         );
@@ -190,6 +341,16 @@ class PlayerAuthenticatedMessageHandlerTest {
                 NullPointerException.class,
                 () -> new PlayerAuthenticatedMessageHandler(
                         sessionRegistry,
+                        null,
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerAuthenticatedMessageHandler(
+                        sessionRegistry,
+                        acknowledgementSender,
                         null
                 )
         );
@@ -197,13 +358,14 @@ class PlayerAuthenticatedMessageHandlerTest {
 
     private ProtocolEnvelope<PlayerAuthenticatedPayload>
     authenticatedEnvelope(
+            UUID playerId,
             String playerName,
             long authenticatedAt
     ) {
         return ProtocolEnvelope.create(
                 ProtocolMessageType.PLAYER_AUTHENTICATED,
                 new PlayerAuthenticatedPayload(
-                        PLAYER_ID,
+                        playerId,
                         playerName,
                         authenticatedAt
                 )
@@ -212,15 +374,23 @@ class PlayerAuthenticatedMessageHandlerTest {
 
     private ProtocolMessageContext createContext(
             String serverName,
+            UUID carrierId,
+            String carrierName,
             ProtocolEnvelope<?> envelope
     ) {
         ServerConnection source =
                 mock(ServerConnection.class);
+
         ServerInfo serverInfo =
                 mock(ServerInfo.class);
 
+        Player carrier = mock(Player.class);
+
         when(source.getServerInfo()).thenReturn(serverInfo);
         when(serverInfo.getName()).thenReturn(serverName);
+        when(source.getPlayer()).thenReturn(carrier);
+        when(carrier.getUniqueId()).thenReturn(carrierId);
+        when(carrier.getUsername()).thenReturn(carrierName);
 
         return new ProtocolMessageContext(
                 source,

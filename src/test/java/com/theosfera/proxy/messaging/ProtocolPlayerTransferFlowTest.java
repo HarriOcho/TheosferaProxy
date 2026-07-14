@@ -18,6 +18,7 @@ import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
+import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
@@ -118,8 +119,10 @@ class ProtocolPlayerTransferFlowTest {
         RegisteredServer skyblockTarget =
                 registeredServer("skyblock-1");
 
+        when(authSource.getPlayer()).thenReturn(player);
         when(lobbySource.getPlayer()).thenReturn(player);
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
+        when(player.getUsername()).thenReturn("HarriOcho");
 
         when(player.getCurrentServer())
                 .thenReturn(Optional.of(lobbySource));
@@ -157,6 +160,13 @@ class ProtocolPlayerTransferFlowTest {
                         logger
                 );
 
+        PlayerAuthenticationAckSender
+                authenticationAckSender =
+                new PlayerAuthenticationAckSender(
+                        messageSender,
+                        logger
+                );
+
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
@@ -169,6 +179,7 @@ class ProtocolPlayerTransferFlowTest {
                                 ),
                                 new PlayerAuthenticatedMessageHandler(
                                         sessionRegistry,
+                                        authenticationAckSender,
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(
