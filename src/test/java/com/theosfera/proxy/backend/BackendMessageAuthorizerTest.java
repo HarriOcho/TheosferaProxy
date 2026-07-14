@@ -130,6 +130,7 @@ class BackendMessageAuthorizerTest {
 
     @Test
     void rejectsProxyOwnedResponseTypesFromBackends() {
+        register("auth-1", BackendType.AUTH);
         register("lobby-1", BackendType.LOBBY);
 
         assertFalse(
@@ -139,6 +140,15 @@ class BackendMessageAuthorizerTest {
                                 .BACKEND_HELLO_ACK
                 )
         );
+
+        assertFalse(
+                authorizer.isAuthorized(
+                        "auth-1",
+                        ProtocolMessageType
+                                .PLAYER_AUTHENTICATED_ACK
+                )
+        );
+
         assertFalse(
                 authorizer.isAuthorized(
                         "lobby-1",

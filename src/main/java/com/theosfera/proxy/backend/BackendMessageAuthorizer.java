@@ -62,6 +62,7 @@ public final class BackendMessageAuthorizer {
                             == BackendType.SKYBLOCK;
 
             case ProtocolMessageType.BACKEND_HELLO_ACK,
+                 ProtocolMessageType.PLAYER_AUTHENTICATED_ACK,
                  ProtocolMessageType.TRANSFER_RESULT -> false;
 
             default -> false;
