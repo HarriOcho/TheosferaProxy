@@ -55,11 +55,14 @@ public final class BackendMessageAuthorizer {
             case ProtocolMessageType.PLAYER_AUTHENTICATED ->
                     backendType == BackendType.AUTH;
 
-            case ProtocolMessageType.PLAYER_SERVER_READY,
-                 ProtocolMessageType.TRANSFER_REQUEST ->
+            case ProtocolMessageType.PLAYER_SERVER_READY ->
                     backendType == BackendType.LOBBY
-                            || backendType
-                            == BackendType.SKYBLOCK;
+                            || backendType == BackendType.SKYBLOCK;
+
+            case ProtocolMessageType.TRANSFER_REQUEST ->
+                    backendType == BackendType.AUTH
+                            || backendType == BackendType.LOBBY
+                            || backendType == BackendType.SKYBLOCK;
 
             case ProtocolMessageType.BACKEND_HELLO_ACK,
                  ProtocolMessageType.PLAYER_AUTHENTICATED_ACK,

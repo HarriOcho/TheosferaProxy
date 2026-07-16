@@ -192,6 +192,7 @@ class ProtocolColdBackendBootstrapFlowTest {
                                 ),
                                 new TransferRequestMessageHandler(
                                         proxyServer,
+                                        identityRegistry,
                                         sessionRegistry,
                                         presenceRegistry,
                                         transferRegistry,

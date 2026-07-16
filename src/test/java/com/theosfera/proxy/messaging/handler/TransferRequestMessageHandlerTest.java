@@ -6,6 +6,8 @@ import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.PingPayload;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
+import com.theosfera.proxy.backend.BackendIdentity;
+import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
@@ -62,6 +64,7 @@ class TransferRequestMessageHandlerTest {
             1_750_000_000_000L;
 
     private ProxyServer proxyServer;
+    private BackendIdentityRegistry identityRegistry;
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
     private PlayerServerPresenceRegistry presenceRegistry;
     private PendingPlayerTransferRegistry transferRegistry;
@@ -78,6 +81,16 @@ class TransferRequestMessageHandlerTest {
     @BeforeEach
     void setUp() {
         proxyServer = mock(ProxyServer.class);
+
+        identityRegistry =
+                new BackendIdentityRegistry();
+
+        identityRegistry.register(
+                new BackendIdentity(
+                        "lobby-1",
+                        BackendType.LOBBY
+                )
+        );
 
         sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
@@ -117,6 +130,7 @@ class TransferRequestMessageHandlerTest {
 
         handler = new TransferRequestMessageHandler(
                 proxyServer,
+                identityRegistry,
                 sessionRegistry,
                 presenceRegistry,
                 transferRegistry,
@@ -496,6 +510,109 @@ class TransferRequestMessageHandlerTest {
         );
     }
 
+    @Test
+    void transfersAuthenticatedPlayerFromAuthToLobby() {
+        identityRegistry.register(
+                new BackendIdentity(
+                        "auth-1",
+                        BackendType.AUTH
+                )
+        );
+
+        when(source.getServerInfo().getName())
+                .thenReturn("auth-1");
+
+        sessionRegistry.register(
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        NOW - 200
+                )
+        );
+
+        presenceRegistry.update(
+                new PlayerServerPresence(
+                        PLAYER_ID,
+                        "auth-1",
+                        NOW - 100
+                )
+        );
+
+        when(proxyServer.getPlayer(PLAYER_ID))
+                .thenReturn(Optional.of(player));
+
+        when(player.getCurrentServer())
+                .thenReturn(Optional.of(source));
+
+        when(target.getServerInfo().getName())
+                .thenReturn("lobby-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(
+                        TransferTargetResolution.resolved(target)
+                );
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        ProtocolMessageContext context =
+                transferContext(
+                        PLAYER_ID,
+                        BackendType.LOBBY
+                );
+
+        handler.handle(context);
+
+        verify(transferExecutor).execute(player, target);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.SUCCESS,
+                "Player transferred successfully"
+        );
+    }
+
+    @Test
+    void rejectsTransferFromAuthToSkyblock() {
+        identityRegistry.register(
+                new BackendIdentity(
+                        "auth-1",
+                        BackendType.AUTH
+                )
+        );
+
+        when(source.getServerInfo().getName())
+                .thenReturn("auth-1");
+
+        ProtocolMessageContext context =
+                transferContext(
+                        PLAYER_ID,
+                        BackendType.SKYBLOCK
+                );
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Transfer is not allowed for source and target backend types"
+        );
+
+        verify(
+                transferExecutor,
+                never()
+        ).execute(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+    }
+
     private void registerPlayerState() {
         sessionRegistry.register(
                 new AuthenticatedPlayerSession(
@@ -551,6 +668,16 @@ class TransferRequestMessageHandlerTest {
     private ProtocolMessageContext transferContext(
             UUID playerId
     ) {
+        return transferContext(
+                playerId,
+                BackendType.SKYBLOCK
+        );
+    }
+
+    private ProtocolMessageContext transferContext(
+            UUID playerId,
+            BackendType targetBackendType
+    ) {
         ProtocolEnvelope<TransferRequestPayload> envelope =
                 new ProtocolEnvelope<>(
                         com.theosfera.protocol.ProtocolVersion.CURRENT,
@@ -559,7 +686,7 @@ class TransferRequestMessageHandlerTest {
                         NOW - 1,
                         new TransferRequestPayload(
                                 playerId,
-                                BackendType.SKYBLOCK
+                                targetBackendType
                         )
                 );
 

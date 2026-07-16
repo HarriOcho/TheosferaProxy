@@ -188,6 +188,7 @@ class ProtocolPlayerTransferFlowTest {
                                 ),
                                 new TransferRequestMessageHandler(
                                         proxyServer,
+                                        identityRegistry,
                                         sessionRegistry,
                                         presenceRegistry,
                                         transferRegistry,
