@@ -4,6 +4,9 @@ import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
+import com.theosfera.protocol.message.payload.BackendType;
+import com.theosfera.proxy.backend.BackendIdentity;
+import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
@@ -34,6 +37,7 @@ public final class TransferRequestMessageHandler
         implements ProtocolMessageHandler {
 
     private final ProxyServer proxyServer;
+    private final BackendIdentityRegistry identityRegistry;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
@@ -46,6 +50,7 @@ public final class TransferRequestMessageHandler
 
     public TransferRequestMessageHandler(
             ProxyServer proxyServer,
+            BackendIdentityRegistry identityRegistry,
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
@@ -57,6 +62,7 @@ public final class TransferRequestMessageHandler
     ) {
         this(
                 proxyServer,
+                identityRegistry,
                 sessionRegistry,
                 presenceRegistry,
                 transferRegistry,
@@ -71,6 +77,7 @@ public final class TransferRequestMessageHandler
 
     TransferRequestMessageHandler(
             ProxyServer proxyServer,
+            BackendIdentityRegistry identityRegistry,
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
@@ -84,6 +91,11 @@ public final class TransferRequestMessageHandler
         this.proxyServer = Objects.requireNonNull(
                 proxyServer,
                 "proxyServer cannot be null"
+        );
+
+        this.identityRegistry = Objects.requireNonNull(
+                identityRegistry,
+                "identityRegistry cannot be null"
         );
 
         this.sessionRegistry = Objects.requireNonNull(
@@ -151,6 +163,33 @@ public final class TransferRequestMessageHandler
 
         UUID playerId = payload.playerId();
         String sourceBackendName = context.serverName();
+
+        Optional<BackendIdentity> sourceIdentity =
+                identityRegistry.find(sourceBackendName);
+
+        if (sourceIdentity.isEmpty()) {
+            reject(
+                    context,
+                    playerId,
+                    "Source backend is not authenticated"
+            );
+            return;
+        }
+
+        BackendType sourceBackendType =
+                sourceIdentity.orElseThrow().backendType();
+
+        if (!isTransferAllowed(
+                sourceBackendType,
+                payload.targetBackendType()
+        )) {
+            reject(
+                    context,
+                    playerId,
+                    "Transfer is not allowed for source and target backend types"
+            );
+            return;
+        }
 
         if (!playerId.equals(
                 context.source()
@@ -369,6 +408,21 @@ public final class TransferRequestMessageHandler
                 safeCompletion.status(),
                 safeCompletion.message()
         );
+    }
+
+    private boolean isTransferAllowed(
+            BackendType sourceBackendType,
+            BackendType targetBackendType
+    ) {
+        if (targetBackendType == BackendType.AUTH) {
+            return false;
+        }
+
+        return switch (sourceBackendType) {
+            case AUTH ->
+                    targetBackendType == BackendType.LOBBY;
+            case LOBBY, SKYBLOCK -> true;
+        };
     }
 
     private boolean isConnectedToSource(

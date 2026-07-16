@@ -228,6 +228,7 @@ public final class TheosferaProxy {
                                 ),
                                 new TransferRequestMessageHandler(
                                         proxyServer,
+                                        identityRegistry,
                                         sessionRegistry,
                                         presenceRegistry,
                                         transferRegistry,

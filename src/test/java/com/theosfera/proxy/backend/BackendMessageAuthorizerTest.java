@@ -90,7 +90,7 @@ class BackendMessageAuthorizerTest {
     }
 
     @Test
-    void allowsReadyAndTransferOnlyFromPlayableBackends() {
+    void allowsReadyOnlyFromPlayableBackends() {
         register("auth-1", BackendType.AUTH);
         register("lobby-1", BackendType.LOBBY);
         register("skyblock-1", BackendType.SKYBLOCK);
@@ -98,14 +98,7 @@ class BackendMessageAuthorizerTest {
         assertFalse(
                 authorizer.isAuthorized(
                         "auth-1",
-                        ProtocolMessageType
-                                .PLAYER_SERVER_READY
-                )
-        );
-        assertFalse(
-                authorizer.isAuthorized(
-                        "auth-1",
-                        ProtocolMessageType.TRANSFER_REQUEST
+                        ProtocolMessageType.PLAYER_SERVER_READY
                 )
         );
 
@@ -114,15 +107,28 @@ class BackendMessageAuthorizerTest {
             assertTrue(
                     authorizer.isAuthorized(
                             serverName,
-                            ProtocolMessageType
-                                    .PLAYER_SERVER_READY
+                            ProtocolMessageType.PLAYER_SERVER_READY
                     )
             );
+        }
+    }
+
+    @Test
+    void allowsTransferRequestsFromSupportedBackendTypes() {
+        register("auth-1", BackendType.AUTH);
+        register("lobby-1", BackendType.LOBBY);
+        register("skyblock-1", BackendType.SKYBLOCK);
+
+        for (String serverName
+                : new String[]{
+                "auth-1",
+                "lobby-1",
+                "skyblock-1"
+        }) {
             assertTrue(
                     authorizer.isAuthorized(
                             serverName,
-                            ProtocolMessageType
-                                    .TRANSFER_REQUEST
+                            ProtocolMessageType.TRANSFER_REQUEST
                     )
             );
         }
