@@ -213,19 +213,21 @@ public final class TransferRequestMessageHandler
             return;
         }
 
-        Optional<PlayerServerPresence> presence =
-                presenceRegistry.find(playerId);
+        if (sourceBackendType != BackendType.AUTH) {
+            Optional<PlayerServerPresence> presence =
+                    presenceRegistry.find(playerId);
 
-        if (presence.isEmpty()
-                || !presence.orElseThrow()
-                .backendName()
-                .equals(sourceBackendName)) {
-            reject(
-                    context,
-                    playerId,
-                    "Player presence does not match source backend"
-            );
-            return;
+            if (presence.isEmpty()
+                    || !presence.orElseThrow()
+                    .backendName()
+                    .equals(sourceBackendName)) {
+                reject(
+                        context,
+                        playerId,
+                        "Player presence does not match source backend"
+                );
+                return;
+            }
         }
 
         Optional<Player> onlinePlayer =
