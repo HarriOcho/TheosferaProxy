@@ -570,6 +570,48 @@ class TransferRequestMessageHandlerTest {
     }
 
     @Test
+    void rejectsTransferFromAuthToAuth() {
+        identityRegistry.register(
+                new BackendIdentity(
+                        "auth-1",
+                        BackendType.AUTH
+                )
+        );
+
+        when(source.getServerInfo().getName())
+                .thenReturn("auth-1");
+
+        TransferRequestPayload payload =
+                mock(TransferRequestPayload.class);
+
+        when(payload.playerId())
+                .thenReturn(PLAYER_ID);
+
+        when(payload.targetBackendType())
+                .thenReturn(BackendType.AUTH);
+
+        ProtocolMessageContext context =
+                transferContext(payload);
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Transfer is not allowed for source and target backend types"
+        );
+
+        verify(
+                transferExecutor,
+                never()
+        ).execute(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+    }
+
+    @Test
     void rejectsTransferFromAuthToSkyblock() {
         identityRegistry.register(
                 new BackendIdentity(
@@ -594,6 +636,151 @@ class TransferRequestMessageHandlerTest {
                 PLAYER_ID,
                 TransferResultStatus.REJECTED,
                 "Transfer is not allowed for source and target backend types"
+        );
+
+        verify(
+                transferExecutor,
+                never()
+        ).execute(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+    }
+
+    @Test
+    void rejectsUnauthenticatedPlayerFromAuthToLobby() {
+        identityRegistry.register(
+                new BackendIdentity(
+                        "auth-1",
+                        BackendType.AUTH
+                )
+        );
+
+        when(source.getServerInfo().getName())
+                .thenReturn("auth-1");
+
+        ProtocolMessageContext context =
+                transferContext(
+                        PLAYER_ID,
+                        BackendType.LOBBY
+                );
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Player is not authenticated"
+        );
+
+        verify(
+                transferExecutor,
+                never()
+        ).execute(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+    }
+
+    @Test
+    void rejectsOfflinePlayerFromAuthToLobby() {
+        identityRegistry.register(
+                new BackendIdentity(
+                        "auth-1",
+                        BackendType.AUTH
+                )
+        );
+
+        when(source.getServerInfo().getName())
+                .thenReturn("auth-1");
+
+        sessionRegistry.register(
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        NOW - 200
+                )
+        );
+
+        when(proxyServer.getPlayer(PLAYER_ID))
+                .thenReturn(Optional.empty());
+
+        ProtocolMessageContext context =
+                transferContext(
+                        PLAYER_ID,
+                        BackendType.LOBBY
+                );
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Player connection does not match source backend"
+        );
+
+        verify(
+                transferExecutor,
+                never()
+        ).execute(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+    }
+
+    @Test
+    void rejectsPlayerConnectedOutsideAuthFromAuthToLobby() {
+        identityRegistry.register(
+                new BackendIdentity(
+                        "auth-1",
+                        BackendType.AUTH
+                )
+        );
+
+        when(source.getServerInfo().getName())
+                .thenReturn("auth-1");
+
+        sessionRegistry.register(
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        NOW - 200
+                )
+        );
+
+        when(proxyServer.getPlayer(PLAYER_ID))
+                .thenReturn(Optional.of(player));
+
+        ServerConnection differentConnection =
+                mock(ServerConnection.class);
+
+        ServerInfo differentServerInfo =
+                mock(ServerInfo.class);
+
+        when(differentConnection.getServerInfo())
+                .thenReturn(differentServerInfo);
+
+        when(differentServerInfo.getName())
+                .thenReturn("lobby-1");
+
+        when(player.getCurrentServer())
+                .thenReturn(Optional.of(differentConnection));
+
+        ProtocolMessageContext context =
+                transferContext(
+                        PLAYER_ID,
+                        BackendType.LOBBY
+                );
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Player connection does not match source backend"
         );
 
         verify(
@@ -670,16 +857,24 @@ class TransferRequestMessageHandlerTest {
             UUID playerId,
             BackendType targetBackendType
     ) {
+        return transferContext(
+                new TransferRequestPayload(
+                        playerId,
+                        targetBackendType
+                )
+        );
+    }
+
+    private ProtocolMessageContext transferContext(
+            TransferRequestPayload payload
+    ) {
         ProtocolEnvelope<TransferRequestPayload> envelope =
                 new ProtocolEnvelope<>(
                         com.theosfera.protocol.ProtocolVersion.CURRENT,
                         ProtocolMessageType.TRANSFER_REQUEST,
                         REQUEST_ID,
                         NOW - 1,
-                        new TransferRequestPayload(
-                                playerId,
-                                targetBackendType
-                        )
+                        payload
                 );
 
         return new ProtocolMessageContext(
