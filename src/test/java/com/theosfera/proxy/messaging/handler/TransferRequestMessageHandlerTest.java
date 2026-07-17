@@ -530,14 +530,6 @@ class TransferRequestMessageHandlerTest {
                 )
         );
 
-        presenceRegistry.update(
-                new PlayerServerPresence(
-                        PLAYER_ID,
-                        "auth-1",
-                        NOW - 100
-                )
-        );
-
         when(proxyServer.getPlayer(PLAYER_ID))
                 .thenReturn(Optional.of(player));
 
