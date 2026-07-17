@@ -157,6 +157,82 @@ class PendingPlayerTransferRegistryTest {
     }
 
     @Test
+    void removeIfMatchesRemovesMatchingTransferFromBothIndexes() {
+        PendingPlayerTransfer transfer = createTransfer(
+                REQUEST_ID,
+                PLAYER_ID,
+                "lobby-1",
+                "skyblock-1"
+        );
+
+        registry.register(transfer);
+
+        assertEquals(
+                transfer,
+                registry
+                        .removeIfMatches(transfer)
+                        .orElseThrow()
+        );
+
+        assertTrue(
+                registry.findByRequest(REQUEST_ID).isEmpty()
+        );
+
+        assertTrue(
+                registry.findByPlayer(PLAYER_ID).isEmpty()
+        );
+    }
+
+    @Test
+    void removeIfMatchesDoesNotRemoveDifferentTransferWithSameRequest() {
+        PendingPlayerTransfer existing = createTransfer(
+                REQUEST_ID,
+                PLAYER_ID,
+                "lobby-1",
+                "skyblock-1"
+        );
+
+        PendingPlayerTransfer expected = createTransfer(
+                REQUEST_ID,
+                OTHER_PLAYER_ID,
+                "auth-1",
+                "lobby-1"
+        );
+
+        registry.register(existing);
+
+        assertTrue(
+                registry.removeIfMatches(expected).isEmpty()
+        );
+
+        assertEquals(
+                existing,
+                registry.findByRequest(REQUEST_ID).orElseThrow()
+        );
+
+        assertEquals(
+                existing,
+                registry.findByPlayer(PLAYER_ID).orElseThrow()
+        );
+    }
+
+    @Test
+    void removeIfMatchesReturnsEmptyWhenTransferDoesNotExist() {
+        assertTrue(
+                registry
+                        .removeIfMatches(
+                                createTransfer(
+                                        REQUEST_ID,
+                                        PLAYER_ID,
+                                        "lobby-1",
+                                        "skyblock-1"
+                                )
+                        )
+                        .isEmpty()
+        );
+    }
+
+    @Test
     void removesTransferByPlayerFromBothIndexes() {
         PendingPlayerTransfer transfer = createTransfer(
                 REQUEST_ID,
@@ -222,6 +298,11 @@ class PendingPlayerTransferRegistryTest {
         assertThrows(
                 NullPointerException.class,
                 () -> registry.remove(null)
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> registry.removeIfMatches(null)
         );
 
         assertThrows(

@@ -372,12 +372,9 @@ public final class TransferRequestMessageHandler
             Throwable throwable
     ) {
         Optional<PendingPlayerTransfer> removed =
-                transferRegistry.remove(
-                        transfer.requestId()
-                );
+                transferRegistry.removeIfMatches(transfer);
 
-        if (removed.isEmpty()
-                || !removed.orElseThrow().equals(transfer)) {
+        if (removed.isEmpty()) {
             logger.warn(
                     "Resultado tardío de transferencia ignorado "
                             + "(requestId: {}, playerId: {}).",

@@ -5,6 +5,9 @@ import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
+import com.theosfera.proxy.command.LobbyCommand;
+import com.theosfera.proxy.command.LobbyCommandRegistration;
+import com.theosfera.proxy.command.LobbyTransferService;
 import com.theosfera.proxy.messaging.ProtocolChannel;
 import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
 import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
@@ -57,6 +60,7 @@ public final class TheosferaProxy {
     private final PlayerDisconnectListener playerDisconnectListener;
 
     private ProtocolMessageListener protocolMessageListener;
+    private LobbyCommandRegistration lobbyCommandRegistration;
 
     @Inject
     public TheosferaProxy(
@@ -106,6 +110,7 @@ public final class TheosferaProxy {
         initializeProtocolMessaging();
 
         channelRegistration.register();
+        lobbyCommandRegistration.register();
 
         proxyServer.getEventManager().register(
                 this,
@@ -136,6 +141,10 @@ public final class TheosferaProxy {
                     this,
                     protocolMessageListener
             );
+        }
+
+        if (lobbyCommandRegistration != null) {
+            lobbyCommandRegistration.unregister();
         }
 
         proxyServer.getEventManager().unregisterListener(
@@ -201,6 +210,21 @@ public final class TheosferaProxy {
                 new TransferResultSender(
                         messageSender,
                         logger
+                );
+
+        LobbyTransferService lobbyTransferService =
+                new LobbyTransferService(
+                        sessionRegistry,
+                        transferRegistry,
+                        targetResolver,
+                        transferExecutor
+                );
+
+        lobbyCommandRegistration =
+                new LobbyCommandRegistration(
+                        proxyServer,
+                        this,
+                        new LobbyCommand(lobbyTransferService)
                 );
 
         ProtocolMessageDispatcher dispatcher =
