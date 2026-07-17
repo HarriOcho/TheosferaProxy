@@ -15,6 +15,7 @@ import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
@@ -479,6 +480,61 @@ class TransferRequestMessageHandlerTest {
                         .find(PLAYER_ID)
                         .orElseThrow()
                         .backendName()
+        );
+    }
+
+    @Test
+    void lateResultDoesNotRemoveDifferentTransferWithSameRequest() {
+        registerPlayerState();
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution.resolved(target)
+                );
+
+        CompletableFuture<PlayerTransferCompletion> future =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(future);
+
+        ProtocolMessageContext context =
+                transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        transferRegistry.remove(REQUEST_ID);
+
+        PendingPlayerTransfer newerTransfer =
+                new PendingPlayerTransfer(
+                        REQUEST_ID,
+                        OTHER_PLAYER_ID,
+                        "auth-1",
+                        "lobby-1",
+                        NOW + 1
+                );
+
+        transferRegistry.register(newerTransfer);
+
+        future.complete(
+                PlayerTransferCompletion.success()
+        );
+
+        assertEquals(
+                newerTransfer,
+                transferRegistry
+                        .findByRequest(REQUEST_ID)
+                        .orElseThrow()
+        );
+
+        verify(
+                resultSender,
+                never()
+        ).send(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
         );
     }
 

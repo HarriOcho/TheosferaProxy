@@ -114,6 +114,36 @@ public final class PendingPlayerTransferRegistry {
         return Optional.of(removed);
     }
 
+    public synchronized Optional<PendingPlayerTransfer> removeIfMatches(
+            PendingPlayerTransfer expected
+    ) {
+        PendingPlayerTransfer nonNullExpected =
+                Objects.requireNonNull(
+                        expected,
+                        "expected cannot be null"
+                );
+
+        PendingPlayerTransfer existing =
+                transfersByRequest.get(
+                        nonNullExpected.requestId()
+                );
+
+        if (!nonNullExpected.equals(existing)) {
+            return Optional.empty();
+        }
+
+        transfersByRequest.remove(
+                existing.requestId()
+        );
+
+        transfersByPlayer.remove(
+                existing.playerId(),
+                existing
+        );
+
+        return Optional.of(existing);
+    }
+
     public synchronized Optional<PendingPlayerTransfer> removeByPlayer(
             UUID playerId
     ) {
