@@ -250,7 +250,8 @@ Reglas actuales:
 - `PING` y `PONG`: permitidos para cualquier backend registrado;
 - `PLAYER_AUTHENTICATED`: únicamente `AUTH`;
 - `PLAYER_SERVER_READY`: únicamente `LOBBY` o `SKYBLOCK`;
-- `TRANSFER_REQUEST`: únicamente `LOBBY` o `SKYBLOCK`;
+- `TRANSFER_REQUEST`: permitido desde `AUTH`, `LOBBY` o `SKYBLOCK`,
+  con reglas de origen y destino específicas;
 - mensajes reservados de respuesta no se aceptan arbitrariamente como
   entrada.
 
@@ -344,12 +345,12 @@ Componentes:
 
 Flujo:
 
-1. Lobby o Skyblock envía `TRANSFER_REQUEST`;
+1. Auth, Lobby o Skyblock envía `TRANSFER_REQUEST`;
 2. el UUID solicitado debe coincidir con el jugador propietario del
    `ServerConnection`;
 3. el jugador debe poseer una sesión autenticada;
-4. la presencia y conexión actual deben coincidir con el backend de
-   origen;
+4. la identidad del backend, la conexión actual y el origen deben
+   coincidir;
 5. el destino debe estar autorizado por la política;
 6. el destino debe existir en Velocity;
 7. el destino debe haber completado un handshake válido;
@@ -360,6 +361,17 @@ Flujo:
 12. el proxy responde `TRANSFER_RESULT` conservando el `requestId`;
 13. una transferencia exitosa elimina la presencia anterior únicamente
     si todavía pertenece al backend de origen.
+
+Reglas especiales confirmadas para el handoff Auth→Lobby:
+
+- `AUTH` solo puede solicitar destino `LOBBY`;
+- las transferencias hacia `AUTH` se rechazan;
+- una solicitud procedente de `AUTH` no exige
+  `PLAYER_SERVER_READY` previo en `auth-1`;
+- la comprobación de presencia jugable se conserva para `LOBBY` y
+  `SKYBLOCK`;
+- TheosferaProxy valida y ejecuta la transferencia;
+- el Lobby confirma la llegada final mediante `PLAYER_SERVER_READY`.
 
 Resultados del protocolo:
 
@@ -442,6 +454,7 @@ PING → PONG
 auth-1 → PLAYER_AUTHENTICATED
 lobby-1 → PLAYER_SERVER_READY
 lobby-1 → TRANSFER_REQUEST → skyblock-1 → TRANSFER_RESULT
+auth-1 → TRANSFER_REQUEST → lobby-1 → PLAYER_SERVER_READY
 DisconnectEvent → eliminación de presencia y sesión
 ```
 
@@ -470,7 +483,8 @@ BUILD SUCCESSFUL
 
 ## 17. Prueba runtime confirmada
 
-TheosferaProxy fue instalado en Velocity `3.5.0-SNAPSHOT`.
+TheosferaProxy fue instalado en Velocity `3.5.0-SNAPSHOT` y el circuito
+runtime real Auth→Lobby quedó validado.
 
 Confirmado:
 
@@ -480,13 +494,81 @@ Confirmado:
 - inicio correcto;
 - apagado correcto;
 - desregistro del canal;
-- ausencia de errores del plugin.
+- ausencia de errores del plugin;
+- registro de sesión autenticada desde `auth-1`;
+- ACK correlacionado `PLAYER_AUTHENTICATED_ACK`;
+- solicitud segura de transferencia `LOBBY`;
+- conexión del jugador a `lobby-1`;
+- desconexión normal de `auth-1` durante el cambio de backend;
+- llegada confirmada por `PLAYER_SERVER_READY` desde `lobby-1`;
+- ausencia de la advertencia falsa antigua de transferencia fallida.
+
+Circuito validado:
+
+```text
+Jugador
+  → Velocity
+  → auth-1
+  → nLogin AuthenticateEvent
+  → TheosferaAuth
+  → TheosferaCore
+  → PLAYER_AUTHENTICATED
+  → TheosferaProxy
+  → PLAYER_AUTHENTICATED_ACK
+  → solicitud segura de transferencia LOBBY
+  → lobby-1
+  → PLAYER_SERVER_READY
+```
+
+Evidencia observada:
+
+```text
+[nlogin]: The user HarriOcho has successfully logged in.
+[theosferaproxy]: Sesión autenticada registrada para HarriOcho desde auth-1.
+[TheosferaAuth]: TheosferaProxy confirmó la sesión autenticada.
+[TheosferaAuth]: La solicitud segura de transferencia al Lobby fue entregada a TheosferaCore.
+[server connection] HarriOcho -> lobby-1 has connected
+[server connection] HarriOcho -> auth-1 has disconnected
+[theosferaproxy]: Jugador ... listo en lobby-1.
+```
+
+Semántica confirmada:
+
+- `PlayerTransferRequestStatus.SUBMITTED` significa que
+  TheosferaAuth entregó de forma segura la solicitud a TheosferaCore
+  para publicarla hacia el Proxy;
+- `SUBMITTED` no significa que el jugador haya llegado al destino;
+- TheosferaAuth no espera el resultado final de la transferencia;
+- TheosferaProxy es la autoridad que valida y ejecuta la transferencia;
+- el backend Lobby confirma la llegada mediante `PLAYER_SERVER_READY`;
+- el cambio de backend provoca `PlayerQuitEvent` en Auth, por lo que
+  Auth no es el dueño adecuado de una espera local de `TRANSFER_RESULT`;
+- `optionalCompletion()` permanece únicamente en
+  `PlayerAuthenticationRequest` para esperar el
+  `PLAYER_AUTHENTICATED_ACK` correlacionado;
+- no debe restaurarse en TheosferaAuth una espera local de
+  `TRANSFER_RESULT` para este handoff.
+
+Topología validada:
+
+- Proxy: `127.0.0.1:25565`;
+- Lobby-1: `127.0.0.1:25566`;
+- Auth-1: `127.0.0.1:25568`;
+- nLogin instalado en Proxy y Auth, no en Lobby;
+- LuckPerms para permisos de nLogin en Proxy;
+- TheosferaCore instalado en Auth y Lobby;
+- TheosferaAuth instalado solo en Auth;
+- TheosferaProxy instalado solo en Velocity;
+- backends enlazados únicamente a `127.0.0.1`.
+
+Último JAR desplegado de TheosferaAuth:
+
+```text
+SHA256: B052F03C33F741EECC39B27756B22787E79EB39DB08473CA4E51859C6A349475
+```
 
 Las advertencias sobre acceso nativo, mutación reflectiva y forwarding
 pertenecen al entorno o a Velocity y no impidieron la prueba.
-
-Player information forwarding deberá configurarse y verificarse antes
-de conectar backends reales.
 
 ## 18. Git y ramas fusionadas
 
@@ -503,7 +585,9 @@ Bloques principales fusionados en TheosferaProxy:
 - Heartbeat Handler;
 - Backend Handshake;
 - Player Sessions;
-- Player Transfers.
+- Player Transfers;
+- Authenticated Lobby Transfer Requests;
+- Auth Transfers Without Playable Presence.
 
 Bloques de contrato fusionados en TheosferaProtocol:
 
@@ -514,6 +598,19 @@ Bloques de contrato fusionados en TheosferaProtocol:
 - Message Registry;
 - Registered Message Decoding;
 - Contract Checkpoint.
+
+Commits relevantes ya integrados para el circuito Auth→Lobby:
+
+- TheosferaProtocol:
+  `253d22e feat: add player authentication acknowledgement (#12)`;
+- TheosferaCore:
+  `040c7cd feat: expose secure backend transfer publisher (#13)`;
+- TheosferaProxy:
+  `967785f feat: allow authenticated lobby transfer requests (#19)`;
+- TheosferaProxy:
+  `943f3de fix: allow auth transfers without playable presence (#20)`;
+- TheosferaAuth:
+  `b6ae696 Merge pull request #4 from HarriOcho/fix/auth-transfer-handoff-lifecycle`.
 
 Los cambios importantes se realizan mediante ramas y Pull Requests con
 squash merge.
@@ -557,6 +654,8 @@ Un fallo de Redis no debe causar pérdida de perfiles o progreso.
 - No duplicar clases de TheosferaProtocol.
 - No introducir dependencias de Paper o Bukkit en el proxy.
 - No implementar lógica específica de modalidad en el proxy.
+- La selección de modalidades pertenece a TheosferaLobby, no a
+  TheosferaProxy.
 - Los contratos Core–Proxy deben permanecer versionados.
 - Seguridad e integridad tienen prioridad sobre estética.
 
@@ -577,7 +676,7 @@ Backend
 El handshake, heartbeat, autenticación, presencia, desconexión y
 coordinación segura de transferencias están implementados.
 
-Flujo de transferencia confirmado:
+Flujos de transferencia confirmados:
 
 ```text
 Lobby o Skyblock
@@ -588,22 +687,38 @@ Lobby o Skyblock
   → registro pendiente
   → ConnectionRequest de Velocity
   → TRANSFER_RESULT correlacionado
+
+Auth
+  → TRANSFER_REQUEST targeting LOBBY
+  → validación de identidad, sesión, UUID, conexión actual y origen
+  → resolución de lobby autenticado
+  → ConnectionRequest de Velocity
+  → lobby-1
+  → PLAYER_SERVER_READY
 ```
+
+El circuito Auth→Lobby está operativo y validado con TheosferaAuth,
+TheosferaCore y backends reales. La desconexión de `auth-1` durante el
+cambio hacia `lobby-1` es parte normal del ciclo de vida, no un fallo.
 
 Limitaciones actuales:
 
 - el estado continúa siendo local al proceso;
 - no existe Redis ni coordinación entre múltiples proxies;
-- no existe selección por carga entre varias instancias;
-- falta validación runtime con backends reales y TheosferaCore.
+- no existe selección por carga entre varias instancias.
 
-El siguiente bloque debe definirse después del checkpoint. Las opciones
-arquitectónicas inmediatas son:
+Siguiente incremento recomendado antes de implementar comandos:
 
-1. integración de transferencias desde TheosferaCore;
-2. recuperación y confirmación runtime de presencia entre backends;
-3. definición de persistencia temporal y Redis;
-4. inicio del perfil global de jugador.
+- reforzar las pruebas negativas automatizadas del flujo Auth→Lobby.
+
+Trabajo futuro, sin implementar todavía:
+
+- `/hub` y `/lobby` hacia un Lobby saludable;
+- failover de modalidades;
+- modo mantenimiento.
+
+Redis y persistencia temporal siguen siendo decisiones futuras, pero no
+son el siguiente paso inmediato de este checkpoint.
 
 No introducir parties, amigos o escuadrones sin definir primero su
 persistencia y consistencia distribuida.
