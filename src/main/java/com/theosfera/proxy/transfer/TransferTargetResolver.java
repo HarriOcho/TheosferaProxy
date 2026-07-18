@@ -70,7 +70,10 @@ public final class TransferTargetResolver {
         }
 
         for (RegisteredServer server : configuredTargets) {
-            if (isEligibleColdTarget(server)) {
+            if (isEligibleColdTarget(
+                    server,
+                    nonNullTargetType
+            )) {
                 return TransferTargetResolution
                         .bootstrapRequired(server);
             }
@@ -119,20 +122,37 @@ public final class TransferTargetResolver {
                                 expectedType
                         )
                 )
-                .isPresent();
+                .isPresent()
+                && hasConnectedPlayers(server);
     }
 
     private boolean isEligibleColdTarget(
-            RegisteredServer server
+            RegisteredServer server,
+            BackendType expectedType
     ) {
         String serverName =
                 server.getServerInfo().getName();
 
-        if (identityRegistry.find(serverName).isPresent()) {
+        if (hasConnectedPlayers(server)) {
             return false;
         }
 
-        return server.getPlayersConnected().isEmpty();
+        return identityRegistry
+                .find(serverName)
+                .map(identity ->
+                        matchesExpectedIdentity(
+                                identity,
+                                serverName,
+                                expectedType
+                        )
+                )
+                .orElse(true);
+    }
+
+    private boolean hasConnectedPlayers(
+            RegisteredServer server
+    ) {
+        return !server.getPlayersConnected().isEmpty();
     }
 
     private boolean matchesExpectedIdentity(
