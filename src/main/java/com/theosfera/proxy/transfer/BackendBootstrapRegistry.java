@@ -155,6 +155,30 @@ public final class BackendBootstrapRegistry {
     }
 
     public synchronized Optional<BackendBootstrapReservation>
+    removeIfMatches(
+            BackendBootstrapReservation expected
+    ) {
+        BackendBootstrapReservation nonNullExpected =
+                Objects.requireNonNull(
+                        expected,
+                        "expected cannot be null"
+                );
+
+        BackendBootstrapReservation existing =
+                reservationsByRequest.get(
+                        nonNullExpected.requestId()
+                );
+
+        if (!nonNullExpected.equals(existing)) {
+            return Optional.empty();
+        }
+
+        removeInternal(existing);
+
+        return Optional.of(existing);
+    }
+
+    public synchronized Optional<BackendBootstrapReservation>
     removeByTarget(
             String targetBackendName
     ) {

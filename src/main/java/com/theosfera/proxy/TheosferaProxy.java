@@ -216,6 +216,7 @@ public final class TheosferaProxy {
                 new LobbyTransferService(
                         sessionRegistry,
                         transferRegistry,
+                        bootstrapRegistry,
                         targetResolver,
                         transferExecutor
                 );
