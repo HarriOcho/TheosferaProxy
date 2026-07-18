@@ -27,53 +27,33 @@ class TransferTargetResolverTest {
 
     private ProxyServer proxyServer;
     private BackendIdentityRegistry identityRegistry;
-    private TransferTargetResolver resolver;
-    private RegisteredServer skyblockServer;
 
     @BeforeEach
     void setUp() {
         proxyServer = mock(ProxyServer.class);
         identityRegistry = new BackendIdentityRegistry();
-
-        BackendAuthorizationPolicy authorizationPolicy =
-                new BackendAuthorizationPolicy(
-                        Map.of(
-                                "auth-1",
-                                BackendType.AUTH,
-                                "lobby-1",
-                                BackendType.LOBBY,
-                                "skyblock-1",
-                                BackendType.SKYBLOCK
-                        )
-                );
-
-        skyblockServer =
-                registeredServer("skyblock-1");
-
-        when(proxyServer.getServer("skyblock-1"))
-                .thenReturn(Optional.of(skyblockServer));
-
-        when(skyblockServer.getPlayersConnected())
-                .thenReturn(List.of());
-
-        resolver = new TransferTargetResolver(
-                proxyServer,
-                authorizationPolicy,
-                identityRegistry
-        );
     }
 
     @Test
-    void resolvesConfiguredAndAuthenticatedTarget() {
-        identityRegistry.register(
-                new BackendIdentity(
+    void resolvesAuthenticatedTargetWithConnectedCarrier() {
+        RegisteredServer server =
+                configuredServer(
                         "skyblock-1",
-                        BackendType.SKYBLOCK
-                )
+                        true
+                );
+
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
         );
 
         TransferTargetResolution resolution =
-                resolver.resolve(BackendType.SKYBLOCK);
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
 
         assertEquals(
                 TransferTargetResolutionStatus.RESOLVED,
@@ -81,7 +61,7 @@ class TransferTargetResolverTest {
         );
 
         assertSame(
-                skyblockServer,
+                server,
                 resolution
                         .resolvedTarget()
                         .orElseThrow()
@@ -91,9 +71,25 @@ class TransferTargetResolverTest {
     }
 
     @Test
-    void requestsBootstrapForConfiguredEmptyTarget() {
+    void requestsBootstrapForEmptyTargetWithMatchingHistoricalIdentity() {
+        RegisteredServer server =
+                configuredServer(
+                        "skyblock-1",
+                        false
+                );
+
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+
         TransferTargetResolution resolution =
-                resolver.resolve(BackendType.SKYBLOCK);
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
 
         assertEquals(
                 TransferTargetResolutionStatus
@@ -102,7 +98,7 @@ class TransferTargetResolverTest {
         );
 
         assertSame(
-                skyblockServer,
+                server,
                 resolution
                         .resolvedTarget()
                         .orElseThrow()
@@ -112,14 +108,49 @@ class TransferTargetResolverTest {
     }
 
     @Test
-    void rejectsUnauthenticatedTargetWithPlayers() {
-        when(skyblockServer.getPlayersConnected())
-                .thenReturn(
-                        List.of(mock(Player.class))
+    void requestsBootstrapForConfiguredEmptyTargetWithoutIdentity() {
+        RegisteredServer server =
+                configuredServer(
+                        "skyblock-1",
+                        false
                 );
 
         TransferTargetResolution resolution =
-                resolver.resolve(BackendType.SKYBLOCK);
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
+
+        assertEquals(
+                TransferTargetResolutionStatus
+                        .BOOTSTRAP_REQUIRED,
+                resolution.status()
+        );
+
+        assertSame(
+                server,
+                resolution
+                        .resolvedTarget()
+                        .orElseThrow()
+        );
+    }
+
+    @Test
+    void rejectsUnauthenticatedTargetWithPlayers() {
+        configuredServer(
+                "skyblock-1",
+                true
+        );
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
 
         assertEquals(
                 TransferTargetResolutionStatus
@@ -133,16 +164,24 @@ class TransferTargetResolverTest {
     }
 
     @Test
-    void rejectsTargetWithConflictingIdentity() {
-        identityRegistry.register(
-                new BackendIdentity(
-                        "skyblock-1",
-                        BackendType.LOBBY
-                )
+    void rejectsEmptyTargetWithConflictingIdentity() {
+        configuredServer(
+                "skyblock-1",
+                false
+        );
+
+        registerIdentity(
+                "skyblock-1",
+                BackendType.LOBBY
         );
 
         TransferTargetResolution resolution =
-                resolver.resolve(BackendType.SKYBLOCK);
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
 
         assertEquals(
                 TransferTargetResolutionStatus
@@ -152,6 +191,168 @@ class TransferTargetResolverTest {
 
         assertTrue(
                 resolution.resolvedTarget().isEmpty()
+        );
+    }
+
+    @Test
+    void rejectsOccupiedTargetWithConflictingIdentity() {
+        configuredServer(
+                "skyblock-1",
+                true
+        );
+
+        registerIdentity(
+                "skyblock-1",
+                BackendType.LOBBY
+        );
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
+
+        assertEquals(
+                TransferTargetResolutionStatus
+                        .NOT_AUTHENTICATED,
+                resolution.status()
+        );
+
+        assertTrue(
+                resolution.resolvedTarget().isEmpty()
+        );
+    }
+
+    @Test
+    void prefersAuthenticatedCarrierOverAlphabeticallyEarlierColdTarget() {
+        RegisteredServer coldServer =
+                configuredServer(
+                        "lobby-a",
+                        false
+                );
+
+        RegisteredServer authenticatedServer =
+                configuredServer(
+                        "lobby-b",
+                        true
+                );
+
+        registerIdentity(
+                "lobby-b",
+                BackendType.LOBBY
+        );
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "lobby-a",
+                                BackendType.LOBBY,
+                                "lobby-b",
+                                BackendType.LOBBY
+                        )
+                ).resolve(BackendType.LOBBY);
+
+        assertEquals(
+                TransferTargetResolutionStatus.RESOLVED,
+                resolution.status()
+        );
+
+        assertSame(
+                authenticatedServer,
+                resolution
+                        .resolvedTarget()
+                        .orElseThrow()
+        );
+
+        assertFalse(
+                coldServer.equals(
+                        resolution.resolvedTarget().orElseThrow()
+                )
+        );
+    }
+
+    @Test
+    void selectsAuthenticatedTargetsDeterministicallyByName() {
+        RegisteredServer first =
+                configuredServer(
+                        "lobby-a",
+                        true
+                );
+
+        configuredServer(
+                "lobby-b",
+                true
+        );
+
+        registerIdentity(
+                "lobby-a",
+                BackendType.LOBBY
+        );
+
+        registerIdentity(
+                "lobby-b",
+                BackendType.LOBBY
+        );
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "lobby-b",
+                                BackendType.LOBBY,
+                                "lobby-a",
+                                BackendType.LOBBY
+                        )
+                ).resolve(BackendType.LOBBY);
+
+        assertEquals(
+                TransferTargetResolutionStatus.RESOLVED,
+                resolution.status()
+        );
+
+        assertSame(
+                first,
+                resolution
+                        .resolvedTarget()
+                        .orElseThrow()
+        );
+    }
+
+    @Test
+    void selectsColdTargetsDeterministicallyByName() {
+        RegisteredServer first =
+                configuredServer(
+                        "lobby-a",
+                        false
+                );
+
+        configuredServer(
+                "lobby-b",
+                false
+        );
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "lobby-b",
+                                BackendType.LOBBY,
+                                "lobby-a",
+                                BackendType.LOBBY
+                        )
+                ).resolve(BackendType.LOBBY);
+
+        assertEquals(
+                TransferTargetResolutionStatus
+                        .BOOTSTRAP_REQUIRED,
+                resolution.status()
+        );
+
+        assertSame(
+                first,
+                resolution
+                        .resolvedTarget()
+                        .orElseThrow()
         );
     }
 
@@ -161,7 +362,12 @@ class TransferTargetResolverTest {
                 .thenReturn(Optional.empty());
 
         TransferTargetResolution resolution =
-                resolver.resolve(BackendType.SKYBLOCK);
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
 
         assertEquals(
                 TransferTargetResolutionStatus
@@ -173,7 +379,12 @@ class TransferTargetResolverTest {
     @Test
     void refusesAuthAsTransferTarget() {
         TransferTargetResolution resolution =
-                resolver.resolve(BackendType.AUTH);
+                resolverFor(
+                        Map.of(
+                                "auth-1",
+                                BackendType.AUTH
+                        )
+                ).resolve(BackendType.AUTH);
 
         assertEquals(
                 TransferTargetResolutionStatus
@@ -221,8 +432,57 @@ class TransferTargetResolverTest {
 
         assertThrows(
                 NullPointerException.class,
-                () -> resolver.resolve(null)
+                () -> resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(null)
         );
+    }
+
+    private TransferTargetResolver resolverFor(
+            Map<String, BackendType> allowedBackends
+    ) {
+        return new TransferTargetResolver(
+                proxyServer,
+                new BackendAuthorizationPolicy(
+                        allowedBackends
+                ),
+                identityRegistry
+        );
+    }
+
+    private void registerIdentity(
+            String serverName,
+            BackendType backendType
+    ) {
+        identityRegistry.register(
+                new BackendIdentity(
+                        serverName,
+                        backendType
+                )
+        );
+    }
+
+    private RegisteredServer configuredServer(
+            String serverName,
+            boolean hasConnectedPlayers
+    ) {
+        RegisteredServer server =
+                registeredServer(serverName);
+
+        when(proxyServer.getServer(serverName))
+                .thenReturn(Optional.of(server));
+
+        when(server.getPlayersConnected())
+                .thenReturn(
+                        hasConnectedPlayers
+                                ? List.of(mock(Player.class))
+                                : List.of()
+                );
+
+        return server;
     }
 
     private RegisteredServer registeredServer(
