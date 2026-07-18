@@ -3,13 +3,15 @@ package com.theosfera.proxy.command;
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.PlayerTransferRegistrationResult;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
-import com.theosfera.proxy.transfer.TransferTargetResolutionStatus;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
@@ -66,6 +68,7 @@ public final class LobbyTransferService {
 
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
+    private final BackendBootstrapRegistry bootstrapRegistry;
     private final TransferTargetResolver targetResolver;
     private final PlayerTransferExecutor transferExecutor;
     private final Clock clock;
@@ -74,12 +77,14 @@ public final class LobbyTransferService {
     public LobbyTransferService(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PendingPlayerTransferRegistry transferRegistry,
+            BackendBootstrapRegistry bootstrapRegistry,
             TransferTargetResolver targetResolver,
             PlayerTransferExecutor transferExecutor
     ) {
         this(
                 sessionRegistry,
                 transferRegistry,
+                bootstrapRegistry,
                 targetResolver,
                 transferExecutor,
                 Clock.systemUTC(),
@@ -90,6 +95,7 @@ public final class LobbyTransferService {
     LobbyTransferService(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PendingPlayerTransferRegistry transferRegistry,
+            BackendBootstrapRegistry bootstrapRegistry,
             TransferTargetResolver targetResolver,
             PlayerTransferExecutor transferExecutor,
             Clock clock,
@@ -103,6 +109,11 @@ public final class LobbyTransferService {
         this.transferRegistry = Objects.requireNonNull(
                 transferRegistry,
                 "transferRegistry cannot be null"
+        );
+
+        this.bootstrapRegistry = Objects.requireNonNull(
+                bootstrapRegistry,
+                "bootstrapRegistry cannot be null"
         );
 
         this.targetResolver = Objects.requireNonNull(
@@ -155,12 +166,19 @@ public final class LobbyTransferService {
         TransferTargetResolution targetResolution =
                 targetResolver.resolve(BackendType.LOBBY);
 
-        if (targetResolution.status()
-                != TransferTargetResolutionStatus.RESOLVED) {
-            nonNullPlayer.sendMessage(
-                    LOBBY_UNAVAILABLE_MESSAGE
-            );
-            return;
+        boolean requiresBootstrap = false;
+
+        switch (targetResolution.status()) {
+            case RESOLVED ->
+                    requiresBootstrap = false;
+            case BOOTSTRAP_REQUIRED ->
+                    requiresBootstrap = true;
+            case NOT_CONFIGURED, NOT_AUTHENTICATED -> {
+                nonNullPlayer.sendMessage(
+                        LOBBY_UNAVAILABLE_MESSAGE
+                );
+                return;
+            }
         }
 
         RegisteredServer target =
@@ -206,22 +224,75 @@ public final class LobbyTransferService {
             return;
         }
 
-        transferExecutor
-                .execute(nonNullPlayer, target)
-                .whenComplete(
-                        (completion, throwable) ->
-                                completeTransfer(
-                                        nonNullPlayer,
-                                        transfer,
-                                        completion,
-                                        throwable
-                                )
-                );
+        BackendBootstrapReservation reservation =
+                requiresBootstrap
+                        ? new BackendBootstrapReservation(
+                        targetBackendName,
+                        transfer.requestId(),
+                        playerId,
+                        transfer.requestedAt()
+                )
+                        : null;
+
+        if (reservation != null
+                && !reserveBootstrap(
+                nonNullPlayer,
+                transfer,
+                reservation
+        )) {
+            return;
+        }
+
+        try {
+            transferExecutor
+                    .execute(nonNullPlayer, target)
+                    .whenComplete(
+                            (completion, throwable) ->
+                                    completeTransfer(
+                                            nonNullPlayer,
+                                            transfer,
+                                            reservation,
+                                            completion,
+                                            throwable
+                                    )
+                    );
+        } catch (RuntimeException exception) {
+            completeTransfer(
+                    nonNullPlayer,
+                    transfer,
+                    reservation,
+                    PlayerTransferCompletion.failed(),
+                    exception
+            );
+        }
+    }
+
+    private boolean reserveBootstrap(
+            Player player,
+            PendingPlayerTransfer transfer,
+            BackendBootstrapReservation reservation
+    ) {
+        BackendBootstrapRegistrationResult registrationResult =
+                bootstrapRegistry.register(reservation);
+
+        if (registrationResult
+                == BackendBootstrapRegistrationResult.RESERVED) {
+            return true;
+        }
+
+        transferRegistry.removeIfMatches(transfer);
+
+        player.sendMessage(
+                LOBBY_UNAVAILABLE_MESSAGE
+        );
+
+        return false;
     }
 
     private void completeTransfer(
             Player player,
             PendingPlayerTransfer transfer,
+            BackendBootstrapReservation reservation,
             PlayerTransferCompletion completion,
             Throwable throwable
     ) {
@@ -236,6 +307,12 @@ public final class LobbyTransferService {
                 throwable == null && completion != null
                         ? completion
                         : PlayerTransferCompletion.failed();
+
+        if (reservation != null
+                && safeCompletion.status()
+                != TransferResultStatus.SUCCESS) {
+            bootstrapRegistry.removeIfMatches(reservation);
+        }
 
         player.sendMessage(
                 messageFor(safeCompletion.status())

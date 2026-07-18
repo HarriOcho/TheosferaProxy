@@ -242,6 +242,77 @@ class BackendBootstrapRegistryTest {
     }
 
     @Test
+    void removeIfMatchesRemovesMatchingReservationFromBothIndexes() {
+        BackendBootstrapReservation reservation =
+                reservation(
+                        "skyblock-1",
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        NOW
+                );
+
+        registry.register(reservation);
+
+        assertSame(
+                reservation,
+                registry
+                        .removeIfMatches(reservation)
+                        .orElseThrow()
+        );
+
+        assertTrue(
+                registry.findByTarget(
+                        "skyblock-1"
+                ).isEmpty()
+        );
+
+        assertTrue(
+                registry.findByRequest(
+                        REQUEST_ID
+                ).isEmpty()
+        );
+    }
+
+    @Test
+    void removeIfMatchesDoesNotRemoveDifferentReservation() {
+        BackendBootstrapReservation existing =
+                reservation(
+                        "skyblock-1",
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        NOW
+                );
+
+        BackendBootstrapReservation expected =
+                reservation(
+                        "lobby-1",
+                        REQUEST_ID,
+                        UUID.randomUUID(),
+                        NOW + 1
+                );
+
+        registry.register(existing);
+
+        assertTrue(
+                registry.removeIfMatches(expected).isEmpty()
+        );
+
+        assertSame(
+                existing,
+                registry.findByRequest(
+                        REQUEST_ID
+                ).orElseThrow()
+        );
+
+        assertSame(
+                existing,
+                registry.findByTarget(
+                        "skyblock-1"
+                ).orElseThrow()
+        );
+    }
+
+    @Test
     void rejectsInvalidExpirationAndNullInputs() {
         assertThrows(
                 NullPointerException.class,
@@ -278,6 +349,11 @@ class BackendBootstrapRegistryTest {
         assertThrows(
                 NullPointerException.class,
                 () -> registry.removeByRequest(null)
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> registry.removeIfMatches(null)
         );
     }
 

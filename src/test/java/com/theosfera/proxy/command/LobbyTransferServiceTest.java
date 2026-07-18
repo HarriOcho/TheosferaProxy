@@ -3,6 +3,8 @@ package com.theosfera.proxy.command;
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
@@ -56,6 +58,7 @@ class LobbyTransferServiceTest {
 
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
     private PendingPlayerTransferRegistry transferRegistry;
+    private BackendBootstrapRegistry bootstrapRegistry;
     private TransferTargetResolver targetResolver;
     private PlayerTransferExecutor transferExecutor;
     private Queue<UUID> requestIds;
@@ -70,6 +73,9 @@ class LobbyTransferServiceTest {
 
         transferRegistry =
                 new PendingPlayerTransferRegistry();
+
+        bootstrapRegistry =
+                new BackendBootstrapRegistry();
 
         targetResolver =
                 mock(TransferTargetResolver.class);
@@ -92,6 +98,7 @@ class LobbyTransferServiceTest {
                 new LobbyTransferService(
                         sessionRegistry,
                         transferRegistry,
+                        bootstrapRegistry,
                         targetResolver,
                         transferExecutor,
                         Clock.fixed(
@@ -168,22 +175,39 @@ class LobbyTransferServiceTest {
     }
 
     @Test
-    void rejectsBootstrapRequiredLobby() {
+    void bootstrapRequiredRegistersReservationBeforeExecuting() {
         configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
 
-        when(targetResolver.resolve(BackendType.LOBBY))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(lobbyTarget)
-                );
+        CompletableFuture<PlayerTransferCompletion> future =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenAnswer(invocation -> {
+                    assertEquals(
+                            REQUEST_ID,
+                            bootstrapRegistry
+                                    .findByTarget("lobby-1")
+                                    .orElseThrow()
+                                    .requestId()
+                    );
+                    return future;
+                });
 
         service.transferToLobby(player);
 
-        verify(player).sendMessage(
-                LobbyTransferService.LOBBY_UNAVAILABLE_MESSAGE
+        assertEquals(
+                REQUEST_ID,
+                bootstrapRegistry
+                        .findByTarget("lobby-1")
+                        .orElseThrow()
+                        .requestId()
         );
 
-        verifyNoTransferExecution();
+        verify(transferExecutor).execute(
+                player,
+                lobbyTarget
+        );
     }
 
     @Test
@@ -252,6 +276,349 @@ class LobbyTransferServiceTest {
                         .findByRequest(REQUEST_ID)
                         .isEmpty()
         );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+    }
+
+    @Test
+    void resolvedTransferDoesNotCreateBootstrapReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureResolvedLobby();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        assertEquals(0, bootstrapRegistry.size());
+    }
+
+    @Test
+    void bootstrapSuccessKeepsReservationForHandshake() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        assertEquals(
+                REQUEST_ID,
+                bootstrapRegistry
+                        .findByTarget("lobby-1")
+                        .orElseThrow()
+                        .requestId()
+        );
+
+        assertTrue(
+                transferRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+    }
+
+    @Test
+    void bootstrapRejectedRemovesReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.rejected()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+    }
+
+    @Test
+    void bootstrapFailedRemovesReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+    }
+
+    @Test
+    void bootstrapTimedOutRemovesReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.timedOut()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+    }
+
+    @Test
+    void bootstrapExecutorExceptionRemovesReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenThrow(
+                        new IllegalStateException("internal")
+                );
+
+        service.transferToLobby(player);
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+
+        verify(player).sendMessage(
+                LobbyTransferService.TRANSFER_FAILED_MESSAGE
+        );
+    }
+
+    @Test
+    void bootstrapExceptionalCompletionRemovesReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        CompletableFuture<PlayerTransferCompletion> future =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(future);
+
+        service.transferToLobby(player);
+
+        future.completeExceptionally(
+                new IllegalStateException("internal")
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+
+        verify(player).sendMessage(
+                LobbyTransferService.TRANSFER_FAILED_MESSAGE
+        );
+    }
+
+    @Test
+    void bootstrapTargetBusyFailsClosedAndKeepsExistingReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        BackendBootstrapReservation existingReservation =
+                new BackendBootstrapReservation(
+                        "lobby-1",
+                        OTHER_REQUEST_ID,
+                        UUID.fromString(
+                                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+                        ),
+                        NOW - 1
+                );
+
+        bootstrapRegistry.register(existingReservation);
+
+        service.transferToLobby(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.LOBBY_UNAVAILABLE_MESSAGE
+        );
+
+        verifyNoTransferExecution();
+
+        assertTrue(
+                transferRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+
+        assertEquals(
+                existingReservation,
+                bootstrapRegistry
+                        .findByTarget("lobby-1")
+                        .orElseThrow()
+        );
+    }
+
+    @Test
+    void bootstrapRequestConflictFailsClosedAndKeepsExistingReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        BackendBootstrapReservation existingReservation =
+                new BackendBootstrapReservation(
+                        "lobby-2",
+                        REQUEST_ID,
+                        UUID.fromString(
+                                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+                        ),
+                        NOW - 1
+                );
+
+        bootstrapRegistry.register(existingReservation);
+
+        service.transferToLobby(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.LOBBY_UNAVAILABLE_MESSAGE
+        );
+
+        verifyNoTransferExecution();
+
+        assertTrue(
+                transferRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+
+        assertEquals(
+                existingReservation,
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .orElseThrow()
+        );
+    }
+
+    @Test
+    void bootstrapAlreadyReservedFailsClosedAndKeepsReservation() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        BackendBootstrapReservation existingReservation =
+                new BackendBootstrapReservation(
+                        "lobby-1",
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        NOW
+                );
+
+        bootstrapRegistry.register(existingReservation);
+
+        service.transferToLobby(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.LOBBY_UNAVAILABLE_MESSAGE
+        );
+
+        verifyNoTransferExecution();
+
+        assertTrue(
+                transferRegistry
+                        .findByRequest(REQUEST_ID)
+                        .isEmpty()
+        );
+
+        assertEquals(
+                existingReservation,
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .orElseThrow()
+        );
+    }
+
+    @Test
+    void lateBootstrapResultDoesNotRemoveDifferentState() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureBootstrapRequiredLobby();
+
+        CompletableFuture<PlayerTransferCompletion> future =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(future);
+
+        service.transferToLobby(player);
+
+        transferRegistry.remove(REQUEST_ID);
+        bootstrapRegistry.removeByRequest(REQUEST_ID);
+
+        PendingPlayerTransfer newerTransfer =
+                new PendingPlayerTransfer(
+                        REQUEST_ID,
+                        UUID.fromString(
+                                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+                        ),
+                        "auth-1",
+                        "lobby-2",
+                        NOW + 1
+                );
+
+        BackendBootstrapReservation newerReservation =
+                new BackendBootstrapReservation(
+                        "lobby-2",
+                        REQUEST_ID,
+                        newerTransfer.playerId(),
+                        NOW + 1
+                );
+
+        transferRegistry.register(newerTransfer);
+        bootstrapRegistry.register(newerReservation);
+
+        future.complete(
+                PlayerTransferCompletion.failed()
+        );
+
+        assertEquals(
+                newerTransfer,
+                transferRegistry
+                        .findByRequest(REQUEST_ID)
+                        .orElseThrow()
+        );
+
+        assertEquals(
+                newerReservation,
+                bootstrapRegistry
+                        .findByRequest(REQUEST_ID)
+                        .orElseThrow()
+        );
+
+        verify(
+                player,
+                never()
+        ).sendMessage(any(Component.class));
     }
 
     @Test
@@ -433,6 +800,14 @@ class LobbyTransferServiceTest {
                 .thenReturn(
                         TransferTargetResolution
                                 .resolved(lobbyTarget)
+                );
+    }
+
+    private void configureBootstrapRequiredLobby() {
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(lobbyTarget)
                 );
     }
 
