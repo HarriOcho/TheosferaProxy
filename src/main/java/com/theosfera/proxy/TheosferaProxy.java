@@ -8,6 +8,9 @@ import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
 import com.theosfera.proxy.command.LobbyCommand;
 import com.theosfera.proxy.command.LobbyCommandRegistration;
 import com.theosfera.proxy.command.LobbyTransferService;
+import com.theosfera.proxy.failover.BackendKickFailoverListener;
+import com.theosfera.proxy.failover.BackendKickFailoverService;
+import com.theosfera.proxy.failover.PendingPlayerFailoverRegistry;
 import com.theosfera.proxy.messaging.ProtocolChannel;
 import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
 import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
@@ -57,9 +60,11 @@ public final class TheosferaProxy {
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
     private final BackendBootstrapRegistry bootstrapRegistry;
+    private final PendingPlayerFailoverRegistry failoverRegistry;
     private final PlayerDisconnectListener playerDisconnectListener;
 
     private ProtocolMessageListener protocolMessageListener;
+    private BackendKickFailoverListener backendKickFailoverListener;
     private LobbyCommandRegistration lobbyCommandRegistration;
 
     @Inject
@@ -94,6 +99,9 @@ public final class TheosferaProxy {
         this.bootstrapRegistry =
                 new BackendBootstrapRegistry();
 
+        this.failoverRegistry =
+                new PendingPlayerFailoverRegistry();
+
         this.playerDisconnectListener =
                 new PlayerDisconnectListener(
                         sessionRegistry,
@@ -120,6 +128,11 @@ public final class TheosferaProxy {
         proxyServer.getEventManager().register(
                 this,
                 playerDisconnectListener
+        );
+
+        proxyServer.getEventManager().register(
+                this,
+                backendKickFailoverListener
         );
 
         logger.info(
@@ -152,7 +165,15 @@ public final class TheosferaProxy {
                 playerDisconnectListener
         );
 
+        if (backendKickFailoverListener != null) {
+            proxyServer.getEventManager().unregisterListener(
+                    this,
+                    backendKickFailoverListener
+            );
+        }
+
         bootstrapRegistry.clear();
+        failoverRegistry.clear();
         transferRegistry.clear();
         presenceRegistry.clear();
         sessionRegistry.clear();
@@ -219,6 +240,16 @@ public final class TheosferaProxy {
                         bootstrapRegistry,
                         targetResolver,
                         transferExecutor
+                );
+
+        backendKickFailoverListener =
+                new BackendKickFailoverListener(
+                        new BackendKickFailoverService(
+                                sessionRegistry,
+                                identityRegistry,
+                                targetResolver,
+                                failoverRegistry
+                        )
                 );
 
         lobbyCommandRegistration =
