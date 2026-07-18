@@ -341,7 +341,10 @@ Componentes:
 - `PlayerTransferCompletion`;
 - `PlayerTransferExecutor`;
 - `TransferResultSender`;
-- `TransferRequestMessageHandler`.
+- `TransferRequestMessageHandler`;
+- `LobbyCommand`;
+- `LobbyCommandRegistration`;
+- `LobbyTransferService`.
 
 Flujo:
 
@@ -385,12 +388,64 @@ Protecciones actuales:
 - solicitudes simultáneas para el mismo jugador son rechazadas;
 - conflictos de `requestId` son rechazados;
 - los dos índices del registro pendiente se actualizan atómicamente;
-- un resultado tardío no altera una transferencia ya retirada;
+- `PendingPlayerTransferRegistry.removeIfMatches()` elimina ambos
+  índices solo si la transferencia esperada coincide exactamente;
+- un resultado tardío no altera una transferencia ya retirada ni otra
+  transferencia que reutilice el mismo `requestId`;
 - un evento `PLAYER_SERVER_READY` adelantado del destino no es
   eliminado por el callback de la transferencia;
 - fallos síncronos y asíncronos de Velocity se convierten en resultados
   controlados;
 - los detalles internos de excepciones no se exponen a los backends.
+
+Comandos públicos de retorno al Lobby:
+
+- `/hub` es el comando principal de Velocity;
+- `/lobby` es alias del mismo comando y comportamiento;
+- solo jugadores pueden ejecutarlos;
+- el jugador debe poseer una sesión autenticada;
+- ambos resuelven exclusivamente `BackendType.LOBBY`;
+- solo `TransferTargetResolutionStatus.RESOLVED` es aceptable;
+- `NOT_CONFIGURED`, `NOT_AUTHENTICATED` y `BOOTSTRAP_REQUIRED` fallan
+  cerrados;
+- los comandos no inician bootstrap intencionalmente;
+- si el jugador ya está conectado al Lobby resuelto, no se crea una
+  conexión;
+- se reutiliza `PendingPlayerTransferRegistry` para impedir operaciones
+  simultáneas;
+- se utiliza `PlayerTransferExecutor` y su timeout;
+- no se modifica presencia de forma anticipada;
+- `PLAYER_SERVER_READY` continúa siendo la confirmación autoritativa de
+  llegada;
+- no existen schedulers, reintentos ni bloqueos síncronos para estos
+  comandos;
+- no se implementaron failover, selección de modalidades ni
+  mantenimiento.
+
+Flujo confirmado de comando:
+
+```text
+skyblock-1
+  → /hub o /lobby
+  → validación de sesión
+  → resolución LOBBY
+  → registro pendiente
+  → ConnectionRequest
+  → lobby-1
+  → limpieza correlacionada
+  → PLAYER_SERVER_READY
+```
+
+Flujo fail-closed confirmado:
+
+```text
+skyblock-1
+  → /hub con lobby-1 apagado
+  → ConnectionRequest fallido
+  → mensaje seguro
+  → limpieza del pending
+  → jugador permanece en skyblock-1
+```
 
 La selección entre varias instancias autenticadas del mismo tipo es
 determinista por nombre hasta introducir una estrategia de balanceo.
@@ -444,7 +499,24 @@ Existen pruebas para:
 - correlación de `TRANSFER_RESULT`;
 - validaciones del handler de transferencia;
 - conservación segura de presencia durante carreras;
-- flujo integral de transferencia.
+- flujo integral de transferencia;
+- pruebas negativas Auth→Lobby;
+- comandos públicos `/hub` y `/lobby`;
+- rechazo de fuente no jugador;
+- jugador no autenticado;
+- jugador sin conexión actual;
+- Lobby `NOT_CONFIGURED`;
+- Lobby `NOT_AUTHENTICATED`;
+- Lobby `BOOTSTRAP_REQUIRED`;
+- jugador ya conectado al Lobby;
+- transferencia pendiente o jugador ocupado;
+- resultados `SUCCESS`, `REJECTED`, `FAILED` y `TIMED_OUT`;
+- finalización excepcional;
+- limpieza del pending;
+- callback tardío con el mismo `requestId`;
+- registro y desregistro de `/hub` y `/lobby`;
+- lifecycle del plugin;
+- eliminación atómica correlacionada.
 
 Flujos integrales confirmados:
 
@@ -455,6 +527,7 @@ auth-1 → PLAYER_AUTHENTICATED
 lobby-1 → PLAYER_SERVER_READY
 lobby-1 → TRANSFER_REQUEST → skyblock-1 → TRANSFER_RESULT
 auth-1 → TRANSFER_REQUEST → lobby-1 → PLAYER_SERVER_READY
+skyblock-1 → /hub o /lobby → lobby-1 → PLAYER_SERVER_READY
 DisconnectEvent → eliminación de presencia y sesión
 ```
 
@@ -483,8 +556,9 @@ BUILD SUCCESSFUL
 
 ## 17. Prueba runtime confirmada
 
-TheosferaProxy fue instalado en Velocity `3.5.0-SNAPSHOT` y el circuito
-runtime real Auth→Lobby quedó validado.
+TheosferaProxy fue instalado en Velocity `3.5.0-SNAPSHOT` y quedaron
+validados el circuito runtime real Auth→Lobby y los comandos públicos
+`/hub` y `/lobby`.
 
 Confirmado:
 
@@ -501,7 +575,17 @@ Confirmado:
 - conexión del jugador a `lobby-1`;
 - desconexión normal de `auth-1` durante el cambio de backend;
 - llegada confirmada por `PLAYER_SERVER_READY` desde `lobby-1`;
+- comandos `/hub` y `/lobby` registrados y operativos;
+- retorno desde `skyblock-1` hacia `lobby-1`;
+- fallo cerrado cuando `lobby-1` no está disponible;
+- limpieza del pending tras fallo de conexión;
 - ausencia de la advertencia falsa antigua de transferencia fallida.
+
+Último JAR desplegado de TheosferaProxy:
+
+```text
+SHA256: 2E1F2C211DD3F703B251872126B8F0D8857DDC95D3D788237CEBE9CDD1F622FA
+```
 
 Circuito validado:
 
@@ -532,6 +616,41 @@ Evidencia observada:
 [theosferaproxy]: Jugador ... listo en lobby-1.
 ```
 
+Matriz runtime confirmada para `/hub` y `/lobby`:
+
+1. Auth→Lobby continuó funcionando después del despliegue.
+2. `/hub` ejecutado estando ya en `lobby-1` respondió:
+   `Ya estás en el Lobby.`
+   No creó reconexión ni errores.
+3. `/lobby` estando ya en `lobby-1` produjo el mismo comportamiento.
+4. Desde `skyblock-1`, `/hub` conectó correctamente hacia `lobby-1`.
+5. Desde `skyblock-1`, `/lobby` conectó correctamente hacia `lobby-1`.
+6. Ambos mostraron:
+   `Te enviamos al Lobby.`
+7. Proxy confirmó en ambos casos:
+   - conexión hacia `lobby-1`;
+   - desconexión normal de `skyblock-1`;
+   - `PLAYER_SERVER_READY` desde `lobby-1`.
+8. Con `lobby-1` apagado, `/hub` falló cerrado y mostró:
+   `No se pudo enviarte al Lobby.`
+9. Dos intentos consecutivos con Lobby apagado produjeron el mismo fallo
+   seguro:
+   - el jugador permaneció en `skyblock-1`;
+   - no apareció `Ya tienes una transferencia pendiente.`;
+   - se confirmó la limpieza del pending tras cada fallo.
+10. Después de reiniciar `lobby-1`, `/hub` volvió a funcionar sin
+    reiniciar Velocity:
+    - conexión desde `skyblock-1` hacia `lobby-1`;
+    - handshake aceptado;
+    - `PLAYER_SERVER_READY`;
+    - mensaje de éxito.
+11. nLogin impide usar comandos antes de autenticarse mediante su
+    interfaz obligatoria.
+12. La protección interna equivalente de TheosferaProxy está cubierta
+    por pruebas automatizadas.
+13. No hubo errores de TheosferaProxy ni advertencias falsas de
+    transferencia fallida.
+
 Semántica confirmada:
 
 - `PlayerTransferRequestStatus.SUBMITTED` significa que
@@ -549,6 +668,22 @@ Semántica confirmada:
 - no debe restaurarse en TheosferaAuth una espera local de
   `TRANSFER_RESULT` para este handoff.
 
+Limitación observada de identidad y frescura:
+
+- `BackendIdentityRegistry` conserva identidades en memoria hasta apagar
+  Velocity;
+- actualmente `PingMessageHandler` responde `PING` con `PONG`, pero
+  TheosferaCore no emite heartbeats periódicos;
+- una identidad registrada históricamente no constituye por sí sola una
+  prueba de salud actual;
+- la indisponibilidad real queda contenida por el resultado de
+  `ConnectionRequest`, que falla cerrado;
+- antes de implementar failover multiinstancia o selección por carga
+  debe definirse una política explícita de frescura y salud de backends;
+- esto no fue un error durante la prueba: el comportamiento observado
+  fue seguro y recuperable;
+- no existe health checking periódico.
+
 Topología validada:
 
 - Proxy: `127.0.0.1:25565`;
@@ -556,7 +691,7 @@ Topología validada:
 - Auth-1: `127.0.0.1:25568`;
 - nLogin instalado en Proxy y Auth, no en Lobby;
 - LuckPerms para permisos de nLogin en Proxy;
-- TheosferaCore instalado en Auth y Lobby;
+- TheosferaCore instalado en Auth, Lobby y Skyblock;
 - TheosferaAuth instalado solo en Auth;
 - TheosferaProxy instalado solo en Velocity;
 - backends enlazados únicamente a `127.0.0.1`.
@@ -587,7 +722,9 @@ Bloques principales fusionados en TheosferaProxy:
 - Player Sessions;
 - Player Transfers;
 - Authenticated Lobby Transfer Requests;
-- Auth Transfers Without Playable Presence.
+- Auth Transfers Without Playable Presence;
+- Negative Auth Lobby Transfer Cases;
+- Secure Lobby Commands.
 
 Bloques de contrato fusionados en TheosferaProtocol:
 
@@ -609,6 +746,10 @@ Commits relevantes ya integrados para el circuito Auth→Lobby:
   `967785f feat: allow authenticated lobby transfer requests (#19)`;
 - TheosferaProxy:
   `943f3de fix: allow auth transfers without playable presence (#20)`;
+- TheosferaProxy:
+  `fc53b2e test: cover negative auth lobby transfer cases (#22)`;
+- TheosferaProxy:
+  `d2af094 feat: add secure lobby commands (#23)`;
 - TheosferaAuth:
   `b6ae696 Merge pull request #4 from HarriOcho/fix/auth-transfer-handoff-lifecycle`.
 
@@ -623,6 +764,13 @@ Actualmente son únicamente memoria local del proceso:
 - sesiones autenticadas;
 - presencia de jugadores;
 - transferencias pendientes.
+
+Las identidades de backends registradas en memoria indican que un
+backend completó handshake en algún momento del proceso actual. No
+constituyen por sí solas una prueba de salud o frescura actual.
+`PingMessageHandler` responde `PING` con `PONG`, pero TheosferaCore no
+emite heartbeats periódicos todavía. La indisponibilidad actual de un
+destino queda contenida por `ConnectionRequest`, que falla cerrado.
 
 Todavía no existen:
 
@@ -658,6 +806,10 @@ Un fallo de Redis no debe causar pérdida de perfiles o progreso.
   TheosferaProxy.
 - Los contratos Core–Proxy deben permanecer versionados.
 - Seguridad e integridad tienen prioridad sobre estética.
+- Antes de implementar failover multiinstancia o selección por carga
+  debe definirse una política explícita de salud y frescura de backends.
+- No afirmar que existe health checking periódico hasta que sea
+  implementado.
 
 ## 21. Punto exacto de reanudación
 
@@ -673,8 +825,10 @@ Backend
   → ProtocolMessageHandler
 ```
 
-El handshake, heartbeat, autenticación, presencia, desconexión y
-coordinación segura de transferencias están implementados.
+El handshake, la autenticación, la presencia, la desconexión y la
+coordinación segura de transferencias están implementados. En heartbeat,
+lo implementado actualmente es la respuesta de protocolo `PING`→`PONG`,
+no un emisor periódico ni health checking periódico.
 
 Flujos de transferencia confirmados:
 
@@ -695,27 +849,50 @@ Auth
   → ConnectionRequest de Velocity
   → lobby-1
   → PLAYER_SERVER_READY
+
+Jugador autenticado en skyblock-1
+  → /hub o /lobby
+  → validación de sesión
+  → resolución exclusiva de LOBBY
+  → registro pendiente
+  → ConnectionRequest de Velocity
+  → lobby-1
+  → limpieza correlacionada
+  → PLAYER_SERVER_READY
 ```
 
 El circuito Auth→Lobby está operativo y validado con TheosferaAuth,
 TheosferaCore y backends reales. La desconexión de `auth-1` durante el
 cambio hacia `lobby-1` es parte normal del ciclo de vida, no un fallo.
 
+Los comandos `/hub` y `/lobby` están implementados, probados y validados
+en runtime real. Ambos son públicos para jugadores autenticados,
+comparten el mismo comportamiento, resuelven únicamente `LOBBY`, fallan
+cerrados cuando el Lobby no está disponible, no aceptan
+`TransferTargetResolutionStatus.BOOTSTRAP_REQUIRED` y no reservan
+bootstrap explícitamente desde el flujo del comando.
+
 Limitaciones actuales:
 
 - el estado continúa siendo local al proceso;
 - no existe Redis ni coordinación entre múltiples proxies;
-- no existe selección por carga entre varias instancias.
-
-Siguiente incremento recomendado antes de implementar comandos:
-
-- reforzar las pruebas negativas automatizadas del flujo Auth→Lobby.
+- no existe selección por carga entre varias instancias;
+- no existe política explícita de salud/frescura de backends;
+- no existe health checking periódico.
 
 Trabajo futuro, sin implementar todavía:
 
-- `/hub` y `/lobby` hacia un Lobby saludable;
+- definición de salud/frescura de backends;
 - failover de modalidades;
 - modo mantenimiento.
+
+La selección de modalidades pertenece a TheosferaLobby, no a
+TheosferaProxy.
+
+Siguiente hito técnico recomendado:
+
+- definir la base de salud/frescura necesaria antes de failover
+  multiinstancia.
 
 Redis y persistencia temporal siguen siendo decisiones futuras, pero no
 son el siguiente paso inmediato de este checkpoint.
