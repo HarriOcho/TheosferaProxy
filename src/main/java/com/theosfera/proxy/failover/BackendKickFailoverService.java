@@ -8,6 +8,8 @@ import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolutionStatus;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
+import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 
 import java.util.Objects;
@@ -62,8 +64,11 @@ public final class BackendKickFailoverService {
             return Optional.empty();
         }
 
+        Player player =
+                nonNullEvent.getPlayer();
+
         UUID playerId =
-                nonNullEvent.getPlayer().getUniqueId();
+                player.getUniqueId();
 
         if (!sessionRegistry.isAuthenticated(playerId)) {
             return Optional.empty();
@@ -78,6 +83,9 @@ public final class BackendKickFailoverService {
 
         String failedServerName =
                 failedServer.getServerInfo().getName();
+
+        Optional<String> currentServerName =
+                currentServerName(player);
 
         Optional<BackendIdentity> identityOptional =
                 identityRegistry.find(failedServerName);
@@ -107,7 +115,8 @@ public final class BackendKickFailoverService {
                 resolvedTarget(
                         sourceType,
                         exclusions,
-                        failedServerName
+                        failedServerName,
+                        currentServerName
                 );
 
         if (sameTypeTarget.isPresent()) {
@@ -123,10 +132,11 @@ public final class BackendKickFailoverService {
 
         Optional<RegisteredServer> lobbyTarget =
                 resolvedTarget(
-                BackendType.LOBBY,
-                exclusions,
-                failedServerName
-        );
+                        BackendType.LOBBY,
+                        exclusions,
+                        failedServerName,
+                        currentServerName
+                );
 
         if (lobbyTarget.isEmpty()) {
             return Optional.empty();
@@ -145,7 +155,8 @@ public final class BackendKickFailoverService {
     private Optional<RegisteredServer> resolvedTarget(
             BackendType targetType,
             Set<String> exclusions,
-            String failedServerName
+            String failedServerName,
+            Optional<String> currentServerName
     ) {
         if (targetType == BackendType.AUTH) {
             return Optional.empty();
@@ -165,10 +176,38 @@ public final class BackendKickFailoverService {
         return resolution
                 .resolvedTarget()
                 .filter(target ->
-                        !target.getServerInfo()
-                                .getName()
-                                .equals(failedServerName)
+                        isDifferentServer(
+                                target,
+                                failedServerName,
+                                currentServerName
+                        )
                 );
+    }
+
+    private Optional<String> currentServerName(Player player) {
+        return player
+                .getCurrentServer()
+                .map(ServerConnection::getServerInfo)
+                .map(serverInfo -> serverInfo.getName());
+    }
+
+    private boolean isDifferentServer(
+            RegisteredServer target,
+            String failedServerName,
+            Optional<String> currentServerName
+    ) {
+        String targetName =
+                target.getServerInfo().getName();
+
+        if (targetName.equals(failedServerName)) {
+            return false;
+        }
+
+        return currentServerName
+                .map(currentName ->
+                        !targetName.equals(currentName)
+                )
+                .orElse(true);
     }
 
     private Optional<RegisteredServer> reserve(

@@ -11,14 +11,17 @@ import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import net.kyori.adventure.text.Component;
 import org.junit.jupiter.api.Test;
 
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -105,6 +108,53 @@ class BackendKickFailoverListenerTest {
         assertSame(
                 originalResult,
                 event.getResult()
+        );
+    }
+
+    @Test
+    void preservesOriginalResultWhenLobbyFallbackIsCurrentServer() {
+        TransferTargetResolver targetResolver =
+                mock(TransferTargetResolver.class);
+        RegisteredServer currentLobby =
+                server("lobby-1");
+
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.notAuthenticated()
+        );
+
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.resolved(currentLobby)
+        );
+
+        BackendKickFailoverListener listener =
+                listener(targetResolver);
+
+        KickedFromServerEvent event =
+                event(
+                        player("lobby-1"),
+                        server("skyblock-1"),
+                        true
+                );
+
+        KickedFromServerEvent.ServerKickResult originalResult =
+                event.getResult();
+
+        listener.onKickedFromServer(event);
+
+        assertSame(
+                originalResult,
+                event.getResult()
+        );
+
+        assertFalse(
+                event.getResult()
+                        instanceof KickedFromServerEvent.RedirectPlayer
         );
     }
 
@@ -341,11 +391,48 @@ class BackendKickFailoverListenerTest {
         );
     }
 
+    private KickedFromServerEvent event(
+            Player player,
+            RegisteredServer server,
+            boolean kickedDuringConnect
+    ) {
+        return new KickedFromServerEvent(
+                player,
+                server,
+                Component.text("Sin conexion con el backend."),
+                kickedDuringConnect,
+                KickedFromServerEvent.Notify.create(
+                        Component.text("Destino no disponible.")
+                )
+        );
+    }
+
     private Player player() {
         Player player =
                 mock(Player.class);
 
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
+        when(player.getCurrentServer())
+                .thenReturn(Optional.empty());
+
+        return player;
+    }
+
+    private Player player(String currentServerName) {
+        Player player =
+                mock(Player.class);
+        ServerConnection connection =
+                mock(ServerConnection.class);
+        ServerInfo serverInfo =
+                mock(ServerInfo.class);
+
+        when(player.getUniqueId()).thenReturn(PLAYER_ID);
+        when(player.getCurrentServer())
+                .thenReturn(Optional.of(connection));
+        when(connection.getServerInfo())
+                .thenReturn(serverInfo);
+        when(serverInfo.getName())
+                .thenReturn(currentServerName);
 
         return player;
     }

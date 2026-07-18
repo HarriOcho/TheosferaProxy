@@ -9,6 +9,7 @@ import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.proxy.Player;
+import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import net.kyori.adventure.text.Component;
@@ -55,6 +56,7 @@ class BackendKickFailoverServiceTest {
         player = mock(Player.class);
 
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
+        when(player.getCurrentServer()).thenReturn(Optional.empty());
 
         service =
                 new BackendKickFailoverService(
@@ -471,6 +473,122 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
+    void rejectsLobbyFallbackWhenItIsCurrentServer() {
+        RegisteredServer currentLobby =
+                server("lobby-1");
+
+        authenticatePlayer();
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+        setCurrentServer("lobby-1");
+
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.notAuthenticated()
+        );
+
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.resolved(currentLobby)
+        );
+
+        Optional<RegisteredServer> result =
+                service.resolveFailoverTarget(
+                        event(
+                                server("skyblock-1"),
+                                true
+                        )
+                );
+
+        assertTrue(result.isEmpty());
+        assertTrue(
+                !failoverRegistry.isReserved(PLAYER_ID)
+        );
+    }
+
+    @Test
+    void rejectsSameTypeTargetWhenItIsCurrentServer() {
+        RegisteredServer currentSkyblock =
+                server("skyblock-2");
+
+        authenticatePlayer();
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+        setCurrentServer("skyblock-2");
+
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.resolved(currentSkyblock)
+        );
+
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.notConfigured()
+        );
+
+        Optional<RegisteredServer> result =
+                service.resolveFailoverTarget(
+                        event(
+                                server("skyblock-1"),
+                                true
+                        )
+                );
+
+        assertTrue(result.isEmpty());
+        assertTrue(
+                !failoverRegistry.isReserved(PLAYER_ID)
+        );
+    }
+
+    @Test
+    void acceptsTargetDifferentFromCurrentServer() {
+        RegisteredServer target =
+                server("skyblock-2");
+
+        authenticatePlayer();
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+        setCurrentServer("lobby-1");
+
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.resolved(target)
+        );
+
+        Optional<RegisteredServer> result =
+                service.resolveFailoverTarget(
+                        event(
+                                server("skyblock-1"),
+                                true
+                        )
+                );
+
+        assertSame(
+                target,
+                result.orElseThrow()
+        );
+        assertTrue(
+                failoverRegistry.isReserved(PLAYER_ID)
+        );
+    }
+
+    @Test
     void doesNotAttemptLobbyFallbackWhenSourceIsLobby() {
         authenticatePlayer();
         registerIdentity(
@@ -656,6 +774,22 @@ class BackendKickFailoverServiceTest {
                         Component.text("Destino no disponible.")
                 )
         );
+    }
+
+    private void setCurrentServer(String serverName) {
+        ServerConnection connection =
+                mock(ServerConnection.class);
+        ServerInfo serverInfo =
+                mock(ServerInfo.class);
+
+        when(player.getCurrentServer())
+                .thenReturn(Optional.of(connection));
+
+        when(connection.getServerInfo())
+                .thenReturn(serverInfo);
+
+        when(serverInfo.getName())
+                .thenReturn(serverName);
     }
 
     private RegisteredServer server(String serverName) {
