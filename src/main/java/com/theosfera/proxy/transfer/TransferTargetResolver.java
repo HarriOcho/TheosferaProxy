@@ -10,6 +10,7 @@ import com.velocitypowered.api.proxy.server.RegisteredServer;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 
 public final class TransferTargetResolver {
 
@@ -41,10 +42,28 @@ public final class TransferTargetResolver {
     public TransferTargetResolution resolve(
             BackendType targetBackendType
     ) {
+        return resolve(
+                targetBackendType,
+                Set.of()
+        );
+    }
+
+    public TransferTargetResolution resolve(
+            BackendType targetBackendType,
+            Set<String> excludedServerNames
+    ) {
         BackendType nonNullTargetType =
                 Objects.requireNonNull(
                         targetBackendType,
                         "targetBackendType cannot be null"
+                );
+
+        Set<String> nonNullExcludedServerNames =
+                Set.copyOf(
+                        Objects.requireNonNull(
+                                excludedServerNames,
+                                "excludedServerNames cannot be null"
+                        )
                 );
 
         if (nonNullTargetType == BackendType.AUTH) {
@@ -52,7 +71,10 @@ public final class TransferTargetResolver {
         }
 
         List<RegisteredServer> configuredTargets =
-                configuredTargets(nonNullTargetType);
+                configuredTargets(
+                        nonNullTargetType,
+                        nonNullExcludedServerNames
+                );
 
         if (configuredTargets.isEmpty()) {
             return TransferTargetResolution.notConfigured();
@@ -83,7 +105,8 @@ public final class TransferTargetResolver {
     }
 
     private List<RegisteredServer> configuredTargets(
-            BackendType targetBackendType
+            BackendType targetBackendType,
+            Set<String> excludedServerNames
     ) {
         return authorizationPolicy
                 .allowedBackends()
@@ -92,6 +115,11 @@ public final class TransferTargetResolver {
                 .filter(entry ->
                         entry.getValue()
                                 == targetBackendType
+                )
+                .filter(entry ->
+                        !excludedServerNames.contains(
+                                entry.getKey()
+                        )
                 )
                 .map(entry ->
                         proxyServer.getServer(entry.getKey())
