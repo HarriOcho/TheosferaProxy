@@ -75,7 +75,7 @@ class BackendKickFailoverServiceTest {
                 BackendType.SKYBLOCK
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -83,7 +83,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.IGNORED,
+                result.status()
+        );
 
         verify(
                 targetResolver,
@@ -101,7 +104,7 @@ class BackendKickFailoverServiceTest {
                 BackendType.SKYBLOCK
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -109,7 +112,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.IGNORED,
+                result.status()
+        );
 
         verify(
                 targetResolver,
@@ -124,7 +130,7 @@ class BackendKickFailoverServiceTest {
     void ignoresBackendWithoutIdentity() {
         authenticatePlayer();
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -132,7 +138,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
 
         verify(
                 targetResolver,
@@ -168,7 +177,7 @@ class BackendKickFailoverServiceTest {
 
         authenticatePlayer();
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 mismatchedService.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -176,7 +185,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
 
         verify(
                 targetResolver,
@@ -195,7 +207,7 @@ class BackendKickFailoverServiceTest {
                 BackendType.AUTH
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("auth-1"),
@@ -203,7 +215,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
 
         verify(
                 targetResolver,
@@ -232,7 +247,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.resolved(target)
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -241,8 +256,14 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
+                BackendKickFailoverResolutionStatus.REDIRECT,
+                result.status()
+        );
+
+
+        assertSame(
                 target,
-                result.orElseThrow()
+                result.redirectTarget().orElseThrow()
         );
 
         assertTrue(
@@ -273,7 +294,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.resolved(target)
         );
 
-        Optional<RegisteredServer> firstResult =
+        BackendKickFailoverResolution firstResult =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -281,7 +302,7 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        Optional<RegisteredServer> secondResult =
+        BackendKickFailoverResolution secondResult =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -290,11 +311,20 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
-                target,
-                firstResult.orElseThrow()
+                BackendKickFailoverResolutionStatus.REDIRECT,
+                firstResult.status()
         );
 
-        assertTrue(secondResult.isEmpty());
+
+        assertSame(
+                target,
+                firstResult.redirectTarget().orElseThrow()
+        );
+
+        assertSame(
+                BackendKickFailoverResolutionStatus.IGNORED,
+                secondResult.status()
+        );
 
         verify(targetResolver, times(1)).resolve(
                 BackendType.SKYBLOCK,
@@ -334,7 +364,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.resolved(secondTarget)
         );
 
-        Optional<RegisteredServer> firstResult =
+        BackendKickFailoverResolution firstResult =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -344,7 +374,7 @@ class BackendKickFailoverServiceTest {
 
         service.clearPendingFailover(PLAYER_ID);
 
-        Optional<RegisteredServer> secondResult =
+        BackendKickFailoverResolution secondResult =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -353,13 +383,25 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
+                BackendKickFailoverResolutionStatus.REDIRECT,
+                firstResult.status()
+        );
+
+
+        assertSame(
                 firstTarget,
-                firstResult.orElseThrow()
+                firstResult.redirectTarget().orElseThrow()
         );
 
         assertSame(
+                BackendKickFailoverResolutionStatus.REDIRECT,
+                secondResult.status()
+        );
+
+
+        assertSame(
                 secondTarget,
-                secondResult.orElseThrow()
+                secondResult.redirectTarget().orElseThrow()
         );
 
         verify(targetResolver, times(2)).resolve(
@@ -386,7 +428,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.bootstrapRequired(coldTarget)
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("lobby-1"),
@@ -394,7 +436,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
     }
 
     @Test
@@ -419,7 +464,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.notConfigured()
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -427,7 +472,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
         assertTrue(
                 !failoverRegistry.isReserved(PLAYER_ID)
         );
@@ -458,7 +506,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.resolved(lobby)
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -467,8 +515,14 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
+                BackendKickFailoverResolutionStatus.REDIRECT,
+                result.status()
+        );
+
+
+        assertSame(
                 lobby,
-                result.orElseThrow()
+                result.redirectTarget().orElseThrow()
         );
     }
 
@@ -498,7 +552,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.resolved(currentLobby)
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -506,7 +560,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
         assertTrue(
                 !failoverRegistry.isReserved(PLAYER_ID)
         );
@@ -538,7 +595,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.notConfigured()
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -546,7 +603,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
         assertTrue(
                 !failoverRegistry.isReserved(PLAYER_ID)
         );
@@ -571,7 +631,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.resolved(target)
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -580,8 +640,14 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
+                BackendKickFailoverResolutionStatus.REDIRECT,
+                result.status()
+        );
+
+
+        assertSame(
                 target,
-                result.orElseThrow()
+                result.redirectTarget().orElseThrow()
         );
         assertTrue(
                 failoverRegistry.isReserved(PLAYER_ID)
@@ -603,7 +669,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.notConfigured()
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("lobby-1"),
@@ -611,7 +677,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
 
         verify(targetResolver, times(1)).resolve(
                 BackendType.LOBBY,
@@ -644,7 +713,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.bootstrapRequired(lobby)
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
@@ -652,7 +721,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
     }
 
     @Test
@@ -680,7 +752,7 @@ class BackendKickFailoverServiceTest {
                 TransferTargetResolution.resolved(failed)
         );
 
-        Optional<RegisteredServer> result =
+        BackendKickFailoverResolution result =
                 service.resolveFailoverTarget(
                         event(
                                 failed,
@@ -688,7 +760,10 @@ class BackendKickFailoverServiceTest {
                         )
                 );
 
-        assertTrue(result.isEmpty());
+        assertSame(
+                BackendKickFailoverResolutionStatus.DISCONNECT,
+                result.status()
+        );
     }
 
     @Test
@@ -768,7 +843,7 @@ class BackendKickFailoverServiceTest {
         return new KickedFromServerEvent(
                 player,
                 server,
-                Component.text("Sin conexión con el backend."),
+                Component.text("Sin conexi\u00f3n con el backend."),
                 kickedDuringConnect,
                 KickedFromServerEvent.Notify.create(
                         Component.text("Destino no disponible.")
