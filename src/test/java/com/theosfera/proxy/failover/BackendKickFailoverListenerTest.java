@@ -21,7 +21,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -73,7 +72,7 @@ class BackendKickFailoverListenerTest {
     }
 
     @Test
-    void preservesOriginalResultWithoutSafeTarget() {
+    void disconnectsAuthenticatedPlayerWithoutSafeTarget() {
         TransferTargetResolver targetResolver =
                 mock(TransferTargetResolver.class);
 
@@ -100,19 +99,24 @@ class BackendKickFailoverListenerTest {
                         true
                 );
 
-        KickedFromServerEvent.ServerKickResult originalResult =
-                event.getResult();
+        Component expectedReason =
+                event.getServerKickReason().orElseThrow();
 
         listener.onKickedFromServer(event);
 
+        KickedFromServerEvent.DisconnectPlayer result =
+                assertInstanceOf(
+                        KickedFromServerEvent.DisconnectPlayer.class,
+                        event.getResult()
+                );
+
         assertSame(
-                originalResult,
-                event.getResult()
+                expectedReason,
+                result.getReasonComponent()
         );
     }
-
     @Test
-    void preservesOriginalResultWhenLobbyFallbackIsCurrentServer() {
+    void disconnectsWhenLobbyFallbackIsCurrentServer() {
         TransferTargetResolver targetResolver =
                 mock(TransferTargetResolver.class);
         RegisteredServer currentLobby =
@@ -142,22 +146,13 @@ class BackendKickFailoverListenerTest {
                         true
                 );
 
-        KickedFromServerEvent.ServerKickResult originalResult =
-                event.getResult();
-
         listener.onKickedFromServer(event);
 
-        assertSame(
-                originalResult,
+        assertInstanceOf(
+                KickedFromServerEvent.DisconnectPlayer.class,
                 event.getResult()
-        );
-
-        assertFalse(
-                event.getResult()
-                        instanceof KickedFromServerEvent.RedirectPlayer
         );
     }
-
     @Test
     void secondKickBeforeSuccessfulConnectionPreservesOriginalResult() {
         TransferTargetResolver targetResolver =

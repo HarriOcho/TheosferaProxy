@@ -30,10 +30,38 @@ public final class BackendKickFailoverListener {
                         "event cannot be null"
                 );
 
-        failoverService
-                .resolveFailoverTarget(nonNullEvent)
-                .map(KickedFromServerEvent.RedirectPlayer::create)
-                .ifPresent(nonNullEvent::setResult);
+        BackendKickFailoverResolution resolution =
+                failoverService.resolveFailoverTarget(
+                        nonNullEvent
+                );
+
+        switch (resolution.status()) {
+            case IGNORED -> {
+                // Preserve Velocity's existing result.
+            }
+
+            case REDIRECT -> nonNullEvent.setResult(
+                    KickedFromServerEvent.RedirectPlayer.create(
+                            resolution.redirectTarget()
+                                    .orElseThrow(() ->
+                                            new IllegalStateException(
+                                                    "redirect resolution has no target"
+                                            )
+                                    )
+                    )
+            );
+
+            case DISCONNECT -> nonNullEvent.setResult(
+                    KickedFromServerEvent.DisconnectPlayer.create(
+                            resolution.reason()
+                                    .orElseThrow(() ->
+                                            new IllegalStateException(
+                                                    "disconnect resolution has no reason"
+                                            )
+                                    )
+                    )
+            );
+        }
     }
 
     @Subscribe

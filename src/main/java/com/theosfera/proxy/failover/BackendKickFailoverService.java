@@ -11,6 +11,7 @@ import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
+import net.kyori.adventure.text.Component;
 
 import java.util.Objects;
 import java.util.Optional;
@@ -18,6 +19,12 @@ import java.util.Set;
 import java.util.UUID;
 
 public final class BackendKickFailoverService {
+
+    private static final Component NO_SAFE_TARGET_REASON =
+            Component.text(
+                    "No hay servidores seguros disponibles en este momento. "
+                            + "Inténtalo nuevamente más tarde."
+            );
 
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final BackendIdentityRegistry identityRegistry;
@@ -51,7 +58,7 @@ public final class BackendKickFailoverService {
         );
     }
 
-    public Optional<RegisteredServer> resolveFailoverTarget(
+    public BackendKickFailoverResolution resolveFailoverTarget(
             KickedFromServerEvent event
     ) {
         KickedFromServerEvent nonNullEvent =
@@ -61,7 +68,7 @@ public final class BackendKickFailoverService {
                 );
 
         if (!nonNullEvent.kickedDuringServerConnect()) {
-            return Optional.empty();
+            return BackendKickFailoverResolution.ignored();
         }
 
         Player player =
@@ -71,11 +78,11 @@ public final class BackendKickFailoverService {
                 player.getUniqueId();
 
         if (!sessionRegistry.isAuthenticated(playerId)) {
-            return Optional.empty();
+            return BackendKickFailoverResolution.ignored();
         }
 
         if (failoverRegistry.isReserved(playerId)) {
-            return Optional.empty();
+            return BackendKickFailoverResolution.ignored();
         }
 
         RegisteredServer failedServer =
@@ -91,21 +98,21 @@ public final class BackendKickFailoverService {
                 identityRegistry.find(failedServerName);
 
         if (identityOptional.isEmpty()) {
-            return Optional.empty();
+            return disconnect(nonNullEvent);
         }
 
         BackendIdentity identity =
                 identityOptional.get();
 
         if (!identity.serverName().equals(failedServerName)) {
-            return Optional.empty();
+            return disconnect(nonNullEvent);
         }
 
         BackendType sourceType =
                 identity.backendType();
 
         if (sourceType == BackendType.AUTH) {
-            return Optional.empty();
+            return disconnect(nonNullEvent);
         }
 
         Set<String> exclusions =
@@ -127,7 +134,7 @@ public final class BackendKickFailoverService {
         }
 
         if (sourceType == BackendType.LOBBY) {
-            return Optional.empty();
+            return disconnect(nonNullEvent);
         }
 
         Optional<RegisteredServer> lobbyTarget =
@@ -139,7 +146,7 @@ public final class BackendKickFailoverService {
                 );
 
         if (lobbyTarget.isEmpty()) {
-            return Optional.empty();
+            return disconnect(nonNullEvent);
         }
 
         return reserve(
@@ -210,14 +217,24 @@ public final class BackendKickFailoverService {
                 .orElse(true);
     }
 
-    private Optional<RegisteredServer> reserve(
+    private BackendKickFailoverResolution reserve(
             UUID playerId,
             RegisteredServer target
     ) {
         if (!failoverRegistry.reserve(playerId)) {
-            return Optional.empty();
+            return BackendKickFailoverResolution.ignored();
         }
 
-        return Optional.of(target);
+        return BackendKickFailoverResolution.redirect(target);
+    }
+
+    private BackendKickFailoverResolution disconnect(
+            KickedFromServerEvent event
+    ) {
+        Component reason =
+                event.getServerKickReason()
+                        .orElse(NO_SAFE_TARGET_REASON);
+
+        return BackendKickFailoverResolution.disconnect(reason);
     }
 }
