@@ -450,6 +450,44 @@ skyblock-1
 La selección entre varias instancias autenticadas del mismo tipo es
 determinista por nombre hasta introducir una estrategia de balanceo.
 
+### Failover ante kicks de backends
+
+El failover provocado por `KickedFromServerEvent` está implementado con
+política fail-closed.
+
+Componentes principales:
+
+- `BackendKickFailoverListener`;
+- `BackendKickFailoverService`;
+- `BackendKickFailoverResolution`;
+- `BackendKickFailoverResolutionStatus`.
+
+El contrato de resolución es explícito:
+
+- `IGNORED`: el evento no pertenece al flujo de failover controlado;
+- `REDIRECT`: existe un destino jugable seguro y Velocity puede redirigir;
+- `DISCONNECT`: no existe un destino seguro y el jugador debe ser
+  desconectado conservando la razón original del kick.
+
+Reglas de seguridad confirmadas:
+
+- el failover automático se aplica únicamente a jugadores autenticados;
+- Auth nunca es un destino de recuperación para un jugador autenticado;
+- el backend que produjo el kick queda excluido;
+- el servidor actual del jugador no puede resolverse como destino;
+- solo se aceptan backends jugables autorizados y utilizables;
+- una resolución ambigua o la ausencia de destino seguro termina en
+  desconexión explícita;
+- no se permite que un resultado vacío sea interpretado silenciosamente
+  como una redirección válida;
+- se evitan bucles cuando el Lobby resuelto ya coincide con el servidor
+  actual;
+- si la redirección segura no puede realizarse, se conserva la razón
+  original proporcionada por el backend.
+
+Este failover protege fallos de conexión o kicks de backends existentes.
+No constituye todavía balanceo por carga, health checking periódico ni
+failover multiinstancia basado en métricas de frescura.
 
 ## 15. Limpieza por desconexión
 
@@ -515,6 +553,11 @@ Existen pruebas para:
 - limpieza del pending;
 - callback tardío con el mismo `requestId`;
 - registro y desregistro de `/hub` y `/lobby`;
+- resolución del failover ante kicks de backends;
+- exclusión de Auth, del backend fallido y del servidor actual;
+- redirección únicamente hacia destinos jugables seguros;
+- desconexión fail-closed cuando no existe un destino seguro;
+- conservación de la razón original del kick;
 - lifecycle del plugin;
 - eliminación atómica correlacionada.
 
@@ -545,6 +588,7 @@ El flujo integral de jugador atraviesa:
 
 ```powershell
 git diff --check
+.\gradlew.bat clean test --no-daemon
 .\gradlew.bat clean build --no-daemon
 ```
 
@@ -724,7 +768,12 @@ Bloques principales fusionados en TheosferaProxy:
 - Authenticated Lobby Transfer Requests;
 - Auth Transfers Without Playable Presence;
 - Negative Auth Lobby Transfer Cases;
-- Secure Lobby Commands.
+- Secure Lobby Commands;
+- Backend Carrier Freshness Foundation;
+- Backend Kick Failover;
+- Failover Target Exclusions;
+- Current Server Failover Protection;
+- Fail-Closed Backend Kick Failover.
 
 Bloques de contrato fusionados en TheosferaProtocol:
 
@@ -750,11 +799,27 @@ Commits relevantes ya integrados para el circuito Auth→Lobby:
   `fc53b2e test: cover negative auth lobby transfer cases (#22)`;
 - TheosferaProxy:
   `d2af094 feat: add secure lobby commands (#23)`;
+- TheosferaProxy:
+  `f9b58f4 fix: make backend kick failover fail closed (#30)`;
 - TheosferaAuth:
   `b6ae696 Merge pull request #4 from HarriOcho/fix/auth-transfer-handoff-lifecycle`.
 
 Los cambios importantes se realizan mediante ramas y Pull Requests con
 squash merge.
+
+Estado Git al crear este checkpoint:
+
+- `main` sincronizada con `origin/main` en `f9b58f4`;
+- árbol de trabajo limpio antes de crear la rama documental;
+- ramas locales y referencias remotas obsoletas eliminadas;
+- únicamente `main` permanecía como rama local antes del checkpoint;
+- rama actual del checkpoint:
+  `docs/backend-kick-failover-checkpoint`.
+
+El failover fail-closed está cubierto por pruebas automatizadas y build
+local exitoso. Su validación runtime específica queda pendiente; no debe
+confundirse con las pruebas runtime ya confirmadas de Auth→Lobby y de los
+comandos `/hub` y `/lobby`.
 
 ## 19. Estado transitorio y persistencia
 
@@ -826,7 +891,9 @@ Backend
 ```
 
 El handshake, la autenticación, la presencia, la desconexión y la
-coordinación segura de transferencias están implementados. En heartbeat,
+coordinación segura de transferencias están implementados. También está
+implementado el failover fail-closed ante kicks de backends para jugadores
+autenticados. En heartbeat,
 lo implementado actualmente es la respuesta de protocolo `PING`→`PONG`,
 no un emisor periódico ni health checking periódico.
 
@@ -882,8 +949,8 @@ Limitaciones actuales:
 
 Trabajo futuro, sin implementar todavía:
 
-- definición de salud/frescura de backends;
-- failover de modalidades;
+- health checking periódico y una política completa de frescura;
+- failover multiinstancia basado en salud o carga;
 - modo mantenimiento.
 
 La selección de modalidades pertenece a TheosferaLobby, no a
@@ -891,11 +958,38 @@ TheosferaProxy.
 
 Siguiente hito técnico recomendado:
 
-- definir la base de salud/frescura necesaria antes de failover
-  multiinstancia.
+- definir e implementar health checking periódico antes de extender el
+  failover hacia selección multiinstancia por salud o carga.
 
 Redis y persistencia temporal siguen siendo decisiones futuras, pero no
 son el siguiente paso inmediato de este checkpoint.
 
 No introducir parties, amigos o escuadrones sin definir primero su
 persistencia y consistencia distribuida.
+
+## 22. Diseño futuro Core–Client para keybinds
+
+Idea registrada, todavía no implementada:
+
+- cada keybind conserva un identificador estable y una tecla
+  predeterminada definida por el servidor;
+- un jugador sin TheosferaClient utiliza `/key <tecla-predeterminada>`;
+- TheosferaClient permite conservar la tecla predeterminada o reasignarla
+  localmente desde su menú;
+- al pulsarla, el cliente envía el identificador estable de la keybind, no
+  la tecla física como fuente de autoridad;
+- TheosferaCore valida existencia, permisos, contexto, cooldown y demás
+  condiciones antes de ejecutar las acciones;
+- TheosferaProtocol deberá definir los mensajes de sincronización,
+  activación y prompts contextuales;
+- el cliente podrá mostrar mensajes como `Presiona [G] para hablar`,
+  resolviendo automáticamente la tecla personalizada del jugador;
+- los jugadores sin mod recibirán un fallback compatible con comandos,
+  chat o action bar;
+- la personalización podrá almacenarse localmente al inicio y, más
+  adelante, sincronizarse entre dispositivos.
+
+Este diseño pertenece principalmente a TheosferaCore,
+TheosferaProtocol y TheosferaClient. TheosferaProxy no debe ejecutar ni
+autorizar acciones de keybind por sí solo salvo que un contrato futuro
+requiera coordinación global explícita.
