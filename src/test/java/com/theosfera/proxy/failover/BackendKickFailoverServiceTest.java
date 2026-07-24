@@ -352,7 +352,7 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
-    void successfulConnectionPreservesColdBootstrapReservation() {
+    void coldLobbyDoesNotCreateFailoverReservation() {
         RegisteredServer coldLobby =
                 server("lobby-1");
 
@@ -385,20 +385,18 @@ class BackendKickFailoverServiceTest {
                 )
         );
 
-        service.clearPendingFailover(PLAYER_ID);
-
         assertTrue(
                 !failoverRegistry.isReserved(PLAYER_ID)
         );
         assertTrue(
                 bootstrapRegistry
                         .findByTarget("lobby-1")
-                        .isPresent()
+                        .isEmpty()
         );
     }
 
     @Test
-    void disconnectCancelsColdBootstrapReservation() {
+    void disconnectAfterColdLobbyNeedsNoBootstrapCleanup() {
         RegisteredServer coldLobby =
                 server("lobby-1");
 
@@ -507,7 +505,7 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
-    void acceptsSameTypeBootstrapTarget() {
+    void rejectsSameTypeBootstrapTargetWithoutOrchestrator() {
         RegisteredServer coldTarget =
                 server("lobby-2");
 
@@ -533,14 +531,12 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
-                BackendKickFailoverResolutionStatus.REDIRECT,
+                BackendKickFailoverResolutionStatus.DISCONNECT,
                 result.status()
         );
-        assertSame(
-                coldTarget,
-                result.redirectTarget().orElseThrow()
-        );
-        assertEquals(1, bootstrapRegistry.size());
+        assertTrue(result.redirectTarget().isEmpty());
+        assertTrue(!failoverRegistry.isReserved(PLAYER_ID));
+        assertEquals(0, bootstrapRegistry.size());
     }
 
     @Test
@@ -790,7 +786,7 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
-    void usesColdLobbyFallbackForSkyblock() {
+    void disconnectsInsteadOfRedirectingToColdLobby() {
         RegisteredServer lobby =
                 server("lobby-1");
 
@@ -823,23 +819,13 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
-                BackendKickFailoverResolutionStatus.REDIRECT,
+                BackendKickFailoverResolutionStatus.DISCONNECT,
                 result.status()
         );
-        assertSame(
-                lobby,
-                result.redirectTarget().orElseThrow()
-        );
         assertTrue(
-                failoverRegistry.isReserved(PLAYER_ID)
+                !failoverRegistry.isReserved(PLAYER_ID)
         );
-
-        BackendBootstrapReservation reservation =
-                bootstrapRegistry
-                        .findByTarget("lobby-1")
-                        .orElseThrow();
-
-        assertEquals(PLAYER_ID, reservation.playerId());
+        assertEquals(0, bootstrapRegistry.size());
     }
 
     @Test
