@@ -5,6 +5,8 @@ import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
+import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import com.theosfera.proxy.command.LobbyCommand;
 import com.theosfera.proxy.command.LobbyCommandRegistration;
 import com.theosfera.proxy.command.LobbyTransferService;
@@ -18,6 +20,7 @@ import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PingMessageHandler;
+import com.theosfera.proxy.messaging.handler.PongMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
@@ -39,6 +42,8 @@ import com.velocitypowered.api.proxy.ProxyServer;
 import org.slf4j.Logger;
 
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 
 @Plugin(
@@ -62,6 +67,8 @@ public final class TheosferaProxy {
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final PendingPlayerFailoverRegistry failoverRegistry;
     private final PlayerDisconnectListener playerDisconnectListener;
+    private final BackendHealthRegistry healthRegistry;
+    private final PendingBackendPingRegistry pendingPingRegistry;
 
     private ProtocolMessageListener protocolMessageListener;
     private BackendKickFailoverListener backendKickFailoverListener;
@@ -101,6 +108,20 @@ public final class TheosferaProxy {
 
         this.failoverRegistry =
                 new PendingPlayerFailoverRegistry();
+
+        Clock clock = Clock.systemUTC();
+
+        this.healthRegistry =
+                new BackendHealthRegistry(
+                        clock,
+                        Duration.ofSeconds(15)
+                );
+
+        this.pendingPingRegistry =
+                new PendingBackendPingRegistry(
+                        clock,
+                        Duration.ofSeconds(10)
+                );
 
         this.playerDisconnectListener =
                 new PlayerDisconnectListener(
@@ -177,6 +198,8 @@ public final class TheosferaProxy {
         transferRegistry.clear();
         presenceRegistry.clear();
         sessionRegistry.clear();
+        pendingPingRegistry.clear();
+        healthRegistry.clear();
         identityRegistry.clear();
         channelRegistration.unregister();
 
@@ -272,6 +295,11 @@ public final class TheosferaProxy {
                                 ),
                                 new PingMessageHandler(
                                         messageSender,
+                                        logger
+                                ),
+                                new PongMessageHandler(
+                                        pendingPingRegistry,
+                                        healthRegistry,
                                         logger
                                 ),
                                 new PlayerAuthenticatedMessageHandler(
