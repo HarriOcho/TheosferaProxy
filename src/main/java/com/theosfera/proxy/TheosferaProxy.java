@@ -2,10 +2,14 @@ package com.theosfera.proxy;
 
 import com.google.inject.Inject;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendHealthCheckScheduler;
+import com.theosfera.proxy.backend.BackendHealthCheckTask;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
+import com.theosfera.proxy.backend.BackendPingConnectionResolver;
+import com.theosfera.proxy.backend.BackendPingEmitter;
 import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import com.theosfera.proxy.command.LobbyCommand;
 import com.theosfera.proxy.command.LobbyCommandRegistration;
@@ -45,6 +49,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.UUID;
 
 @Plugin(
         id = "theosferaproxy",
@@ -73,6 +78,7 @@ public final class TheosferaProxy {
     private ProtocolMessageListener protocolMessageListener;
     private BackendKickFailoverListener backendKickFailoverListener;
     private LobbyCommandRegistration lobbyCommandRegistration;
+    private BackendHealthCheckScheduler healthCheckScheduler;
 
     @Inject
     public TheosferaProxy(
@@ -156,6 +162,10 @@ public final class TheosferaProxy {
                 backendKickFailoverListener
         );
 
+        if (healthCheckScheduler != null) {
+            healthCheckScheduler.start();
+        }
+
         logger.info(
                 "Canal de protocolo registrado: {}.",
                 ProtocolChannel.IDENTIFIER.getId()
@@ -170,6 +180,10 @@ public final class TheosferaProxy {
     public void onProxyShutdown(
             final ProxyShutdownEvent event
     ) {
+        if (healthCheckScheduler != null) {
+            healthCheckScheduler.stop();
+        }
+
         if (protocolMessageListener != null) {
             proxyServer.getEventManager().unregisterListener(
                     this,
@@ -232,6 +246,36 @@ public final class TheosferaProxy {
 
         ProtocolMessageSender messageSender =
                 new ProtocolMessageSender();
+
+        BackendPingConnectionResolver pingConnectionResolver =
+                new BackendPingConnectionResolver(
+                        proxyServer
+                );
+
+        BackendPingEmitter pingEmitter =
+                new BackendPingEmitter(
+                        Clock.systemUTC(),
+                        UUID::randomUUID,
+                        pendingPingRegistry,
+                        pingConnectionResolver,
+                        messageSender,
+                        logger
+                );
+
+        BackendHealthCheckTask healthCheckTask =
+                new BackendHealthCheckTask(
+                        authorizationPolicy,
+                        pingEmitter,
+                        logger
+                );
+
+        healthCheckScheduler =
+                new BackendHealthCheckScheduler(
+                        proxyServer,
+                        this,
+                        healthCheckTask,
+                        logger
+                );
 
         PlayerAuthenticationAckSender
                 authenticationAckSender =

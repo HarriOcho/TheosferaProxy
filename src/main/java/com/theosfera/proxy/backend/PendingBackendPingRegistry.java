@@ -4,9 +4,11 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class PendingBackendPingRegistry {
 
@@ -38,6 +40,39 @@ public final class PendingBackendPingRegistry {
                 challenge.serverName(),
                 challenge
         );
+    }
+
+    public BackendPingRegistrationResult registerIfAbsentOrExpired(
+            PendingBackendPing pendingPing
+    ) {
+        PendingBackendPing challenge = Objects.requireNonNull(
+                pendingPing,
+                "pendingPing cannot be null"
+        );
+
+        AtomicReference<BackendPingRegistrationResult> result =
+                new AtomicReference<>();
+
+        pendingByServer.compute(
+                challenge.serverName(),
+                (ignored, existing) -> {
+                    if (existing == null || isExpired(existing)) {
+                        result.set(
+                                BackendPingRegistrationResult
+                                        .REGISTERED
+                        );
+                        return challenge;
+                    }
+
+                    result.set(
+                            BackendPingRegistrationResult
+                                    .ALREADY_PENDING
+                    );
+                    return existing;
+                }
+        );
+
+        return result.get();
     }
 
     public boolean consumeMatching(
@@ -82,6 +117,32 @@ public final class PendingBackendPingRegistry {
         pendingByServer.remove(
                 requireServerName(serverName)
         );
+    }
+
+    public Optional<PendingBackendPing> removeIfMatches(
+            PendingBackendPing pendingPing
+    ) {
+        PendingBackendPing challenge = Objects.requireNonNull(
+                pendingPing,
+                "pendingPing cannot be null"
+        );
+
+        AtomicReference<PendingBackendPing> removed =
+                new AtomicReference<>();
+
+        pendingByServer.computeIfPresent(
+                challenge.serverName(),
+                (ignored, existing) -> {
+                    if (existing.equals(challenge)) {
+                        removed.set(existing);
+                        return null;
+                    }
+
+                    return existing;
+                }
+        );
+
+        return Optional.ofNullable(removed.get());
     }
 
     public void clear() {
