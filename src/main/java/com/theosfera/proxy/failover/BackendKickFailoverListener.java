@@ -89,7 +89,7 @@ public final class BackendKickFailoverListener {
                         "event cannot be null"
                 );
 
-        failoverService.clearPendingFailover(
+        failoverService.cancelPendingFailover(
                 nonNullEvent.getPlayer().getUniqueId()
         );
     }

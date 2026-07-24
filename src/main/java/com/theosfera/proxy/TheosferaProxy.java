@@ -248,6 +248,7 @@ public final class TheosferaProxy {
                                 sessionRegistry,
                                 identityRegistry,
                                 targetResolver,
+                                bootstrapRegistry,
                                 failoverRegistry
                         )
                 );

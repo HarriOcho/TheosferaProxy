@@ -5,6 +5,8 @@ import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
@@ -20,6 +22,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -39,6 +42,7 @@ class BackendKickFailoverServiceTest {
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
     private BackendIdentityRegistry identityRegistry;
     private TransferTargetResolver targetResolver;
+    private BackendBootstrapRegistry bootstrapRegistry;
     private PendingPlayerFailoverRegistry failoverRegistry;
     private BackendKickFailoverService service;
     private Player player;
@@ -51,6 +55,8 @@ class BackendKickFailoverServiceTest {
                 new BackendIdentityRegistry();
         targetResolver =
                 mock(TransferTargetResolver.class);
+        bootstrapRegistry =
+                new BackendBootstrapRegistry();
         failoverRegistry =
                 new PendingPlayerFailoverRegistry();
         player = mock(Player.class);
@@ -63,6 +69,7 @@ class BackendKickFailoverServiceTest {
                         sessionRegistry,
                         identityRegistry,
                         targetResolver,
+                        bootstrapRegistry,
                         failoverRegistry
                 );
     }
@@ -172,6 +179,7 @@ class BackendKickFailoverServiceTest {
                         sessionRegistry,
                         mismatchedRegistry,
                         targetResolver,
+                        bootstrapRegistry,
                         failoverRegistry
                 );
 
@@ -344,6 +352,94 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
+    void successfulConnectionPreservesColdBootstrapReservation() {
+        RegisteredServer coldLobby =
+                server("lobby-1");
+
+        authenticatePlayer();
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.notConfigured()
+        );
+
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.bootstrapRequired(
+                        coldLobby
+                )
+        );
+
+        service.resolveFailoverTarget(
+                event(
+                        server("skyblock-1"),
+                        false
+                )
+        );
+
+        service.clearPendingFailover(PLAYER_ID);
+
+        assertTrue(
+                !failoverRegistry.isReserved(PLAYER_ID)
+        );
+        assertTrue(
+                bootstrapRegistry
+                        .findByTarget("lobby-1")
+                        .isPresent()
+        );
+    }
+
+    @Test
+    void disconnectCancelsColdBootstrapReservation() {
+        RegisteredServer coldLobby =
+                server("lobby-1");
+
+        authenticatePlayer();
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.notConfigured()
+        );
+
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.bootstrapRequired(
+                        coldLobby
+                )
+        );
+
+        service.resolveFailoverTarget(
+                event(
+                        server("skyblock-1"),
+                        false
+                )
+        );
+
+        service.cancelPendingFailover(PLAYER_ID);
+
+        assertTrue(
+                !failoverRegistry.isReserved(PLAYER_ID)
+        );
+        assertEquals(0, bootstrapRegistry.size());
+    }
+
+    @Test
     void allowsNewFailoverChainAfterSuccessfulConnection() {
         RegisteredServer firstTarget =
                 server("skyblock-2");
@@ -411,7 +507,7 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
-    void doesNotAcceptSameTypeBootstrapTarget() {
+    void acceptsSameTypeBootstrapTarget() {
         RegisteredServer coldTarget =
                 server("lobby-2");
 
@@ -437,9 +533,14 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
+                BackendKickFailoverResolutionStatus.REDIRECT,
                 result.status()
         );
+        assertSame(
+                coldTarget,
+                result.redirectTarget().orElseThrow()
+        );
+        assertEquals(1, bootstrapRegistry.size());
     }
 
     @Test
@@ -689,7 +790,7 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
-    void doesNotAcceptLobbyBootstrapFallback() {
+    void usesColdLobbyFallbackForSkyblock() {
         RegisteredServer lobby =
                 server("lobby-1");
 
@@ -722,9 +823,79 @@ class BackendKickFailoverServiceTest {
                 );
 
         assertSame(
+                BackendKickFailoverResolutionStatus.REDIRECT,
+                result.status()
+        );
+        assertSame(
+                lobby,
+                result.redirectTarget().orElseThrow()
+        );
+        assertTrue(
+                failoverRegistry.isReserved(PLAYER_ID)
+        );
+
+        BackendBootstrapReservation reservation =
+                bootstrapRegistry
+                        .findByTarget("lobby-1")
+                        .orElseThrow();
+
+        assertEquals(PLAYER_ID, reservation.playerId());
+    }
+
+    @Test
+    void disconnectsWhenColdLobbyBootstrapIsBusy() {
+        RegisteredServer lobby =
+                server("lobby-1");
+
+        authenticatePlayer();
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+
+        bootstrapRegistry.register(
+                new BackendBootstrapReservation(
+                        "lobby-1",
+                        UUID.fromString(
+                                "de4ac295-0a64-4eb3-b7c4-f7439e413032"
+                        ),
+                        UUID.fromString(
+                                "eaf692d8-1708-4138-a881-c096207668bf"
+                        ),
+                        System.currentTimeMillis()
+                )
+        );
+
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.notConfigured()
+        );
+
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.bootstrapRequired(lobby)
+        );
+
+        BackendKickFailoverResolution result =
+                service.resolveFailoverTarget(
+                        event(
+                                server("skyblock-1"),
+                                false
+                        )
+                );
+
+        assertSame(
                 BackendKickFailoverResolutionStatus.DISCONNECT,
                 result.status()
         );
+        assertTrue(
+                !failoverRegistry.isReserved(PLAYER_ID)
+        );
+        assertEquals(1, bootstrapRegistry.size());
     }
 
     @Test
@@ -774,6 +945,7 @@ class BackendKickFailoverServiceTest {
                         null,
                         identityRegistry,
                         targetResolver,
+                        bootstrapRegistry,
                         failoverRegistry
                 )
         );
@@ -784,6 +956,7 @@ class BackendKickFailoverServiceTest {
                         sessionRegistry,
                         null,
                         targetResolver,
+                        bootstrapRegistry,
                         failoverRegistry
                 )
         );
@@ -793,6 +966,18 @@ class BackendKickFailoverServiceTest {
                 () -> new BackendKickFailoverService(
                         sessionRegistry,
                         identityRegistry,
+                        null,
+                        bootstrapRegistry,
+                        failoverRegistry
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new BackendKickFailoverService(
+                        sessionRegistry,
+                        identityRegistry,
+                        targetResolver,
                         null,
                         failoverRegistry
                 )
@@ -804,6 +989,7 @@ class BackendKickFailoverServiceTest {
                         sessionRegistry,
                         identityRegistry,
                         targetResolver,
+                        bootstrapRegistry,
                         null
                 )
         );
