@@ -288,7 +288,8 @@ public final class TheosferaProxy {
                 new TransferTargetResolver(
                         proxyServer,
                         authorizationPolicy,
-                        identityRegistry
+                        identityRegistry,
+                        healthRegistry
                 );
 
         PlayerTransferExecutor transferExecutor =

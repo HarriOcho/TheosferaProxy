@@ -2,6 +2,7 @@ package com.theosfera.proxy.transfer;
 
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.velocitypowered.api.proxy.Player;
@@ -11,6 +12,11 @@ import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -27,13 +33,25 @@ import static org.mockito.Mockito.when;
 
 class TransferTargetResolverTest {
 
+    private static final Instant INITIAL_TIME =
+            Instant.parse("2026-07-24T06:00:00Z");
+    private static final Duration FRESHNESS_THRESHOLD =
+            Duration.ofSeconds(15);
+
     private ProxyServer proxyServer;
     private BackendIdentityRegistry identityRegistry;
+    private BackendHealthRegistry healthRegistry;
+    private MutableClock clock;
 
     @BeforeEach
     void setUp() {
         proxyServer = mock(ProxyServer.class);
         identityRegistry = new BackendIdentityRegistry();
+        clock = new MutableClock(INITIAL_TIME);
+        healthRegistry = new BackendHealthRegistry(
+                clock,
+                FRESHNESS_THRESHOLD
+        );
     }
 
     @Test
@@ -196,6 +214,160 @@ class TransferTargetResolverTest {
 
         assertTrue(
                 resolution.resolvedTarget().isEmpty()
+        );
+    }
+
+    @Test
+    void rejectsAuthenticatedActiveTargetWithUnknownHealth() {
+        configuredServer(
+                "skyblock-1",
+                true
+        );
+
+        identityRegistry.register(
+                new BackendIdentity(
+                        "skyblock-1",
+                        BackendType.SKYBLOCK
+                )
+        );
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
+
+        assertEquals(
+                TransferTargetResolutionStatus
+                        .NOT_AUTHENTICATED,
+                resolution.status()
+        );
+
+        assertTrue(
+                resolution.resolvedTarget().isEmpty()
+        );
+    }
+
+    @Test
+    void rejectsAuthenticatedActiveTargetWithStaleHealth() {
+        configuredServer(
+                "skyblock-1",
+                true
+        );
+
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+
+        clock.advance(
+                FRESHNESS_THRESHOLD.plusMillis(1)
+        );
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
+
+        assertEquals(
+                TransferTargetResolutionStatus
+                        .NOT_AUTHENTICATED,
+                resolution.status()
+        );
+
+        assertTrue(
+                resolution.resolvedTarget().isEmpty()
+        );
+    }
+
+    @Test
+    void resolvesAuthenticatedActiveTargetWithHealthyHealth() {
+        RegisteredServer server =
+                configuredServer(
+                        "skyblock-1",
+                        true
+                );
+
+        registerIdentity(
+                "skyblock-1",
+                BackendType.SKYBLOCK
+        );
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "skyblock-1",
+                                BackendType.SKYBLOCK
+                        )
+                ).resolve(BackendType.SKYBLOCK);
+
+        assertEquals(
+                TransferTargetResolutionStatus.RESOLVED,
+                resolution.status()
+        );
+
+        assertSame(
+                server,
+                resolution
+                        .resolvedTarget()
+                        .orElseThrow()
+        );
+    }
+
+    @Test
+    void skipsStaleCandidateAndSelectsNextHealthyCandidate() {
+        configuredServer(
+                "lobby-a",
+                true
+        );
+
+        RegisteredServer selected =
+                configuredServer(
+                        "lobby-b",
+                        true
+                );
+
+        registerIdentity(
+                "lobby-a",
+                BackendType.LOBBY
+        );
+
+        registerIdentity(
+                "lobby-b",
+                BackendType.LOBBY
+        );
+
+        clock.advance(
+                FRESHNESS_THRESHOLD.plusMillis(1)
+        );
+
+        healthRegistry.markHealthy("lobby-b");
+
+        TransferTargetResolution resolution =
+                resolverFor(
+                        Map.of(
+                                "lobby-a",
+                                BackendType.LOBBY,
+                                "lobby-b",
+                                BackendType.LOBBY
+                        )
+                ).resolve(BackendType.LOBBY);
+
+        assertEquals(
+                TransferTargetResolutionStatus.RESOLVED,
+                resolution.status()
+        );
+
+        assertSame(
+                selected,
+                resolution
+                        .resolvedTarget()
+                        .orElseThrow()
         );
     }
 
@@ -989,7 +1161,8 @@ class TransferTargetResolverTest {
                 () -> new TransferTargetResolver(
                         null,
                         authorizationPolicy,
-                        identityRegistry
+                        identityRegistry,
+                        healthRegistry
                 )
         );
 
@@ -998,7 +1171,8 @@ class TransferTargetResolverTest {
                 () -> new TransferTargetResolver(
                         proxyServer,
                         null,
-                        identityRegistry
+                        identityRegistry,
+                        healthRegistry
                 )
         );
 
@@ -1007,6 +1181,17 @@ class TransferTargetResolverTest {
                 () -> new TransferTargetResolver(
                         proxyServer,
                         authorizationPolicy,
+                        null,
+                        healthRegistry
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new TransferTargetResolver(
+                        proxyServer,
+                        authorizationPolicy,
+                        identityRegistry,
                         null
                 )
         );
@@ -1030,7 +1215,8 @@ class TransferTargetResolverTest {
                 new BackendAuthorizationPolicy(
                         allowedBackends
                 ),
-                identityRegistry
+                identityRegistry,
+                healthRegistry
         );
     }
 
@@ -1044,6 +1230,7 @@ class TransferTargetResolverTest {
                         backendType
                 )
         );
+        healthRegistry.markHealthy(serverName);
     }
 
     private RegisteredServer configuredServer(
@@ -1082,5 +1269,37 @@ class TransferTargetResolverTest {
                 .thenReturn(serverName);
 
         return server;
+    }
+
+    private static final class MutableClock extends Clock {
+
+        private Instant currentInstant;
+
+        private MutableClock(Instant initialInstant) {
+            this.currentInstant = initialInstant;
+        }
+
+        private void advance(Duration duration) {
+            currentInstant = currentInstant.plus(duration);
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            if (ZoneOffset.UTC.equals(zone)) {
+                return this;
+            }
+
+            return Clock.fixed(currentInstant, zone);
+        }
+
+        @Override
+        public Instant instant() {
+            return currentInstant;
+        }
     }
 }
