@@ -54,7 +54,7 @@ class BackendKickFailoverListenerTest {
         KickedFromServerEvent event =
                 event(
                         server("skyblock-1"),
-                        true
+                        false
                 );
 
         listener.onKickedFromServer(event);
@@ -96,7 +96,7 @@ class BackendKickFailoverListenerTest {
         KickedFromServerEvent event =
                 event(
                         server("skyblock-1"),
-                        true
+                        false
                 );
 
         Component expectedReason =
@@ -143,7 +143,7 @@ class BackendKickFailoverListenerTest {
                 event(
                         player("lobby-1"),
                         server("skyblock-1"),
-                        true
+                        false
                 );
 
         listener.onKickedFromServer(event);
@@ -173,14 +173,14 @@ class BackendKickFailoverListenerTest {
         listener.onKickedFromServer(
                 event(
                         server("skyblock-1"),
-                        true
+                        false
                 )
         );
 
         KickedFromServerEvent secondEvent =
                 event(
                         server("skyblock-1"),
-                        true
+                        false
                 );
 
         KickedFromServerEvent.ServerKickResult originalResult =
@@ -217,7 +217,7 @@ class BackendKickFailoverListenerTest {
         listener.onKickedFromServer(
                 event(
                         server("skyblock-1"),
-                        true
+                        false
                 )
         );
 
@@ -232,7 +232,7 @@ class BackendKickFailoverListenerTest {
         KickedFromServerEvent secondEvent =
                 event(
                         server("skyblock-1"),
-                        true
+                        false
                 );
 
         listener.onKickedFromServer(secondEvent);
@@ -272,7 +272,7 @@ class BackendKickFailoverListenerTest {
         listener.onKickedFromServer(
                 event(
                         server("skyblock-1"),
-                        true
+                        false
                 )
         );
 
@@ -286,7 +286,7 @@ class BackendKickFailoverListenerTest {
         KickedFromServerEvent secondEvent =
                 event(
                         server("skyblock-1"),
-                        true
+                        false
                 );
 
         listener.onKickedFromServer(secondEvent);
