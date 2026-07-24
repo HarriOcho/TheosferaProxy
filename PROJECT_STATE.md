@@ -475,7 +475,12 @@ Reglas de seguridad confirmadas:
 - Auth nunca es un destino de recuperación para un jugador autenticado;
 - el backend que produjo el kick queda excluido;
 - el servidor actual del jugador no puede resolverse como destino;
-- solo se aceptan backends jugables autorizados y utilizables;
+- solo se aceptan backends jugables autorizados, utilizables y actualmente
+  activos;
+- el destino debe resolverse con
+  `TransferTargetResolutionStatus.RESOLVED`;
+- `BOOTSTRAP_REQUIRED` no es un destino válido para failover;
+- el failover no inicia ni reserva un backend apagado;
 - una resolución ambigua o la ausencia de destino seguro termina en
   desconexión explícita;
 - no se permite que un resultado vacío sea interpretado silenciosamente
@@ -486,6 +491,10 @@ Reglas de seguridad confirmadas:
   original proporcionada por el backend.
 
 Este failover protege fallos de conexión o kicks de backends existentes.
+Si el Lobby está apagado y no existe otro destino jugable activo, el
+jugador es desconectado de forma controlada. Velocity no recibe una
+redirección hacia el Lobby inactivo ni puede improvisar un retorno hacia
+Auth.
 No constituye todavía balanceo por carga, health checking periódico ni
 failover multiinstancia basado en métricas de frescura.
 
@@ -801,6 +810,12 @@ Commits relevantes ya integrados para el circuito Auth→Lobby:
   `d2af094 feat: add secure lobby commands (#23)`;
 - TheosferaProxy:
   `f9b58f4 fix: make backend kick failover fail closed (#30)`;
+- TheosferaProxy:
+  `dc68788 fix: handle backend kicks from established connections (#32)`;
+- TheosferaProxy:
+  `c3fc274 fix: support failover to cold lobby targets (#33)`;
+- TheosferaProxy:
+  `d862c78 fix: restrict failover to live targets (#34)`;
 - TheosferaAuth:
   `b6ae696 Merge pull request #4 from HarriOcho/fix/auth-transfer-handoff-lifecycle`.
 
@@ -809,17 +824,42 @@ squash merge.
 
 Estado Git al crear este checkpoint:
 
-- `main` sincronizada con `origin/main` en `f9b58f4`;
-- árbol de trabajo limpio antes de crear la rama documental;
+- `main` sincronizada con `origin/main` en `d862c78`;
+- PR `#34` fusionado en `main`;
+- árbol de archivos rastreados limpio antes de crear la rama documental;
+- los cuatro archivos auxiliares de diagnóstico permanecen sin rastrear y
+  no forman parte del proyecto ni del checkpoint;
 - ramas locales y referencias remotas obsoletas eliminadas;
 - únicamente `main` permanecía como rama local antes del checkpoint;
 - rama actual del checkpoint:
-  `docs/backend-kick-failover-checkpoint`.
+  `docs/failover-runtime-checkpoint`.
 
-El failover fail-closed está cubierto por pruebas automatizadas y build
-local exitoso. Su validación runtime específica queda pendiente; no debe
-confundirse con las pruebas runtime ya confirmadas de Auth→Lobby y de los
-comandos `/hub` y `/lobby`.
+El failover fail-closed está cubierto por pruebas automatizadas, build local
+exitoso y validación runtime específica.
+
+Evidencia runtime confirmada con el Lobby apagado:
+
+- un jugador autenticado conectado a un backend establecido fue sometido al
+  flujo de kick;
+- no existía otro destino jugable actualmente activo;
+- el destino frío se descartó porque su resolución requería
+  `BOOTSTRAP_REQUIRED`;
+- el jugador fue desconectado de forma controlada;
+- Velocity no intentó conectarlo al Lobby apagado;
+- el failover no inició ni reservó el Lobby;
+- el jugador no fue redirigido hacia Auth.
+
+Artefacto validado:
+
+- JAR: `TheosferaProxy-0.1.0-SNAPSHOT.jar`;
+- tamaño: `456944` bytes;
+- SHA-256:
+  `9D5330AC09CD10F5E500D38DE4660F8C6BA2D6762C5C21A61B8FCE39696B7975`;
+- el hash del artefacto generado en `build/libs` coincide exactamente con el
+  hash del JAR instalado en la carpeta `plugins` de Velocity.
+
+Esta evidencia es independiente de las pruebas runtime ya confirmadas de
+Auth→Lobby y de los comandos `/hub` y `/lobby`.
 
 ## 19. Estado transitorio y persistencia
 
@@ -892,8 +932,9 @@ Backend
 
 El handshake, la autenticación, la presencia, la desconexión y la
 coordinación segura de transferencias están implementados. También está
-implementado el failover fail-closed ante kicks de backends para jugadores
-autenticados. En heartbeat,
+implementado y validado en runtime el failover fail-closed ante kicks de
+backends para jugadores autenticados, incluyendo el caso en que el Lobby está
+apagado y no existe otro destino jugable activo. En heartbeat,
 lo implementado actualmente es la respuesta de protocolo `PING`→`PONG`,
 no un emisor periódico ni health checking periódico.
 
