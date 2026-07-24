@@ -1,5 +1,6 @@
 package com.theosfera.proxy.failover;
 
+import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -11,6 +12,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -85,6 +87,48 @@ class PendingPlayerFailoverRegistryTest {
     }
 
     @Test
+    void successfulConnectionKeepsBootstrapForDisconnectCleanup() {
+        PendingPlayerFailoverRegistry registry =
+                new PendingPlayerFailoverRegistry();
+        BackendBootstrapReservation reservation =
+                reservation(PLAYER_ID);
+
+        assertTrue(
+                registry.reserve(
+                        PLAYER_ID,
+                        reservation
+                )
+        );
+
+        assertTrue(registry.clear(PLAYER_ID));
+        assertFalse(registry.isReserved(PLAYER_ID));
+        assertSame(
+                reservation,
+                registry
+                        .clearForDisconnect(PLAYER_ID)
+                        .orElseThrow()
+        );
+    }
+
+    @Test
+    void rejectsBootstrapReservationForAnotherPlayer() {
+        PendingPlayerFailoverRegistry registry =
+                new PendingPlayerFailoverRegistry();
+        UUID anotherPlayerId =
+                UUID.fromString(
+                        "eaf692d8-1708-4138-a881-c096207668bf"
+                );
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> registry.reserve(
+                        PLAYER_ID,
+                        reservation(anotherPlayerId)
+                )
+        );
+    }
+
+    @Test
     void rejectsNullInput() {
         PendingPlayerFailoverRegistry registry =
                 new PendingPlayerFailoverRegistry();
@@ -102,6 +146,24 @@ class PendingPlayerFailoverRegistryTest {
         assertThrows(
                 NullPointerException.class,
                 () -> registry.isReserved(null)
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> registry.clearForDisconnect(null)
+        );
+    }
+
+    private BackendBootstrapReservation reservation(
+            UUID playerId
+    ) {
+        return new BackendBootstrapReservation(
+                "lobby-1",
+                UUID.fromString(
+                        "de4ac295-0a64-4eb3-b7c4-f7439e413032"
+                ),
+                playerId,
+                1_750_000_000_000L
         );
     }
 }

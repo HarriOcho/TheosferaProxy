@@ -5,6 +5,7 @@ import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
@@ -22,6 +23,7 @@ import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
@@ -304,6 +306,64 @@ class BackendKickFailoverListenerTest {
     }
 
     @Test
+    void disconnectEventCancelsColdBootstrapReservation() {
+        TransferTargetResolver targetResolver =
+                mock(TransferTargetResolver.class);
+        BackendBootstrapRegistry bootstrapRegistry =
+                new BackendBootstrapRegistry();
+        RegisteredServer coldLobby =
+                server("lobby-1");
+
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.notConfigured()
+        );
+
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution.bootstrapRequired(
+                        coldLobby
+                )
+        );
+
+        BackendKickFailoverListener listener =
+                listener(
+                        targetResolver,
+                        bootstrapRegistry
+                );
+
+        listener.onKickedFromServer(
+                event(
+                        server("skyblock-1"),
+                        false
+                )
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByTarget("lobby-1")
+                        .isPresent()
+        );
+
+        listener.onDisconnect(
+                new DisconnectEvent(
+                        player(),
+                        DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN
+                )
+        );
+
+        assertTrue(
+                bootstrapRegistry
+                        .findByTarget("lobby-1")
+                        .isEmpty()
+        );
+    }
+
+    @Test
     void rejectsNullDependencyAndEvent() {
         assertThrows(
                 NullPointerException.class,
@@ -332,11 +392,22 @@ class BackendKickFailoverListenerTest {
     private BackendKickFailoverListener listener(
             TransferTargetResolver targetResolver
     ) {
+        return listener(
+                targetResolver,
+                new BackendBootstrapRegistry()
+        );
+    }
+
+    private BackendKickFailoverListener listener(
+            TransferTargetResolver targetResolver,
+            BackendBootstrapRegistry bootstrapRegistry
+    ) {
         return new BackendKickFailoverListener(
                 new BackendKickFailoverService(
                         authenticatedSessions(),
                         identityRegistry(),
                         targetResolver,
+                        bootstrapRegistry,
                         new PendingPlayerFailoverRegistry()
                 )
         );
