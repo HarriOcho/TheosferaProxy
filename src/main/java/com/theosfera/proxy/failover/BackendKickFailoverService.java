@@ -227,10 +227,7 @@ public final class BackendKickFailoverService {
                 );
 
         if (resolution.status()
-                != TransferTargetResolutionStatus.RESOLVED
-                && resolution.status()
-                != TransferTargetResolutionStatus
-                .BOOTSTRAP_REQUIRED) {
+                != TransferTargetResolutionStatus.RESOLVED) {
             return Optional.empty();
         }
 

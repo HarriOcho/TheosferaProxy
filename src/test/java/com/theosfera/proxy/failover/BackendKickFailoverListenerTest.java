@@ -306,7 +306,7 @@ class BackendKickFailoverListenerTest {
     }
 
     @Test
-    void disconnectEventCancelsColdBootstrapReservation() {
+    void coldLobbyDisconnectsWithoutBootstrapReservation() {
         TransferTargetResolver targetResolver =
                 mock(TransferTargetResolver.class);
         BackendBootstrapRegistry bootstrapRegistry =
@@ -336,24 +336,17 @@ class BackendKickFailoverListenerTest {
                         bootstrapRegistry
                 );
 
-        listener.onKickedFromServer(
+        KickedFromServerEvent event =
                 event(
                         server("skyblock-1"),
                         false
-                )
-        );
+                );
 
-        assertTrue(
-                bootstrapRegistry
-                        .findByTarget("lobby-1")
-                        .isPresent()
-        );
+        listener.onKickedFromServer(event);
 
-        listener.onDisconnect(
-                new DisconnectEvent(
-                        player(),
-                        DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN
-                )
+        assertInstanceOf(
+                KickedFromServerEvent.DisconnectPlayer.class,
+                event.getResult()
         );
 
         assertTrue(
