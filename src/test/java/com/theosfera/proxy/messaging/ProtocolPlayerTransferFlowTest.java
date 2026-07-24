@@ -12,6 +12,7 @@ import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
@@ -38,6 +39,8 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -91,6 +94,12 @@ class ProtocolPlayerTransferFlowTest {
         BackendIdentityRegistry identityRegistry =
                 new BackendIdentityRegistry();
 
+        BackendHealthRegistry healthRegistry =
+                new BackendHealthRegistry(
+                        Clock.systemUTC(),
+                        Duration.ofSeconds(15)
+                );
+
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
 
@@ -133,6 +142,9 @@ class ProtocolPlayerTransferFlowTest {
         when(proxyServer.getServer("skyblock-1"))
                 .thenReturn(Optional.of(skyblockTarget));
 
+        when(skyblockTarget.getPlayersConnected())
+                .thenReturn(List.of(mock(Player.class)));
+
         when(messageSender.send(
                 any(ServerConnection.class),
                 any(ProtocolEnvelope.class)
@@ -151,7 +163,8 @@ class ProtocolPlayerTransferFlowTest {
                 new TransferTargetResolver(
                         proxyServer,
                         policy,
-                        identityRegistry
+                        identityRegistry,
+                        healthRegistry
                 );
 
         TransferResultSender resultSender =
@@ -245,6 +258,8 @@ class ProtocolPlayerTransferFlowTest {
                         )
                 )
         );
+
+        healthRegistry.markHealthy("skyblock-1");
 
         send(
                 listener,

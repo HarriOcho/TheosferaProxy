@@ -7,6 +7,8 @@ import com.velocitypowered.api.command.CommandMeta;
 import com.velocitypowered.api.event.EventManager;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.messages.ChannelRegistrar;
+import com.velocitypowered.api.scheduler.ScheduledTask;
+import com.velocitypowered.api.scheduler.Scheduler;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
@@ -46,6 +48,15 @@ class TheosferaProxyLifecycleTest {
         CommandMeta commandMeta =
                 mock(CommandMeta.class);
 
+        Scheduler velocityScheduler =
+                mock(Scheduler.class);
+
+        Scheduler.TaskBuilder taskBuilder =
+                mock(Scheduler.TaskBuilder.class);
+
+        ScheduledTask scheduledTask =
+                mock(ScheduledTask.class);
+
         when(proxyServer.getChannelRegistrar())
                 .thenReturn(channelRegistrar);
 
@@ -54,6 +65,20 @@ class TheosferaProxyLifecycleTest {
 
         when(proxyServer.getCommandManager())
                 .thenReturn(commandManager);
+
+        when(proxyServer.getScheduler())
+                .thenReturn(velocityScheduler);
+
+        when(velocityScheduler.buildTask(
+                any(),
+                any(Runnable.class)
+        )).thenReturn(taskBuilder);
+
+        when(taskBuilder.repeat(any()))
+                .thenReturn(taskBuilder);
+
+        when(taskBuilder.schedule())
+                .thenReturn(scheduledTask);
 
         when(commandManager.metaBuilder("hub"))
                 .thenReturn(builder);

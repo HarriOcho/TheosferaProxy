@@ -9,6 +9,7 @@ import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.PlayerServerReadyPayload;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
@@ -35,6 +36,8 @@ import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 
+import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -84,6 +87,12 @@ class ProtocolColdBackendBootstrapFlowTest {
 
         BackendIdentityRegistry identityRegistry =
                 new BackendIdentityRegistry();
+
+        BackendHealthRegistry healthRegistry =
+                new BackendHealthRegistry(
+                        Clock.systemUTC(),
+                        Duration.ofSeconds(15)
+                );
 
         identityRegistry.register(
                 new BackendIdentity(
@@ -167,7 +176,8 @@ class ProtocolColdBackendBootstrapFlowTest {
                 new TransferTargetResolver(
                         proxyServer,
                         policy,
-                        identityRegistry
+                        identityRegistry,
+                        healthRegistry
                 );
 
         TransferResultSender resultSender =

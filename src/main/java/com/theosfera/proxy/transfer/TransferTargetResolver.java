@@ -2,6 +2,8 @@ package com.theosfera.proxy.transfer;
 
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
+import com.theosfera.proxy.backend.BackendHealthStatus;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -17,11 +19,13 @@ public final class TransferTargetResolver {
     private final ProxyServer proxyServer;
     private final BackendAuthorizationPolicy authorizationPolicy;
     private final BackendIdentityRegistry identityRegistry;
+    private final BackendHealthRegistry healthRegistry;
 
     public TransferTargetResolver(
             ProxyServer proxyServer,
             BackendAuthorizationPolicy authorizationPolicy,
-            BackendIdentityRegistry identityRegistry
+            BackendIdentityRegistry identityRegistry,
+            BackendHealthRegistry healthRegistry
     ) {
         this.proxyServer = Objects.requireNonNull(
                 proxyServer,
@@ -36,6 +40,11 @@ public final class TransferTargetResolver {
         this.identityRegistry = Objects.requireNonNull(
                 identityRegistry,
                 "identityRegistry cannot be null"
+        );
+
+        this.healthRegistry = Objects.requireNonNull(
+                healthRegistry,
+                "healthRegistry cannot be null"
         );
     }
 
@@ -151,7 +160,9 @@ public final class TransferTargetResolver {
                         )
                 )
                 .isPresent()
-                && hasConnectedPlayers(server);
+                && hasConnectedPlayers(server)
+                && healthRegistry.status(serverName)
+                        == BackendHealthStatus.HEALTHY;
     }
 
     private boolean isEligibleColdTarget(

@@ -187,7 +187,7 @@ El sender:
 - usa el canal oficial;
 - informa si el backend aceptó el envío.
 
-## 10. Heartbeat
+## 10. Heartbeat y health checking periódico
 
 `PingMessageHandler` implementa:
 
@@ -203,6 +203,27 @@ El handler:
 - está compuesto en el dispatcher principal.
 
 Existen pruebas unitarias y una prueba integral del flujo heartbeat.
+
+La rama `feature/backend-health-checking` implementa el health checking
+periódico y su integración con la resolución de destinos:
+
+- el Proxy emite `PING` periódicos hacia los backends registrados;
+- cada comprobación conserva correlación entre solicitud y respuesta;
+- los `PONG` recibidos se validan antes de actualizar el estado;
+- el estado de salud y su frescura se mantienen en memoria;
+- los timeouts y respuestas inválidas fallan cerrado;
+- el lifecycle del scheduler y del estado temporal se limpia al apagar el
+  plugin;
+- `TransferTargetResolver` exige estado `HEALTHY` para resolver como jugable
+  un backend autenticado con jugadores conectados;
+- un backend autenticado cuya salud dejó de estar fresca ya no se selecciona
+  como destino jugable normal;
+- un destino vacío elegible puede conservar la resolución
+  `BOOTSTRAP_REQUIRED`, sin ser confundido con un backend actualmente sano.
+
+La implementación está cubierta por pruebas automatizadas y fue validada en
+runtime con pérdida de frescura, exclusión segura, fallo controlado y
+recuperación mediante el flujo de bootstrap.
 
 ## 11. Handshake seguro de backends
 
@@ -495,8 +516,12 @@ Si el Lobby está apagado y no existe otro destino jugable activo, el
 jugador es desconectado de forma controlada. Velocity no recibe una
 redirección hacia el Lobby inactivo ni puede improvisar un retorno hacia
 Auth.
-No constituye todavía balanceo por carga, health checking periódico ni
-failover multiinstancia basado en métricas de frescura.
+No constituye todavía balanceo por carga ni una estrategia multiinstancia
+basada en métricas de carga. El failover reutiliza `TransferTargetResolver`,
+por lo que los destinos resueltos como jugables deben conservar salud
+`HEALTHY` y frescura vigente. Un backend autenticado pero `STALE` no puede
+convertirse en destino normal de recuperación, y `BOOTSTRAP_REQUIRED`
+continúa rechazándose para failover.
 
 ## 15. Limpieza por desconexión
 
@@ -531,6 +556,10 @@ Existen pruebas para:
 - dispatcher y contexto;
 - sender;
 - heartbeat;
+- emisión periódica de health checks;
+- correlación y validación de `PONG`;
+- transición y frescura del estado de salud de backends;
+- timeout y limpieza del health checking;
 - política de backends;
 - carga de `backends.properties`;
 - registro de identidades;
@@ -606,6 +635,9 @@ Resultado:
 ```text
 BUILD SUCCESSFUL
 ```
+
+La rama `feature/backend-health-checking` alcanzó 318 pruebas automatizadas
+exitosas en su última validación confirmada.
 
 ## 17. Prueba runtime confirmada
 
@@ -721,21 +753,68 @@ Semántica confirmada:
 - no debe restaurarse en TheosferaAuth una espera local de
   `TRANSFER_RESULT` para este handoff.
 
-Limitación observada de identidad y frescura:
+Estado de identidad, salud y frescura:
 
-- `BackendIdentityRegistry` conserva identidades en memoria hasta apagar
-  Velocity;
-- actualmente `PingMessageHandler` responde `PING` con `PONG`, pero
-  TheosferaCore no emite heartbeats periódicos;
-- una identidad registrada históricamente no constituye por sí sola una
-  prueba de salud actual;
-- la indisponibilidad real queda contenida por el resultado de
-  `ConnectionRequest`, que falla cerrado;
-- antes de implementar failover multiinstancia o selección por carga
-  debe definirse una política explícita de frescura y salud de backends;
-- esto no fue un error durante la prueba: el comportamiento observado
-  fue seguro y recuperable;
-- no existe health checking periódico.
+- `BackendIdentityRegistry` conserva las identidades autenticadas en memoria
+  durante el proceso actual de Velocity;
+- una identidad registrada históricamente no constituye por sí sola una prueba
+  de salud actual;
+- el Proxy emite comprobaciones periódicas y correlacionadas `PING`→`PONG`;
+- los `PONG` válidos actualizan el estado fresco del backend;
+- los timeouts y las respuestas inválidas no mantienen artificialmente sano al
+  destino;
+- `TransferTargetResolver` exige salud `HEALTHY` y frescura vigente para
+  resolver como jugable un backend autenticado con jugadores conectados;
+- un backend cuya salud se vuelve `STALE` deja de resolverse como destino
+  jugable normal;
+- un destino vacío elegible puede resolverse como `BOOTSTRAP_REQUIRED`, sin
+  ser confundido con un backend actualmente sano;
+- `/hub`, `/lobby` y el failover ante kicks únicamente aceptan destinos
+  `RESOLVED` y no arrancan backends mediante bootstrap;
+- las solicitudes explícitas de transferencia pueden utilizar la resolución
+  `BOOTSTRAP_REQUIRED` y registrar temporalmente una reserva;
+- una reserva de bootstrap no enciende por sí sola el proceso remoto: el Proxy
+  intenta la conexión mediante `PlayerTransferExecutor`;
+- si el backend continúa apagado, la conexión falla de forma controlada, se
+  eliminan la transferencia pendiente y la reserva, y Core recibe
+  `TRANSFER_RESULT` con estado `FAILED`;
+- la presencia del backend de origen no se elimina ante una transferencia
+  fallida;
+- después de encender `skyblock-1`, una nueva solicitud por la ruta de
+  bootstrap consiguió conectar al jugador y fue confirmada posteriormente por
+  `PLAYER_SERVER_READY`;
+- durante esa recuperación todavía se observó `Bootstrap reservado`, por lo
+  que no se afirma una transición autónoma `STALE`→`FRESH` observada mediante
+  un `PONG` previo a la transferencia;
+- el comportamiento runtime fue seguro, recuperable y coherente con la
+  política fail-closed.
+
+Matriz runtime confirmada para salud, frescura y bootstrap:
+
+1. Con `skyblock-1` inicialmente operativo, el backend participó normalmente
+   en el flujo de red.
+2. Después de apagarlo y esperar la pérdida de frescura, dejó de resolverse
+   como destino jugable normal.
+3. Una transferencia explícita hacia Skyblock se resolvió mediante
+   `BOOTSTRAP_REQUIRED`.
+4. El Proxy registró una reserva temporal asociada al `requestId`.
+5. Como `skyblock-1` continuaba apagado, `ConnectionRequest` falló de forma
+   controlada.
+6. Core recibió primero la confirmación `SUBMITTED` y después el resultado
+   final `FAILED`; ambos mensajes representan fases distintas de la misma
+   solicitud.
+7. `completeTransfer()` retiró la transferencia pendiente mediante
+   `removeIfMatches()`.
+8. El resultado distinto de `SUCCESS` eliminó la reserva mediante
+   `bootstrapRegistry.removeByRequest()`.
+9. El jugador permaneció seguro en `lobby-1` y su presencia de origen no fue
+   eliminada.
+10. Después de encender `skyblock-1`, una nueva solicitud volvió a registrar
+    el bootstrap y consiguió conectar al jugador.
+11. Velocity confirmó la conexión a `skyblock-1` y la desconexión normal de
+    `lobby-1`.
+12. TheosferaProxy recibió posteriormente `PLAYER_SERVER_READY` desde
+    `skyblock-1`.
 
 Topología validada:
 
@@ -834,32 +913,55 @@ Estado Git al crear este checkpoint:
 - rama actual del checkpoint:
   `docs/failover-runtime-checkpoint`.
 
-El failover fail-closed está cubierto por pruebas automatizadas, build local
-exitoso y validación runtime específica.
+Estado posterior de desarrollo:
 
-Evidencia runtime confirmada con el Lobby apagado:
+- rama activa: `feature/backend-health-checking`;
+- último avance confirmado de la rama: `2f9ea16`;
+- health checking periódico y correlacionado implementado;
+- estado explícito de salud y frescura integrado en
+  `TransferTargetResolver`;
+- 318 pruebas automatizadas exitosas;
+- build local exitoso mediante `.\gradlew.bat build --no-daemon`;
+- validación runtime completada con pérdida de frescura, exclusión segura,
+  fallo controlado y recuperación mediante el flujo de bootstrap;
+- siguiente incremento todavía sin implementar: selección entre múltiples
+  instancias `HEALTHY` mediante métricas de carga.
 
-- un jugador autenticado conectado a un backend establecido fue sometido al
-  flujo de kick;
-- no existía otro destino jugable actualmente activo;
-- el destino frío se descartó porque su resolución requería
-  `BOOTSTRAP_REQUIRED`;
-- el jugador fue desconectado de forma controlada;
-- Velocity no intentó conectarlo al Lobby apagado;
-- el failover no inició ni reservó el Lobby;
-- el jugador no fue redirigido hacia Auth.
+El health checking, su integración con la resolución de destinos y el failover
+fail-closed están cubiertos por pruebas automatizadas, build local exitoso y
+validación runtime específica.
+
+Evidencia runtime confirmada para salud, frescura y bootstrap:
+
+- `skyblock-1` dejó de resolverse como destino jugable normal después de perder
+  frescura;
+- una transferencia explícita se resolvió mediante `BOOTSTRAP_REQUIRED`;
+- con el backend todavía apagado, la conexión falló de forma controlada;
+- Core recibió `SUBMITTED` y posteriormente `FAILED` para la misma solicitud;
+- la transferencia pendiente y su reserva temporal fueron eliminadas;
+- el jugador permaneció seguro en `lobby-1` y su presencia de origen se
+  conservó;
+- después de encender `skyblock-1`, una nueva solicitud mediante bootstrap
+  consiguió conectar al jugador;
+- TheosferaProxy recibió posteriormente `PLAYER_SERVER_READY`;
+- no se afirma haber observado directamente una transición autónoma
+  `STALE`→`FRESH` mediante un `PONG` previo a esa transferencia.
 
 Artefacto validado:
 
 - JAR: `TheosferaProxy-0.1.0-SNAPSHOT.jar`;
-- tamaño: `456944` bytes;
+- tamaño: `474108` bytes;
 - SHA-256:
-  `9D5330AC09CD10F5E500D38DE4660F8C6BA2D6762C5C21A61B8FCE39696B7975`;
+  `C2AE302A6F3420BFD7CA76E02EC8D031F6873DA8E66705FF139F1F76283C1D16`;
 - el hash del artefacto generado en `build/libs` coincide exactamente con el
-  hash del JAR instalado en la carpeta `plugins` de Velocity.
+  JAR instalado y validado en
+  `C:\Theosfera\Network\dev\proxy\plugins`;
+- la copia existente en `C:\Theosfera\Plugins\VelocityTest\plugins` corresponde
+  a un artefacto anterior y no formó parte de esta validación runtime.
 
 Esta evidencia es independiente de las pruebas runtime ya confirmadas de
-Auth→Lobby y de los comandos `/hub` y `/lobby`.
+Auth→Lobby, de los comandos `/hub` y `/lobby`, y del failover con el Lobby
+apagado.
 
 ## 19. Estado transitorio y persistencia
 
@@ -868,14 +970,24 @@ Actualmente son únicamente memoria local del proceso:
 - identidades de backends;
 - sesiones autenticadas;
 - presencia de jugadores;
-- transferencias pendientes.
+- transferencias pendientes;
+- estado de salud y frescura de backends;
+- comprobaciones `PING` pendientes;
+- reservas temporales de bootstrap.
 
-Las identidades de backends registradas en memoria indican que un
-backend completó handshake en algún momento del proceso actual. No
-constituyen por sí solas una prueba de salud o frescura actual.
-`PingMessageHandler` responde `PING` con `PONG`, pero TheosferaCore no
-emite heartbeats periódicos todavía. La indisponibilidad actual de un
-destino queda contenida por `ConnectionRequest`, que falla cerrado.
+Las identidades registradas indican que un backend completó correctamente el
+handshake durante el proceso actual, pero no constituyen por sí solas una
+prueba de disponibilidad presente. El health checking periódico mantiene por
+separado el estado de salud y su frescura. `TransferTargetResolver` consume
+esa información y exige un destino `HEALTHY` y fresco cuando debe resolver
+como jugable un backend autenticado con jugadores conectados.
+
+Un backend que pierde frescura deja de ser un destino jugable normal. Si se
+trata de un destino vacío elegible, una transferencia explícita todavía puede
+obtener `BOOTSTRAP_REQUIRED`; esa resolución no afirma que el proceso remoto
+esté encendido. La conexión final continúa bajo `ConnectionRequest`, que falla
+cerrado, y cualquier transferencia o reserva fallida se limpia de forma
+correlacionada.
 
 Todavía no existen:
 
@@ -911,10 +1023,13 @@ Un fallo de Redis no debe causar pérdida de perfiles o progreso.
   TheosferaProxy.
 - Los contratos Core–Proxy deben permanecer versionados.
 - Seguridad e integridad tienen prioridad sobre estética.
-- Antes de implementar failover multiinstancia o selección por carga
-  debe definirse una política explícita de salud y frescura de backends.
-- No afirmar que existe health checking periódico hasta que sea
-  implementado.
+- Una identidad autenticada no debe confundirse con salud actual.
+- La resolución jugable de un backend con jugadores conectados debe exigir
+  salud `HEALTHY` y frescura vigente.
+- `BOOTSTRAP_REQUIRED` no debe tratarse como disponibilidad actual ni ser
+  aceptado por `/hub`, `/lobby` o el failover.
+- La selección futura por carga deberá añadirse sobre la política de salud
+  existente, sin debilitar su comportamiento fail-closed.
 
 ## 21. Punto exacto de reanudación
 
@@ -930,13 +1045,16 @@ Backend
   → ProtocolMessageHandler
 ```
 
-El handshake, la autenticación, la presencia, la desconexión y la
-coordinación segura de transferencias están implementados. También está
-implementado y validado en runtime el failover fail-closed ante kicks de
-backends para jugadores autenticados, incluyendo el caso en que el Lobby está
-apagado y no existe otro destino jugable activo. En heartbeat,
-lo implementado actualmente es la respuesta de protocolo `PING`→`PONG`,
-no un emisor periódico ni health checking periódico.
+El handshake, la autenticación, la presencia, la desconexión y la coordinación
+segura de transferencias están implementados. También están implementados el
+health checking periódico y correlacionado, la política explícita de frescura,
+su integración con `TransferTargetResolver` y el failover fail-closed ante
+kicks de backends para jugadores autenticados.
+
+La política fue validada en runtime con pérdida de frescura, exclusión del
+destino como backend jugable normal, resolución `BOOTSTRAP_REQUIRED`, fallo
+seguro con el backend apagado, limpieza correlacionada y recuperación mediante
+una nueva transferencia después de encenderlo.
 
 Flujos de transferencia confirmados:
 
@@ -985,13 +1103,12 @@ Limitaciones actuales:
 - el estado continúa siendo local al proceso;
 - no existe Redis ni coordinación entre múltiples proxies;
 - no existe selección por carga entre varias instancias;
-- no existe política explícita de salud/frescura de backends;
-- no existe health checking periódico.
 
 Trabajo futuro, sin implementar todavía:
 
-- health checking periódico y una política completa de frescura;
-- failover multiinstancia basado en salud o carga;
+- selección por carga entre varias instancias saludables;
+- failover multiinstancia con una política explícita de preferencia y capacidad;
+- persistencia o coordinación distribuida del estado temporal;
 - modo mantenimiento.
 
 La selección de modalidades pertenece a TheosferaLobby, no a
@@ -999,8 +1116,8 @@ TheosferaProxy.
 
 Siguiente hito técnico recomendado:
 
-- definir e implementar health checking periódico antes de extender el
-  failover hacia selección multiinstancia por salud o carga.
+- definir e implementar selección entre múltiples instancias `HEALTHY`,
+  incorporando métricas de carga y conservando la política fail-closed.
 
 Redis y persistencia temporal siguen siendo decisiones futuras, pero no
 son el siguiente paso inmediato de este checkpoint.
@@ -1034,3 +1151,93 @@ Este diseño pertenece principalmente a TheosferaCore,
 TheosferaProtocol y TheosferaClient. TheosferaProxy no debe ejecutar ni
 autorizar acciones de keybind por sí solo salvo que un contrato futuro
 requiera coordinación global explícita.
+
+## 23. Visión aprobada de Core y modalidades
+
+Las siguientes decisiones están aprobadas como visión arquitectónica futura.
+No representan funciones ya implementadas y cada apartado importante deberá
+planificarse y aprobarse con el propietario antes de escribir código.
+
+### Regla de planificación
+
+Antes de implementar comandos, perfiles, progreso, amigos, parties,
+escuadrones, modalidades u otro sistema importante, se definirá conjuntamente:
+
+- alcance y exclusiones;
+- plugin responsable;
+- comandos, permisos y configuración;
+- experiencia de usuario y menús;
+- persistencia y sincronización cross-server;
+- casos límite, seguridad y comportamiento ante fallos;
+- incrementos de implementación;
+- pruebas automatizadas y validación runtime.
+
+Que una función aparezca en esta visión significa que está prevista, no que su
+diseño interno ya esté cerrado.
+
+### Identidad de los backends
+
+El diseño futuro separará dos conceptos:
+
+- modalidad: `GENERAL`, `SKYWARS`, `BEDWARS`, `SKYBLOCK` y futuras
+  modalidades;
+- rol: `AUTH`, `LOBBY`, `PRE_GAME`, `GAME` y `PERSISTENT`.
+
+`PRE_GAME` identifica las salas de espera o preparación. Las salas de espera y
+las partidas activas serán backends independientes, con procesos, RAM,
+configuración, lifecycle e identidad propios.
+
+TheosferaCore cargará únicamente los módulos e integraciones compatibles con la
+modalidad y el rol del backend. Un backend Skyblock no inicializará
+integraciones de SkyWars o BedWars. La forma exacta de representar estos
+conceptos en contratos y configuración se decidirá durante su planificación.
+
+### Perfil y progreso general
+
+`/profile` será un menú general disponible únicamente en backends con rol
+`LOBBY` o `PRE_GAME`. Permanecerá bloqueado en `AUTH`, `GAME` y `PERSISTENT`.
+La política concreta, sus permisos y su configuración se diseñarán antes de
+implementarla.
+
+Cada plugin de modalidad será autoridad de su propio progreso, misiones,
+logros y estadísticas. TheosferaCore consumirá proveedores de esos plugins,
+agregará los resultados y expondrá datos generales como nivel, avance, logros,
+misiones y estadísticas globales. TheosferaLobby presentará esa identidad
+global al jugador y funcionará como modalidad general de la network.
+
+### Reemplazo de Essentials y responsabilidades externas
+
+TheosferaCore reemplazará completamente a Essentials dentro de la network, pero
+no replicará funciones que pertenezcan a sistemas especializados:
+
+- ChatControl será responsable de chat, mensajes privados, canales, filtros,
+  formato y comunicación;
+- LiteBans será responsable de sanciones y moderación;
+- TheosferaSkyblockAddons será responsable de `/storage`, maletas, colecciones,
+  recetas, crafteos y estaciones especiales de Skyblock.
+
+`/enderchest` será sustituido en Skyblock por `/storage`. El diseño previsto
+incluye páginas persistentes desbloqueadas por rango y espacios para maletas
+físicas con identidad y contenido persistentes. Antes de implementarlo deberán
+definirse una única fuente de verdad, prevención de duplicaciones, guardado
+ante fallos, maletas anidadas, pérdida o retiro de ítems y reducción de espacios
+al vencer un rango.
+
+`/workbench` tampoco pertenecerá a TheosferaCore. El crafteo, colecciones,
+recetas desbloqueables, player vaults, encantamiento, reforja y futuras
+estaciones serán parte del ecosistema de TheosferaSkyblockAddons.
+
+### Integraciones previstas
+
+- `FancyNpcs` sustituye a Citizens como integración de NPCs.
+- TheosferaCore podrá integrarse de forma selectiva con PlaceholderAPI,
+  DecentHolograms, ItemsAdder, ModelEngine, Lunar Client y los plugins
+  correspondientes a cada modalidad.
+- SuperiorSkyblock2 y las reglas propias de Skyblock permanecerán bajo
+  TheosferaSkyblockAddons; Core recibirá únicamente los datos expuestos por su
+  proveedor de progreso.
+
+Estas decisiones no alteran el incremento técnico actual de TheosferaProxy.
+La integración de salud y frescura con `TransferTargetResolver` ya está
+implementada y validada; el siguiente incremento deberá planificar la
+selección entre múltiples instancias saludables.
