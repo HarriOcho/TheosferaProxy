@@ -67,7 +67,7 @@ public final class BackendKickFailoverService {
                         "event cannot be null"
                 );
 
-        if (!nonNullEvent.kickedDuringServerConnect()) {
+        if (nonNullEvent.kickedDuringServerConnect()) {
             return BackendKickFailoverResolution.ignored();
         }
 

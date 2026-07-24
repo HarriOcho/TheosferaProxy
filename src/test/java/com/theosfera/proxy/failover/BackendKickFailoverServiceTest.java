@@ -68,7 +68,7 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
-    void ignoresKickFromEstablishedConnection() {
+    void ignoresKickDuringServerConnect() {
         authenticatePlayer();
         registerIdentity(
                 "skyblock-1",
@@ -79,7 +79,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                false
+                                true
                         )
                 );
 
@@ -108,7 +108,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -134,7 +134,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -181,7 +181,7 @@ class BackendKickFailoverServiceTest {
                 mismatchedService.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -211,7 +211,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("auth-1"),
-                                true
+                                false
                         )
                 );
 
@@ -251,7 +251,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -298,7 +298,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -306,7 +306,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -368,7 +368,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -378,7 +378,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -432,7 +432,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("lobby-1"),
-                                true
+                                false
                         )
                 );
 
@@ -468,7 +468,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -510,7 +510,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -556,7 +556,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -599,7 +599,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -635,7 +635,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -673,7 +673,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("lobby-1"),
-                                true
+                                false
                         )
                 );
 
@@ -717,7 +717,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 server("skyblock-1"),
-                                true
+                                false
                         )
                 );
 
@@ -756,7 +756,7 @@ class BackendKickFailoverServiceTest {
                 service.resolveFailoverTarget(
                         event(
                                 failed,
-                                true
+                                false
                         )
                 );
 
