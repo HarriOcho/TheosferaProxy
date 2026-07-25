@@ -3,21 +3,15 @@ package com.theosfera.proxy.command;
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
-import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
-import com.theosfera.proxy.transfer.BackendBootstrapReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservation;
-import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
-import com.theosfera.proxy.transfer.PlayerTransferTargetAllocation;
 import com.theosfera.proxy.transfer.PlayerTransferTargetAllocationService;
-import com.theosfera.proxy.transfer.TransferTargetResolution;
+import com.theosfera.proxy.transfer.PlayerTransferRetryCoordinator;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
-import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.Component;
 
 import java.time.Clock;
@@ -73,6 +67,7 @@ public final class LobbyTransferService {
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final TransferTargetResolver targetResolver;
     private final PlayerTransferTargetAllocationService allocationService;
+    private final PlayerTransferRetryCoordinator retryCoordinator;
     private final PlayerTransferExecutor transferExecutor;
     private final Clock clock;
     private final Supplier<UUID> requestIdGenerator;
@@ -135,6 +130,15 @@ public final class LobbyTransferService {
                 "transferExecutor cannot be null"
         );
 
+        this.retryCoordinator =
+                new PlayerTransferRetryCoordinator(
+                        this.bootstrapRegistry,
+                        this.targetResolver,
+                        this.transferRegistry,
+                        this.allocationService,
+                        this.transferExecutor
+                );
+
         this.clock = Objects.requireNonNull(
                 clock,
                 "clock cannot be null"
@@ -178,165 +182,34 @@ public final class LobbyTransferService {
                         .getServerInfo()
                         .getName();
 
-        PlayerTransferTargetAllocation allocation =
-                allocationService.allocate(
+        retryCoordinator.start(
+                new PlayerTransferRetryCoordinator.TransferRetryRequest(
                         requestIdGenerator.get(),
                         playerId,
                         sourceBackendName,
                         BackendType.LOBBY,
-                        clock.millis()
-                );
-
-        if (allocation.isSameTarget()) {
-            nonNullPlayer.sendMessage(
-                    ALREADY_IN_LOBBY_MESSAGE
-            );
-            return;
-        }
-
-        if (allocation.isRegistrationRejected()) {
-            nonNullPlayer.sendMessage(
-                    TRANSFER_PENDING_MESSAGE
-            );
-            return;
-        }
-
-        TransferTargetResolution targetResolution =
-                allocation.targetResolution();
-
-        boolean requiresBootstrap = false;
-
-        switch (targetResolution.status()) {
-            case RESOLVED ->
-                    requiresBootstrap = false;
-            case BOOTSTRAP_REQUIRED ->
-                    requiresBootstrap = true;
-            case NOT_CONFIGURED,
-                 NO_CAPACITY,
-                 NOT_AUTHENTICATED -> {
-                nonNullPlayer.sendMessage(
-                        LOBBY_UNAVAILABLE_MESSAGE
-                );
-                return;
-            }
-        }
-
-        PendingPlayerTransfer transfer =
-                allocation.requireTransfer();
-
-        BackendCapacityReservation capacityReservation =
-                allocation.requireCapacityReservation();
-
-        RegisteredServer target =
-                targetResolution
-                        .resolvedTarget()
-                        .orElseThrow();
-
-        String targetBackendName =
-                target
-                        .getServerInfo()
-                        .getName();
-
-        BackendBootstrapReservation reservation =
-                requiresBootstrap
-                        ? new BackendBootstrapReservation(
-                        targetBackendName,
-                        transfer.requestId(),
-                        playerId,
-                        transfer.requestedAt()
+                        clock.millis(),
+                        nonNullPlayer,
+                        () -> nonNullPlayer.sendMessage(
+                                ALREADY_IN_LOBBY_MESSAGE
+                        ),
+                        ignored -> nonNullPlayer.sendMessage(
+                                TRANSFER_PENDING_MESSAGE
+                        ),
+                        ignored -> nonNullPlayer.sendMessage(
+                                LOBBY_UNAVAILABLE_MESSAGE
+                        ),
+                        ignored -> nonNullPlayer.sendMessage(
+                                LOBBY_UNAVAILABLE_MESSAGE
+                        ),
+                        ignored -> {
+                        },
+                        completion -> nonNullPlayer.sendMessage(
+                                messageFor(completion.status())
+                        ),
+                        ignored -> {
+                        }
                 )
-                        : null;
-
-        if (reservation != null
-                && !reserveBootstrap(
-                nonNullPlayer,
-                transfer,
-                capacityReservation,
-                reservation
-        )) {
-            return;
-        }
-
-        try {
-            transferExecutor
-                    .execute(nonNullPlayer, target)
-                    .whenComplete(
-                            (completion, throwable) ->
-                                    completeTransfer(
-                                            nonNullPlayer,
-                                            transfer,
-                                            capacityReservation,
-                                            reservation,
-                                            completion,
-                                            throwable
-                                    )
-                    );
-        } catch (RuntimeException exception) {
-            completeTransfer(
-                    nonNullPlayer,
-                    transfer,
-                    capacityReservation,
-                    reservation,
-                    PlayerTransferCompletion.failed(),
-                    exception
-            );
-        }
-    }
-
-    private boolean reserveBootstrap(
-            Player player,
-            PendingPlayerTransfer transfer,
-            BackendCapacityReservation capacityReservation,
-            BackendBootstrapReservation reservation
-    ) {
-        BackendBootstrapRegistrationResult registrationResult =
-                bootstrapRegistry.register(reservation);
-
-        if (registrationResult
-                == BackendBootstrapRegistrationResult.RESERVED) {
-            return true;
-        }
-
-        transferRegistry.removeIfMatches(transfer);
-        targetResolver.releaseCapacity(capacityReservation);
-
-        player.sendMessage(
-                LOBBY_UNAVAILABLE_MESSAGE
-        );
-
-        return false;
-    }
-
-    private void completeTransfer(
-            Player player,
-            PendingPlayerTransfer transfer,
-            BackendCapacityReservation capacityReservation,
-            BackendBootstrapReservation reservation,
-            PlayerTransferCompletion completion,
-            Throwable throwable
-    ) {
-        Optional<PendingPlayerTransfer> removed =
-                transferRegistry.removeIfMatches(transfer);
-
-        if (removed.isEmpty()) {
-            return;
-        }
-
-        targetResolver.releaseCapacity(capacityReservation);
-
-        PlayerTransferCompletion safeCompletion =
-                throwable == null && completion != null
-                        ? completion
-                        : PlayerTransferCompletion.failed();
-
-        if (reservation != null
-                && safeCompletion.status()
-                != TransferResultStatus.SUCCESS) {
-            bootstrapRegistry.removeIfMatches(reservation);
-        }
-
-        player.sendMessage(
-                messageFor(safeCompletion.status())
         );
     }
 

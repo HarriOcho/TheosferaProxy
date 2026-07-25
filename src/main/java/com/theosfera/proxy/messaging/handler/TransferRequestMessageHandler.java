@@ -2,9 +2,9 @@ package com.theosfera.proxy.messaging.handler;
 
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
+import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
-import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
@@ -14,21 +14,17 @@ import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
-import com.theosfera.proxy.transfer.BackendBootstrapReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservation;
-import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.PlayerTransferRegistrationResult;
-import com.theosfera.proxy.transfer.PlayerTransferTargetAllocation;
+import com.theosfera.proxy.transfer.PlayerTransferRetryCoordinator;
 import com.theosfera.proxy.transfer.PlayerTransferTargetAllocationService;
 import com.theosfera.proxy.transfer.TransferResultSender;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
-import com.velocitypowered.api.proxy.server.RegisteredServer;
 import org.slf4j.Logger;
 
 import java.time.Clock;
@@ -47,6 +43,7 @@ public final class TransferRequestMessageHandler
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final TransferTargetResolver targetResolver;
     private final PlayerTransferTargetAllocationService allocationService;
+    private final PlayerTransferRetryCoordinator retryCoordinator;
     private final PlayerTransferExecutor transferExecutor;
     private final TransferResultSender resultSender;
     private final Logger logger;
@@ -137,6 +134,15 @@ public final class TransferRequestMessageHandler
                 transferExecutor,
                 "transferExecutor cannot be null"
         );
+
+        this.retryCoordinator =
+                new PlayerTransferRetryCoordinator(
+                        this.bootstrapRegistry,
+                        this.targetResolver,
+                        this.transferRegistry,
+                        this.allocationService,
+                        this.transferExecutor
+                );
 
         this.resultSender = Objects.requireNonNull(
                 resultSender,
@@ -257,188 +263,78 @@ public final class TransferRequestMessageHandler
         }
 
         long createdAt = clock.millis();
+        Player player = onlinePlayer.orElseThrow();
 
-        PlayerTransferTargetAllocation allocation =
-                allocationService.allocate(
+        retryCoordinator.start(
+                new PlayerTransferRetryCoordinator.TransferRetryRequest(
                         context.envelope().requestId(),
                         playerId,
                         sourceBackendName,
                         payload.targetBackendType(),
-                        createdAt
-                );
-
-        if (allocation.isSameTarget()) {
-            reject(
-                    context,
-                    playerId,
-                    "Player is already connected to target backend"
-            );
-            return;
-        }
-
-        if (allocation.isRegistrationRejected()) {
-            rejectRegistration(
-                    context,
-                    playerId,
-                    allocation.registrationResult()
-            );
-            return;
-        }
-
-        TransferTargetResolution targetResolution =
-                allocation.targetResolution();
-
-        switch (targetResolution.status()) {
-            case NOT_CONFIGURED -> {
-                reject(
-                        context,
-                        playerId,
-                        "Target backend is not configured"
-                );
-                return;
-            }
-            case NOT_AUTHENTICATED -> {
-                reject(
-                        context,
-                        playerId,
-                        "Target backend is not authenticated"
-                );
-                return;
-            }
-            case NO_CAPACITY -> {
-                reject(
-                        context,
-                        playerId,
-                        "Target backend has no available capacity"
-                );
-                return;
-            }
-            case RESOLVED, BOOTSTRAP_REQUIRED -> {
-                // Continúa debajo.
-            }
-        }
-
-        PendingPlayerTransfer transfer =
-                allocation.requireTransfer();
-
-        BackendCapacityReservation capacityReservation =
-                allocation.requireCapacityReservation();
-
-        RegisteredServer target =
-                targetResolution
-                        .resolvedTarget()
-                        .orElseThrow();
-
-        String targetBackendName =
-                target.getServerInfo().getName();
-
-        if (targetResolution.requiresBootstrap()) {
-            BackendBootstrapReservation reservation =
-                    new BackendBootstrapReservation(
-                            targetBackendName,
-                            transfer.requestId(),
-                            playerId,
-                            createdAt
-                    );
-
-            BackendBootstrapRegistrationResult
-                    bootstrapRegistration =
-                    bootstrapRegistry.register(reservation);
-
-            if (bootstrapRegistration
-                    != BackendBootstrapRegistrationResult.RESERVED) {
-                transferRegistry.remove(
-                        transfer.requestId()
-                );
-                targetResolver.releaseCapacity(capacityReservation);
-
-                rejectBootstrapRegistration(
-                        context,
-                        playerId,
-                        bootstrapRegistration
-                );
-                return;
-            }
-
-            logger.info(
-                    "Bootstrap reservado para {} "
-                            + "(requestId: {}, playerId: {}).",
-                    targetBackendName,
-                    transfer.requestId(),
-                    playerId
-            );
-        }
-
-        Player player = onlinePlayer.orElseThrow();
-
-        try {
-            transferExecutor
-                    .execute(player, target)
-                    .whenComplete(
-                            (completion, throwable) ->
-                                    completeTransfer(
-                                            context,
-                                            transfer,
-                                            capacityReservation,
-                                            completion,
-                                            throwable
-                                    )
-                    );
-        } catch (RuntimeException exception) {
-            completeTransfer(
-                    context,
-                    transfer,
-                    capacityReservation,
-                    PlayerTransferCompletion.failed(),
-                    exception
-            );
-        }
+                        createdAt,
+                        player,
+                        () -> reject(
+                                context,
+                                playerId,
+                                "Player is already connected to target backend"
+                        ),
+                        result -> rejectRegistration(
+                                context,
+                                playerId,
+                                result
+                        ),
+                        resolution -> rejectUnavailable(
+                                context,
+                                playerId,
+                                resolution
+                        ),
+                        result -> rejectBootstrapRegistration(
+                                context,
+                                playerId,
+                                result
+                        ),
+                        reservation -> logger.info(
+                                "Bootstrap reservado para {} "
+                                        + "(requestId: {}, playerId: {}).",
+                                reservation.targetBackendName(),
+                                reservation.requestId(),
+                                reservation.playerId()
+                        ),
+                        completion -> completeTransfer(
+                                context,
+                                playerId,
+                                sourceBackendName,
+                                completion
+                        ),
+                        transfer -> logger.warn(
+                                "Resultado tardio de transferencia ignorado "
+                                        + "(requestId: {}, playerId: {}).",
+                                transfer.requestId(),
+                                transfer.playerId()
+                        )
+                )
+        );
     }
 
     private void completeTransfer(
             ProtocolMessageContext context,
-            PendingPlayerTransfer transfer,
-            BackendCapacityReservation capacityReservation,
-            PlayerTransferCompletion completion,
-            Throwable throwable
+            UUID playerId,
+            String sourceBackendName,
+            PlayerTransferCompletion completion
     ) {
-        Optional<PendingPlayerTransfer> removed =
-                transferRegistry.removeIfMatches(transfer);
-
-        if (removed.isEmpty()) {
-            logger.warn(
-                    "Resultado tardío de transferencia ignorado "
-                            + "(requestId: {}, playerId: {}).",
-                    transfer.requestId(),
-                    transfer.playerId()
-            );
-            return;
-        }
-
-        targetResolver.releaseCapacity(capacityReservation);
-
-        PlayerTransferCompletion safeCompletion =
-                throwable == null && completion != null
-                        ? completion
-                        : PlayerTransferCompletion.failed();
-
-        if (safeCompletion.status()
+        if (completion.status()
                 == TransferResultStatus.SUCCESS) {
             presenceRegistry.removeIfBackend(
-                    transfer.playerId(),
-                    transfer.sourceBackendName()
-            );
-        } else {
-            bootstrapRegistry.removeByRequest(
-                    transfer.requestId()
+                    playerId,
+                    sourceBackendName
             );
         }
 
         resultSender.send(
                 context,
-                transfer.playerId(),
-                safeCompletion.status(),
-                safeCompletion.message()
+                playerId,
+                completion.status(),
+                completion.message()
         );
     }
 
@@ -487,6 +383,27 @@ public final class TransferRequestMessageHandler
             case REGISTERED ->
                     throw new IllegalStateException(
                             "Registered transfer cannot be rejected"
+                    );
+        };
+
+        reject(context, playerId, message);
+    }
+
+    private void rejectUnavailable(
+            ProtocolMessageContext context,
+            UUID playerId,
+            TransferTargetResolution resolution
+    ) {
+        String message = switch (resolution.status()) {
+            case NOT_CONFIGURED ->
+                    "Target backend is not configured";
+            case NOT_AUTHENTICATED ->
+                    "Target backend is not authenticated";
+            case NO_CAPACITY ->
+                    "Target backend has no available capacity";
+            case RESOLVED, BOOTSTRAP_REQUIRED ->
+                    throw new IllegalStateException(
+                            "Resolved target cannot be rejected as unavailable"
                     );
         };
 
