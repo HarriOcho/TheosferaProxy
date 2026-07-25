@@ -34,6 +34,24 @@ public final class PlayerTransferTargetAllocationService {
             BackendType targetBackendType,
             long requestedAt
     ) {
+        return allocate(
+                requestId,
+                playerId,
+                sourceBackendName,
+                targetBackendType,
+                requestedAt,
+                Set.of()
+        );
+    }
+
+    public PlayerTransferTargetAllocation allocate(
+            UUID requestId,
+            UUID playerId,
+            String sourceBackendName,
+            BackendType targetBackendType,
+            long requestedAt,
+            Set<String> initialExcludedServerNames
+    ) {
         UUID nonNullRequestId = Objects.requireNonNull(
                 requestId,
                 "requestId cannot be null"
@@ -50,8 +68,16 @@ public final class PlayerTransferTargetAllocationService {
                 targetBackendType,
                 "targetBackendType cannot be null"
         );
+        Set<String> nonNullInitialExclusions =
+                Set.copyOf(
+                        Objects.requireNonNull(
+                                initialExcludedServerNames,
+                                "initialExcludedServerNames cannot be null"
+                        )
+                );
 
-        Set<String> exclusions = new HashSet<>();
+        Set<String> exclusions =
+                new HashSet<>(nonNullInitialExclusions);
         boolean capacityRejected = false;
 
         while (true) {
@@ -76,6 +102,12 @@ public final class PlayerTransferTargetAllocationService {
 
             String targetName =
                     target.getServerInfo().getName();
+
+            if (exclusions.contains(targetName)) {
+                throw new TransferTargetResolutionContractViolationException(
+                        "resolver returned an excluded transfer target"
+                );
+            }
 
             if (nonNullSource.equals(targetName)) {
                 return PlayerTransferTargetAllocation.sameTarget(

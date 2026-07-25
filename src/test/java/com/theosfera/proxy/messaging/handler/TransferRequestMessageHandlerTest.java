@@ -15,6 +15,7 @@ import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.BackendCapacityReservation;
 import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
@@ -43,6 +44,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -568,6 +570,567 @@ class TransferRequestMessageHandlerTest {
     }
 
     @Test
+    void firstColdTargetFailsThenSecondTargetSucceeds() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution
+                        .bootstrapRequired(secondTarget)
+        );
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+        when(transferExecutor.execute(player, secondTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.SUCCESS,
+                "Player transferred successfully"
+        );
+    }
+
+    @Test
+    void firstBootstrapTargetBusyThenSecondTargetSucceeds() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        BackendBootstrapReservation existingReservation =
+                new BackendBootstrapReservation(
+                        "skyblock-1",
+                        UUID.fromString(
+                                "22222222-3333-4444-5555-666666666666"
+                        ),
+                        OTHER_PLAYER_ID,
+                        NOW - 1
+                );
+
+        bootstrapRegistry.register(existingReservation);
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution
+                        .bootstrapRequired(secondTarget)
+        );
+
+        when(transferExecutor.execute(player, secondTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        assertEquals(
+                existingReservation,
+                bootstrapRegistry.findByTarget("skyblock-1").orElseThrow()
+        );
+        assertEquals(
+                REQUEST_ID,
+                bootstrapRegistry
+                        .findByTarget("skyblock-2")
+                        .orElseThrow()
+                        .requestId()
+        );
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.SUCCESS,
+                "Player transferred successfully"
+        );
+    }
+
+    @Test
+    void allBootstrapTargetsBusySendsOneTerminalResult() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        BackendBootstrapReservation firstExisting =
+                new BackendBootstrapReservation(
+                        "skyblock-1",
+                        UUID.fromString(
+                                "22222222-3333-4444-5555-666666666666"
+                        ),
+                        OTHER_PLAYER_ID,
+                        NOW - 1
+                );
+        BackendBootstrapReservation secondExisting =
+                new BackendBootstrapReservation(
+                        "skyblock-2",
+                        UUID.fromString(
+                                "33333333-4444-5555-6666-777777777777"
+                        ),
+                        UUID.fromString(
+                                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+                        ),
+                        NOW - 1
+                );
+
+        bootstrapRegistry.register(firstExisting);
+        bootstrapRegistry.register(secondExisting);
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution
+                        .bootstrapRequired(secondTarget)
+        );
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1", "skyblock-2")
+        )).thenReturn(TransferTargetResolution.notConfigured());
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        verify(resultSender, times(1)).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Target backend bootstrap is already in progress"
+        );
+        verify(
+                transferExecutor,
+                never()
+        ).execute(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+        assertEquals(
+                firstExisting,
+                bootstrapRegistry.findByTarget("skyblock-1").orElseThrow()
+        );
+        assertEquals(
+                secondExisting,
+                bootstrapRegistry.findByTarget("skyblock-2").orElseThrow()
+        );
+    }
+
+    @Test
+    void firstResolvedTargetRejectedThenSecondTargetSucceeds() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(TransferTargetResolution.resolved(target));
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.rejected()
+                        )
+                );
+        when(transferExecutor.execute(player, secondTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.SUCCESS,
+                "Player transferred successfully"
+        );
+    }
+
+    @Test
+    void timedOutTargetDoesNotRetryAnotherTarget() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.timedOut()
+                        )
+                );
+        when(transferExecutor.execute(player, secondTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        verify(transferExecutor, times(1)).execute(player, target);
+        verify(transferExecutor, never()).execute(player, secondTarget);
+        verify(resultSender, times(1)).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.TIMED_OUT,
+                "Player transfer timed out"
+        );
+        assertEquals(
+                "lobby-1",
+                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
+        );
+        assertTrue(transferRegistry.findByRequest(REQUEST_ID).isEmpty());
+        assertTrue(bootstrapRegistry.findByRequest(REQUEST_ID).isEmpty());
+        verify(targetResolver).releaseCapacity(
+                new BackendCapacityReservation(
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        "skyblock-1"
+                )
+        );
+    }
+
+    @Test
+    void firstExecutorThrowThenSecondTargetSucceeds() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(TransferTargetResolution.resolved(target));
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
+
+        when(transferExecutor.execute(player, target))
+                .thenThrow(new IllegalStateException("internal"));
+        when(transferExecutor.execute(player, secondTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.SUCCESS,
+                "Player transferred successfully"
+        );
+    }
+
+    @Test
+    void firstExceptionalCompletionThenSecondTargetSucceeds() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(TransferTargetResolution.resolved(target));
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
+
+        CompletableFuture<PlayerTransferCompletion> first =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(first);
+        when(transferExecutor.execute(player, secondTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+        first.completeExceptionally(
+                new IllegalStateException("internal")
+        );
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.SUCCESS,
+                "Player transferred successfully"
+        );
+    }
+
+    @Test
+    void allTargetsFailSendsExactlyOneTerminalResult() {
+        registerPlayerState();
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(TransferTargetResolution.resolved(target));
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(TransferTargetResolution.notConfigured());
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        verify(resultSender, times(1)).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.FAILED,
+                "Player transfer failed"
+        );
+    }
+
+    @Test
+    void failedAttemptDoesNotRemoveSourcePresence() {
+        registerPlayerState();
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(TransferTargetResolution.resolved(target));
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(TransferTargetResolution.notConfigured());
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+
+        handler.handle(transferContext(PLAYER_ID));
+
+        assertEquals(
+                "lobby-1",
+                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
+        );
+    }
+
+    @Test
+    void successfulRetryRemovesOnlyOriginalSourcePresence() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(TransferTargetResolution.resolved(target));
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
+
+        CompletableFuture<PlayerTransferCompletion> first =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(first);
+        when(transferExecutor.execute(player, secondTarget))
+                .thenAnswer(invocation -> {
+                    presenceRegistry.update(
+                            new PlayerServerPresence(
+                                    PLAYER_ID,
+                                    "skyblock-2",
+                                    NOW + 100
+                            )
+                    );
+                    return CompletableFuture.completedFuture(
+                            PlayerTransferCompletion.success()
+                    );
+                });
+
+        handler.handle(transferContext(PLAYER_ID));
+        first.complete(PlayerTransferCompletion.failed());
+
+        assertEquals(
+                "skyblock-2",
+                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
+        );
+    }
+
+    @Test
+    void failedAttemptReleasesCapacityAndBootstrapBeforeRetry() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenAnswer(invocation -> {
+            assertTrue(bootstrapRegistry.findByTarget("skyblock-1").isEmpty());
+            return TransferTargetResolution.resolved(secondTarget);
+        });
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+        when(transferExecutor.execute(player, secondTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        handler.handle(transferContext(PLAYER_ID));
+
+        verify(targetResolver, times(2)).releaseCapacity(any());
+    }
+
+    @Test
+    void successfulRetryKeepsWinningBootstrapReservation() {
+        registerPlayerState();
+        RegisteredServer secondTarget = server("skyblock-2");
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(target)
+                );
+        when(targetResolver.resolve(
+                BackendType.SKYBLOCK,
+                java.util.Set.of("skyblock-1")
+        )).thenReturn(
+                TransferTargetResolution
+                        .bootstrapRequired(secondTarget)
+        );
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+        when(transferExecutor.execute(player, secondTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        handler.handle(transferContext(PLAYER_ID));
+
+        assertTrue(bootstrapRegistry.findByTarget("skyblock-1").isEmpty());
+        assertEquals(
+                REQUEST_ID,
+                bootstrapRegistry
+                        .findByTarget("skyblock-2")
+                        .orElseThrow()
+                        .requestId()
+        );
+    }
+
+    @Test
+    void lateCompletionCannotSendDuplicateResultOrRemoveNewerState() {
+        registerPlayerState();
+
+        when(targetResolver.resolve(BackendType.SKYBLOCK))
+                .thenReturn(TransferTargetResolution.resolved(target));
+
+        CompletableFuture<PlayerTransferCompletion> first =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, target))
+                .thenReturn(first);
+
+        ProtocolMessageContext context = transferContext(PLAYER_ID);
+
+        handler.handle(context);
+
+        transferRegistry.remove(REQUEST_ID);
+        PendingPlayerTransfer newerTransfer =
+                new PendingPlayerTransfer(
+                        REQUEST_ID,
+                        OTHER_PLAYER_ID,
+                        "auth-1",
+                        "lobby-1",
+                        NOW + 1
+                );
+        transferRegistry.register(newerTransfer);
+
+        first.complete(PlayerTransferCompletion.failed());
+
+        assertEquals(
+                newerTransfer,
+                transferRegistry.findByRequest(REQUEST_ID).orElseThrow()
+        );
+        assertEquals(
+                "lobby-1",
+                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
+        );
+        verify(resultSender, never()).send(
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any()
+        );
+    }
+
+    @Test
     void rejectsNullContext() {
         assertThrows(
                 NullPointerException.class,
@@ -907,6 +1470,16 @@ class TransferRequestMessageHandlerTest {
 
         when(targetInfo.getName())
                 .thenReturn("skyblock-1");
+    }
+
+    private RegisteredServer server(String name) {
+        RegisteredServer server = mock(RegisteredServer.class);
+        ServerInfo info = mock(ServerInfo.class);
+
+        when(server.getServerInfo()).thenReturn(info);
+        when(info.getName()).thenReturn(name);
+
+        return server;
     }
 
     private ProtocolMessageContext transferContext(

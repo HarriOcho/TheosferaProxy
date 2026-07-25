@@ -14,6 +14,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -199,6 +200,145 @@ class PlayerTransferTargetAllocationServiceTest {
         );
 
         assertTrue(transferRegistry.snapshotByPlayer().isEmpty());
+    }
+
+    @Test
+    void startsWithCallerProvidedExclusions() {
+        RegisteredServer target = server("lobby-2");
+
+        when(resolver.resolve(
+                BackendType.LOBBY,
+                Set.of("lobby-1")
+        )).thenReturn(TransferTargetResolution.resolved(target));
+
+        when(resolver.reserveCapacity(any(), any()))
+                .thenReturn(BackendCapacityReservationResult.RESERVED);
+
+        PlayerTransferTargetAllocation allocation =
+                service.allocate(
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        "skyblock-1",
+                        BackendType.LOBBY,
+                        REQUESTED_AT,
+                        Set.of("lobby-1")
+                );
+
+        assertTrue(allocation.isAllocated());
+        assertEquals(
+                "lobby-2",
+                allocation.requireTransfer().targetBackendName()
+        );
+        verify(resolver, never()).resolve(BackendType.LOBBY);
+    }
+
+    @Test
+    void combinesInitialExclusionsWithCapacityRaceExclusions() {
+        RegisteredServer first = server("lobby-2");
+        RegisteredServer second = server("lobby-3");
+
+        when(resolver.resolve(
+                BackendType.LOBBY,
+                Set.of("lobby-1")
+        )).thenReturn(TransferTargetResolution.resolved(first));
+
+        when(resolver.resolve(
+                BackendType.LOBBY,
+                Set.of("lobby-1", "lobby-2")
+        )).thenReturn(TransferTargetResolution.resolved(second));
+
+        when(resolver.reserveCapacity(any(), any()))
+                .thenReturn(
+                        BackendCapacityReservationResult.NO_CAPACITY,
+                        BackendCapacityReservationResult.RESERVED
+                );
+
+        PlayerTransferTargetAllocation allocation =
+                service.allocate(
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        "skyblock-1",
+                        BackendType.LOBBY,
+                        REQUESTED_AT,
+                        Set.of("lobby-1")
+                );
+
+        assertTrue(allocation.isAllocated());
+        assertEquals(
+                "lobby-3",
+                allocation.requireTransfer().targetBackendName()
+        );
+    }
+
+    @Test
+    void existingAllocateOverloadStillUsesNoInitialExclusions() {
+        RegisteredServer target = server("lobby-1");
+
+        when(resolver.resolve(BackendType.LOBBY))
+                .thenReturn(TransferTargetResolution.resolved(target));
+        when(resolver.reserveCapacity(any(), any()))
+                .thenReturn(BackendCapacityReservationResult.RESERVED);
+
+        PlayerTransferTargetAllocation allocation =
+                service.allocate(
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        "skyblock-1",
+                        BackendType.LOBBY,
+                        REQUESTED_AT
+                );
+
+        assertTrue(allocation.isAllocated());
+        verify(resolver).resolve(BackendType.LOBBY);
+    }
+
+    @Test
+    void defensiveCopiesInitialExclusions() {
+        RegisteredServer first = server("lobby-2");
+        RegisteredServer second = server("lobby-3");
+        Set<String> initialExclusions =
+                new java.util.HashSet<>();
+
+        initialExclusions.add("lobby-1");
+
+        when(resolver.resolve(
+                BackendType.LOBBY,
+                Set.of("lobby-1")
+        )).thenAnswer(invocation -> {
+            initialExclusions.add("lobby-3");
+            return TransferTargetResolution.resolved(first);
+        });
+
+        when(resolver.resolve(
+                BackendType.LOBBY,
+                Set.of("lobby-1", "lobby-2")
+        )).thenReturn(TransferTargetResolution.resolved(second));
+
+        when(resolver.reserveCapacity(any(), any()))
+                .thenReturn(
+                        BackendCapacityReservationResult.NO_CAPACITY,
+                        BackendCapacityReservationResult.RESERVED
+                );
+
+        PlayerTransferTargetAllocation allocation =
+                service.allocate(
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        "skyblock-1",
+                        BackendType.LOBBY,
+                        REQUESTED_AT,
+                        initialExclusions
+                );
+
+        assertTrue(allocation.isAllocated());
+        assertEquals(
+                "lobby-3",
+                allocation.requireTransfer().targetBackendName()
+        );
+        verify(resolver, org.mockito.Mockito.atLeastOnce()).resolve(
+                BackendType.LOBBY,
+                Set.of("lobby-1", "lobby-2")
+        );
     }
 
     private RegisteredServer server(String name) {

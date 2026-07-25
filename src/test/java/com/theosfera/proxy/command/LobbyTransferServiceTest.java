@@ -5,6 +5,7 @@ import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
+import com.theosfera.proxy.transfer.BackendCapacityReservation;
 import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -730,6 +732,449 @@ class LobbyTransferServiceTest {
                         .findByRequest(REQUEST_ID)
                         .isEmpty()
         );
+    }
+
+    @Test
+    void firstColdLobbyFailsThenSecondColdLobbySucceeds() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(lobbyTarget)
+                );
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(
+                TransferTargetResolution
+                        .bootstrapRequired(secondLobby)
+        );
+
+        CompletableFuture<PlayerTransferCompletion> first =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(first);
+        when(transferExecutor.execute(player, secondLobby))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+        first.complete(PlayerTransferCompletion.failed());
+
+        verify(player).sendMessage(
+                LobbyTransferService.TRANSFER_SUCCESS_MESSAGE
+        );
+        verify(player, never()).sendMessage(
+                LobbyTransferService.TRANSFER_FAILED_MESSAGE
+        );
+    }
+
+    @Test
+    void firstBootstrapTargetBusyThenSecondLobbySucceeds() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        BackendBootstrapReservation existingReservation =
+                new BackendBootstrapReservation(
+                        "lobby-1",
+                        OTHER_REQUEST_ID,
+                        UUID.fromString(
+                                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+                        ),
+                        NOW - 1
+                );
+
+        bootstrapRegistry.register(existingReservation);
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(lobbyTarget)
+                );
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(
+                TransferTargetResolution
+                        .bootstrapRequired(secondLobby)
+        );
+
+        when(transferExecutor.execute(player, secondLobby))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        assertEquals(
+                existingReservation,
+                bootstrapRegistry.findByTarget("lobby-1").orElseThrow()
+        );
+        assertEquals(
+                REQUEST_ID,
+                bootstrapRegistry
+                        .findByTarget("lobby-2")
+                        .orElseThrow()
+                        .requestId()
+        );
+        verify(player).sendMessage(
+                LobbyTransferService.TRANSFER_SUCCESS_MESSAGE
+        );
+        verify(transferExecutor).execute(player, secondLobby);
+    }
+
+    @Test
+    void allBootstrapTargetsBusySendsOneTerminalMessage() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        BackendBootstrapReservation firstExisting =
+                new BackendBootstrapReservation(
+                        "lobby-1",
+                        OTHER_REQUEST_ID,
+                        UUID.fromString(
+                                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+                        ),
+                        NOW - 1
+                );
+        BackendBootstrapReservation secondExisting =
+                new BackendBootstrapReservation(
+                        "lobby-2",
+                        UUID.fromString(
+                                "22222222-3333-4444-5555-666666666666"
+                        ),
+                        UUID.fromString(
+                                "cccccccc-dddd-eeee-ffff-000000000000"
+                        ),
+                        NOW - 1
+                );
+
+        bootstrapRegistry.register(firstExisting);
+        bootstrapRegistry.register(secondExisting);
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(lobbyTarget)
+                );
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(
+                TransferTargetResolution
+                        .bootstrapRequired(secondLobby)
+        );
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1", "lobby-2")
+        )).thenReturn(TransferTargetResolution.notConfigured());
+
+        service.transferToLobby(player);
+
+        verify(player, times(1)).sendMessage(
+                LobbyTransferService.LOBBY_UNAVAILABLE_MESSAGE
+        );
+        verifyNoTransferExecution();
+        assertEquals(
+                firstExisting,
+                bootstrapRegistry.findByTarget("lobby-1").orElseThrow()
+        );
+        assertEquals(
+                secondExisting,
+                bootstrapRegistry.findByTarget("lobby-2").orElseThrow()
+        );
+    }
+
+    @Test
+    void firstResolvedLobbyRejectedThenSecondLobbySucceeds() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(TransferTargetResolution.resolved(lobbyTarget));
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondLobby));
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.rejected()
+                        )
+                );
+        when(transferExecutor.execute(player, secondLobby))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.TRANSFER_SUCCESS_MESSAGE
+        );
+    }
+
+    @Test
+    void timedOutLobbyAttemptDoesNotRetryAnotherLobby() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(lobbyTarget)
+                );
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondLobby));
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.timedOut()
+                        )
+                );
+        when(transferExecutor.execute(player, secondLobby))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        verify(transferExecutor, times(1)).execute(
+                player,
+                lobbyTarget
+        );
+        verify(transferExecutor, never()).execute(player, secondLobby);
+        verify(player, times(1)).sendMessage(
+                LobbyTransferService.TRANSFER_TIMED_OUT_MESSAGE
+        );
+        verify(player, never()).sendMessage(
+                LobbyTransferService.TRANSFER_SUCCESS_MESSAGE
+        );
+        assertTrue(transferRegistry.findByRequest(REQUEST_ID).isEmpty());
+        assertTrue(bootstrapRegistry.findByRequest(REQUEST_ID).isEmpty());
+        verify(targetResolver).releaseCapacity(
+                new BackendCapacityReservation(
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        "lobby-1"
+                )
+        );
+    }
+
+    @Test
+    void firstExecutorThrowThenSecondTargetSucceeds() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(TransferTargetResolution.resolved(lobbyTarget));
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondLobby));
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenThrow(new IllegalStateException("internal"));
+        when(transferExecutor.execute(player, secondLobby))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.TRANSFER_SUCCESS_MESSAGE
+        );
+    }
+
+    @Test
+    void firstExceptionalCompletionThenSecondTargetSucceeds() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(TransferTargetResolution.resolved(lobbyTarget));
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(TransferTargetResolution.resolved(secondLobby));
+
+        CompletableFuture<PlayerTransferCompletion> first =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(first);
+        when(transferExecutor.execute(player, secondLobby))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+        first.completeExceptionally(
+                new IllegalStateException("internal")
+        );
+
+        verify(player).sendMessage(
+                LobbyTransferService.TRANSFER_SUCCESS_MESSAGE
+        );
+    }
+
+    @Test
+    void allLobbyTargetsFailSendsOneFinalFailure() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(TransferTargetResolution.resolved(lobbyTarget));
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(TransferTargetResolution.notConfigured());
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        verify(player, times(1)).sendMessage(
+                LobbyTransferService.TRANSFER_FAILED_MESSAGE
+        );
+    }
+
+    @Test
+    void failedAttemptReleasesCapacityAndBootstrapBeforeRetry() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(lobbyTarget)
+                );
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenAnswer(invocation -> {
+            assertTrue(bootstrapRegistry.findByTarget("lobby-1").isEmpty());
+            return TransferTargetResolution.resolved(secondLobby);
+        });
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+        when(transferExecutor.execute(player, secondLobby))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        verify(targetResolver, times(2)).releaseCapacity(any());
+    }
+
+    @Test
+    void successfulRetryKeepsOnlyWinningBootstrapReservation() {
+        RegisteredServer secondLobby = registeredServer("lobby-2");
+        configureAuthenticatedPlayerOn("skyblock-1");
+
+        when(targetResolver.resolve(BackendType.LOBBY))
+                .thenReturn(
+                        TransferTargetResolution
+                                .bootstrapRequired(lobbyTarget)
+                );
+        when(targetResolver.resolve(
+                BackendType.LOBBY,
+                java.util.Set.of("lobby-1")
+        )).thenReturn(
+                TransferTargetResolution
+                        .bootstrapRequired(secondLobby)
+        );
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.failed()
+                        )
+                );
+        when(transferExecutor.execute(player, secondLobby))
+                .thenReturn(
+                        CompletableFuture.completedFuture(
+                                PlayerTransferCompletion.success()
+                        )
+                );
+
+        service.transferToLobby(player);
+
+        assertTrue(bootstrapRegistry.findByTarget("lobby-1").isEmpty());
+        assertEquals(
+                REQUEST_ID,
+                bootstrapRegistry
+                        .findByTarget("lobby-2")
+                        .orElseThrow()
+                        .requestId()
+        );
+        assertEquals(1, bootstrapRegistry.size());
+    }
+
+    @Test
+    void lateFailedAttemptCannotRemoveNewerRetryState() {
+        configureAuthenticatedPlayerOn("skyblock-1");
+        configureResolvedLobby();
+
+        CompletableFuture<PlayerTransferCompletion> first =
+                new CompletableFuture<>();
+
+        when(transferExecutor.execute(player, lobbyTarget))
+                .thenReturn(first);
+
+        service.transferToLobby(player);
+
+        transferRegistry.remove(REQUEST_ID);
+        PendingPlayerTransfer newerTransfer =
+                new PendingPlayerTransfer(
+                        REQUEST_ID,
+                        OTHER_REQUEST_ID,
+                        "skyblock-2",
+                        "lobby-2",
+                        NOW + 1
+                );
+        transferRegistry.register(newerTransfer);
+
+        first.complete(PlayerTransferCompletion.failed());
+
+        assertEquals(
+                newerTransfer,
+                transferRegistry.findByRequest(REQUEST_ID).orElseThrow()
+        );
+        verify(player, never()).sendMessage(any(Component.class));
     }
 
     @Test
