@@ -7,33 +7,41 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 public final class BackendAuthorizationPolicy {
 
-    private final Map<String, BackendType> allowedBackends;
+    private final Map<String, BackendPolicyEntry> backendEntries;
+    private final Set<String> authorizedBackendNames;
 
     public BackendAuthorizationPolicy(
-            Map<String, BackendType> allowedBackends
+            Map<String, BackendPolicyEntry> backendEntries
     ) {
         Objects.requireNonNull(
-                allowedBackends,
-                "allowedBackends cannot be null"
+                backendEntries,
+                "backendEntries cannot be null"
         );
 
-        Map<String, BackendType> validated =
+        Map<String, BackendPolicyEntry> validated =
                 new LinkedHashMap<>();
 
-        allowedBackends.forEach((serverName, backendType) -> {
+        backendEntries.forEach((serverName, entry) -> {
+            Objects.requireNonNull(
+                    entry,
+                    "backend entry cannot be null"
+            );
+
             BackendIdentity identity =
                     new BackendIdentity(
                             serverName,
-                            backendType
+                            entry.backendType()
                     );
 
-            BackendType previous = validated.putIfAbsent(
-                    identity.serverName(),
-                    identity.backendType()
-            );
+            BackendPolicyEntry previous =
+                    validated.putIfAbsent(
+                            identity.serverName(),
+                            entry
+                    );
 
             if (previous != null) {
                 throw new IllegalArgumentException(
@@ -43,7 +51,9 @@ public final class BackendAuthorizationPolicy {
             }
         });
 
-        this.allowedBackends = Map.copyOf(validated);
+        this.backendEntries = Map.copyOf(validated);
+        this.authorizedBackendNames =
+                Set.copyOf(this.backendEntries.keySet());
     }
 
     public Optional<BackendIdentity> authorize(
@@ -65,22 +75,28 @@ public final class BackendAuthorizationPolicy {
             return Optional.empty();
         }
 
-        BackendType expectedType =
-                allowedBackends.get(sourceServerName);
+        BackendPolicyEntry expectedEntry =
+                backendEntries.get(sourceServerName);
 
-        if (expectedType != helloPayload.backendType()) {
+        if (expectedEntry == null
+                || expectedEntry.backendType()
+                != helloPayload.backendType()) {
             return Optional.empty();
         }
 
         return Optional.of(
                 new BackendIdentity(
                         sourceServerName,
-                        expectedType
+                        expectedEntry.backendType()
                 )
         );
     }
 
-    public Map<String, BackendType> allowedBackends() {
-        return allowedBackends;
+    public Map<String, BackendPolicyEntry> backendEntries() {
+        return backendEntries;
+    }
+
+    public Set<String> authorizedBackendNames() {
+        return authorizedBackendNames;
     }
 }

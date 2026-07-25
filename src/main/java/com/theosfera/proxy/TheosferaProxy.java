@@ -381,7 +381,7 @@ public final class TheosferaProxy {
         logger.info(
                 "Política de backends cargada: {} autorizados.",
                 authorizationPolicy
-                        .allowedBackends()
+                        .authorizedBackendNames()
                         .size()
         );
     }

@@ -118,11 +118,12 @@ public final class TransferTargetResolver {
             Set<String> excludedServerNames
     ) {
         return authorizationPolicy
-                .allowedBackends()
+                .backendEntries()
                 .entrySet()
                 .stream()
                 .filter(entry ->
                         entry.getValue()
+                                .backendType()
                                 == targetBackendType
                 )
                 .filter(entry ->
