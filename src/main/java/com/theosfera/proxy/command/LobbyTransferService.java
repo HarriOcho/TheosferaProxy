@@ -173,7 +173,9 @@ public final class LobbyTransferService {
                     requiresBootstrap = false;
             case BOOTSTRAP_REQUIRED ->
                     requiresBootstrap = true;
-            case NOT_CONFIGURED, NOT_AUTHENTICATED -> {
+            case NOT_CONFIGURED,
+                 NO_CAPACITY,
+                 NOT_AUTHENTICATED -> {
                 nonNullPlayer.sendMessage(
                         LOBBY_UNAVAILABLE_MESSAGE
                 );

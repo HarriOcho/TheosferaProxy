@@ -68,6 +68,13 @@ public record TransferTargetResolution(
         );
     }
 
+    public static TransferTargetResolution noCapacity() {
+        return new TransferTargetResolution(
+                TransferTargetResolutionStatus.NO_CAPACITY,
+                null
+        );
+    }
+
     public static TransferTargetResolution notAuthenticated() {
         return new TransferTargetResolution(
                 TransferTargetResolutionStatus.NOT_AUTHENTICATED,

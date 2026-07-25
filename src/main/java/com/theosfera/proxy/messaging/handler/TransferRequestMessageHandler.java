@@ -268,6 +268,14 @@ public final class TransferRequestMessageHandler
                 );
                 return;
             }
+            case NO_CAPACITY -> {
+                reject(
+                        context,
+                        playerId,
+                        "Target backend has no available capacity"
+                );
+                return;
+            }
             case RESOLVED, BOOTSTRAP_REQUIRED -> {
                 // Continúa debajo.
             }
