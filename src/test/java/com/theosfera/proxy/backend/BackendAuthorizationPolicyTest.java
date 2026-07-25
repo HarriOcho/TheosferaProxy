@@ -18,11 +18,23 @@ class BackendAuthorizationPolicyTest {
             new BackendAuthorizationPolicy(
                     Map.of(
                             "auth-1",
-                            BackendType.AUTH,
+                            new BackendPolicyEntry(
+                                    BackendType.AUTH,
+                                    1,
+                                    100
+                            ),
                             "lobby-1",
-                            BackendType.LOBBY,
+                            new BackendPolicyEntry(
+                                    BackendType.LOBBY,
+                                    100,
+                                    90
+                            ),
                             "skyblock-1",
-                            BackendType.SKYBLOCK
+                            new BackendPolicyEntry(
+                                    BackendType.SKYBLOCK,
+                                    200,
+                                    80
+                            )
                     )
             );
 
@@ -90,16 +102,50 @@ class BackendAuthorizationPolicyTest {
     }
 
     @Test
-    void exposesImmutableAllowedBackends() {
-        Map<String, BackendType> allowed =
-                policy.allowedBackends();
+    void exposesBackendSelectionConfiguration() {
+        assertEquals(
+                new BackendPolicyEntry(
+                        BackendType.LOBBY,
+                        100,
+                        90
+                ),
+                policy.backendEntries().get("lobby-1")
+        );
+    }
+
+    @Test
+    void exposesImmutableBackendEntries() {
+        Map<String, BackendPolicyEntry> entries =
+                policy.backendEntries();
 
         assertThrows(
                 UnsupportedOperationException.class,
-                () -> allowed.put(
+                () -> entries.put(
                         "other-1",
-                        BackendType.LOBBY
+                        new BackendPolicyEntry(
+                                BackendType.LOBBY,
+                                100,
+                                90
+                        )
                 )
+        );
+    }
+
+    @Test
+    void exposesAuthorizedBackendNames() {
+        assertEquals(
+                java.util.Set.of(
+                        "auth-1",
+                        "lobby-1",
+                        "skyblock-1"
+                ),
+                policy.authorizedBackendNames()
+        );
+
+        assertThrows(
+                UnsupportedOperationException.class,
+                () -> policy.authorizedBackendNames()
+                        .add("other-1")
         );
     }
 
@@ -109,7 +155,11 @@ class BackendAuthorizationPolicyTest {
                 new BackendAuthorizationPolicy(
                         Map.of(
                                 "  lobby-1  ",
-                                BackendType.LOBBY
+                                new BackendPolicyEntry(
+                                        BackendType.LOBBY,
+                                        100,
+                                        90
+                                )
                         )
                 );
 
@@ -126,17 +176,18 @@ class BackendAuthorizationPolicyTest {
 
     @Test
     void rejectsDuplicateNamesAfterNormalization() {
-        Map<String, BackendType> duplicated =
+        Map<String, BackendPolicyEntry> duplicated =
                 new LinkedHashMap<>();
 
-        duplicated.put(
-                "lobby-1",
-                BackendType.LOBBY
-        );
-        duplicated.put(
-                "  lobby-1  ",
-                BackendType.LOBBY
-        );
+        BackendPolicyEntry entry =
+                new BackendPolicyEntry(
+                        BackendType.LOBBY,
+                        100,
+                        90
+                );
+
+        duplicated.put("lobby-1", entry);
+        duplicated.put("  lobby-1  ", entry);
 
         assertThrows(
                 IllegalArgumentException.class,

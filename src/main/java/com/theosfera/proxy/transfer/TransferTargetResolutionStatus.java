@@ -4,5 +4,6 @@ public enum TransferTargetResolutionStatus {
     RESOLVED,
     BOOTSTRAP_REQUIRED,
     NOT_CONFIGURED,
+    NO_CAPACITY,
     NOT_AUTHENTICATED
 }

@@ -6,12 +6,14 @@ import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendHealthStatus;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 
 import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 
 public final class TransferTargetResolver {
@@ -20,12 +22,66 @@ public final class TransferTargetResolver {
     private final BackendAuthorizationPolicy authorizationPolicy;
     private final BackendIdentityRegistry identityRegistry;
     private final BackendHealthRegistry healthRegistry;
+    private final BackendCapacityReservationRegistry capacityRegistry;
+    private final BackendLoadSelector loadSelector;
 
     public TransferTargetResolver(
             ProxyServer proxyServer,
             BackendAuthorizationPolicy authorizationPolicy,
             BackendIdentityRegistry identityRegistry,
             BackendHealthRegistry healthRegistry
+    ) {
+        this(
+                proxyServer,
+                authorizationPolicy,
+                identityRegistry,
+                healthRegistry,
+                new BackendCapacityReservationRegistry(),
+                new BackendLoadSelector()
+        );
+    }
+
+    public TransferTargetResolver(
+            ProxyServer proxyServer,
+            BackendAuthorizationPolicy authorizationPolicy,
+            BackendIdentityRegistry identityRegistry,
+            BackendHealthRegistry healthRegistry,
+            BackendCapacityReservationRegistry capacityRegistry
+    ) {
+        this(
+                proxyServer,
+                authorizationPolicy,
+                identityRegistry,
+                healthRegistry,
+                capacityRegistry,
+                new BackendLoadSelector()
+        );
+    }
+
+    TransferTargetResolver(
+            ProxyServer proxyServer,
+            BackendAuthorizationPolicy authorizationPolicy,
+            BackendIdentityRegistry identityRegistry,
+            BackendHealthRegistry healthRegistry,
+            BackendLoadSelector loadSelector
+    ) {
+        this(
+                proxyServer,
+                authorizationPolicy,
+                identityRegistry,
+                healthRegistry,
+                new BackendCapacityReservationRegistry(),
+                loadSelector
+        );
+    }
+
+    TransferTargetResolver(
+            ProxyServer proxyServer,
+            BackendAuthorizationPolicy authorizationPolicy,
+            BackendIdentityRegistry identityRegistry,
+            BackendHealthRegistry healthRegistry,
+            BackendCapacityReservationRegistry capacityRegistry,
+            BackendLoadSelector loadSelector
     ) {
         this.proxyServer = Objects.requireNonNull(
                 proxyServer,
@@ -45,6 +101,16 @@ public final class TransferTargetResolver {
         this.healthRegistry = Objects.requireNonNull(
                 healthRegistry,
                 "healthRegistry cannot be null"
+        );
+
+        this.capacityRegistry = Objects.requireNonNull(
+                capacityRegistry,
+                "capacityRegistry cannot be null"
+        );
+
+        this.loadSelector = Objects.requireNonNull(
+                loadSelector,
+                "loadSelector cannot be null"
         );
     }
 
@@ -89,15 +155,21 @@ public final class TransferTargetResolver {
             return TransferTargetResolution.notConfigured();
         }
 
-        for (RegisteredServer server : configuredTargets) {
-            if (isAuthenticatedTarget(
-                    server,
-                    nonNullTargetType
-            )) {
-                return TransferTargetResolution.resolved(
-                        server
+        List<BackendLoadCandidate> activeCandidates =
+                authenticatedCandidates(
+                        configuredTargets,
+                        nonNullTargetType
                 );
-            }
+
+        Optional<RegisteredServer> balancedTarget =
+                loadSelector.select(
+                        activeCandidates
+                );
+
+        if (balancedTarget.isPresent()) {
+            return TransferTargetResolution.resolved(
+                    balancedTarget.orElseThrow()
+            );
         }
 
         for (RegisteredServer server : configuredTargets) {
@@ -110,7 +182,64 @@ public final class TransferTargetResolver {
             }
         }
 
+        if (!activeCandidates.isEmpty()) {
+            return TransferTargetResolution.noCapacity();
+        }
+
         return TransferTargetResolution.notAuthenticated();
+    }
+
+    public BackendCapacityReservationResult reserveCapacity(
+            BackendCapacityReservation reservation,
+            RegisteredServer target
+    ) {
+        BackendCapacityReservation nonNullReservation =
+                Objects.requireNonNull(
+                        reservation,
+                        "reservation cannot be null"
+                );
+
+        RegisteredServer nonNullTarget = Objects.requireNonNull(
+                target,
+                "target cannot be null"
+        );
+
+        String targetName =
+                nonNullTarget.getServerInfo().getName();
+
+        if (!nonNullReservation.backendName().equals(targetName)) {
+            throw new IllegalArgumentException(
+                    "reservation backend must match target"
+            );
+        }
+
+        BackendPolicyEntry policyEntry =
+                authorizationPolicy
+                        .backendEntries()
+                        .get(targetName);
+
+        if (policyEntry == null) {
+            throw new IllegalArgumentException(
+                    "target is not present in backend policy"
+            );
+        }
+
+        return capacityRegistry.reserve(
+                nonNullReservation,
+                nonNullTarget.getPlayersConnected().size(),
+                policyEntry.capacity()
+        );
+    }
+
+    public Optional<BackendCapacityReservation> releaseCapacity(
+            BackendCapacityReservation reservation
+    ) {
+        return capacityRegistry.removeIfMatches(
+                Objects.requireNonNull(
+                        reservation,
+                        "reservation cannot be null"
+                )
+        );
     }
 
     private List<RegisteredServer> configuredTargets(
@@ -118,11 +247,12 @@ public final class TransferTargetResolver {
             Set<String> excludedServerNames
     ) {
         return authorizationPolicy
-                .allowedBackends()
+                .backendEntries()
                 .entrySet()
                 .stream()
                 .filter(entry ->
                         entry.getValue()
+                                .backendType()
                                 == targetBackendType
                 )
                 .filter(entry ->
@@ -143,26 +273,73 @@ public final class TransferTargetResolver {
                 .toList();
     }
 
-    private boolean isAuthenticatedTarget(
+    private List<BackendLoadCandidate> authenticatedCandidates(
+            List<RegisteredServer> configuredTargets,
+            BackendType expectedType
+    ) {
+        return configuredTargets
+                .stream()
+                .map(server ->
+                        authenticatedCandidate(
+                                server,
+                                expectedType
+                        )
+                )
+                .flatMap(Optional::stream)
+                .toList();
+    }
+
+    private Optional<BackendLoadCandidate> authenticatedCandidate(
             RegisteredServer server,
             BackendType expectedType
     ) {
         String serverName =
                 server.getServerInfo().getName();
 
-        return identityRegistry
-                .find(serverName)
-                .filter(identity ->
-                        matchesExpectedIdentity(
-                                identity,
-                                serverName,
-                                expectedType
+        BackendPolicyEntry policyEntry =
+                authorizationPolicy
+                        .backendEntries()
+                        .get(serverName);
+
+        if (policyEntry == null
+                || policyEntry.backendType() != expectedType) {
+            return Optional.empty();
+        }
+
+        boolean authenticated =
+                identityRegistry
+                        .find(serverName)
+                        .filter(identity ->
+                                matchesExpectedIdentity(
+                                        identity,
+                                        serverName,
+                                        expectedType
+                                )
                         )
+                        .isPresent();
+
+        if (!authenticated
+                || healthRegistry.status(serverName)
+                != BackendHealthStatus.HEALTHY) {
+            return Optional.empty();
+        }
+
+        int connectedPlayers =
+                server.getPlayersConnected().size();
+
+        if (connectedPlayers == 0) {
+            return Optional.empty();
+        }
+
+        return Optional.of(
+                new BackendLoadCandidate(
+                        serverName,
+                        server,
+                        policyEntry,
+                        connectedPlayers,
+                        capacityRegistry.reservedCount(serverName)
                 )
-                .isPresent()
-                && hasConnectedPlayers(server)
-                && healthRegistry.status(serverName)
-                        == BackendHealthStatus.HEALTHY;
+        );
     }
 
     private boolean isEligibleColdTarget(

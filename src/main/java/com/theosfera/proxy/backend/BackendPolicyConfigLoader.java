@@ -21,10 +21,10 @@ public final class BackendPolicyConfigLoader {
 
     private static final String DEFAULT_CONFIG = """
             # Backends autorizados para TheosferaProtocol.
-            # Formato: nombre-en-velocity=TIPO
-            auth-1=AUTH
-            lobby-1=LOBBY
-            skyblock-1=SKYBLOCK
+            # Formato: nombre-en-velocity=TIPO,capacidad,preferencia
+            auth-1=AUTH,1,100
+            lobby-1=LOBBY,100,90
+            skyblock-1=SKYBLOCK,200,80
             """;
 
     private final Path configFile;
@@ -55,14 +55,28 @@ public final class BackendPolicyConfigLoader {
             );
         }
 
-        Map<String, BackendType> allowedBackends =
+        Map<String, BackendPolicyEntry> backendEntries =
                 new LinkedHashMap<>();
 
         for (String rawServerName
                 : properties.stringPropertyNames()) {
             String serverName = rawServerName.trim();
-            String rawType = properties
+            String rawEntry = properties
                     .getProperty(rawServerName)
+                    .trim();
+
+            String[] fields = rawEntry.split(",", -1);
+
+            if (fields.length != 3) {
+                throw new IllegalStateException(
+                        "Invalid backend configuration for "
+                                + serverName
+                                + ": expected "
+                                + "TIPO,capacidad,preferencia"
+                );
+            }
+
+            String rawType = fields[0]
                     .trim()
                     .toUpperCase(Locale.ROOT);
 
@@ -80,10 +94,49 @@ public final class BackendPolicyConfigLoader {
                 );
             }
 
-            BackendType previous = allowedBackends.putIfAbsent(
-                    serverName,
-                    backendType
-            );
+            final int capacity;
+            final int preference;
+
+            try {
+                capacity = Integer.parseInt(
+                        fields[1].trim()
+                );
+                preference = Integer.parseInt(
+                        fields[2].trim()
+                );
+            } catch (NumberFormatException exception) {
+                throw new IllegalStateException(
+                        "Invalid numeric backend configuration for "
+                                + serverName
+                                + ": "
+                                + rawEntry,
+                        exception
+                );
+            }
+
+            final BackendPolicyEntry entry;
+
+            try {
+                entry = new BackendPolicyEntry(
+                        backendType,
+                        capacity,
+                        preference
+                );
+            } catch (IllegalArgumentException exception) {
+                throw new IllegalStateException(
+                        "Invalid backend configuration for "
+                                + serverName
+                                + ": "
+                                + rawEntry,
+                        exception
+                );
+            }
+
+            BackendPolicyEntry previous =
+                    backendEntries.putIfAbsent(
+                            serverName,
+                            entry
+                    );
 
             if (previous != null) {
                 throw new IllegalStateException(
@@ -93,14 +146,14 @@ public final class BackendPolicyConfigLoader {
             }
         }
 
-        if (allowedBackends.isEmpty()) {
+        if (backendEntries.isEmpty()) {
             throw new IllegalStateException(
                     "Backend policy configuration cannot be empty"
             );
         }
 
         return new BackendAuthorizationPolicy(
-                allowedBackends
+                backendEntries
         );
     }
 

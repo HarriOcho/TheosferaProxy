@@ -15,6 +15,7 @@ import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
@@ -83,11 +84,23 @@ class ProtocolPlayerTransferFlowTest {
                 new BackendAuthorizationPolicy(
                         Map.of(
                                 "auth-1",
-                                BackendType.AUTH,
+                                new BackendPolicyEntry(
+                                        BackendType.AUTH,
+                                        1,
+                                        100
+                                ),
                                 "lobby-1",
-                                BackendType.LOBBY,
+                                new BackendPolicyEntry(
+                                        BackendType.LOBBY,
+                                        100,
+                                        100
+                                ),
                                 "skyblock-1",
-                                BackendType.SKYBLOCK
+                                new BackendPolicyEntry(
+                                        BackendType.SKYBLOCK,
+                                        200,
+                                        100
+                                )
                         )
                 );
 

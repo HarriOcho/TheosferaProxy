@@ -9,6 +9,7 @@ import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
@@ -44,7 +45,11 @@ class ProtocolBackendHandshakeFlowTest {
                 new BackendAuthorizationPolicy(
                         Map.of(
                                 "lobby-1",
-                                BackendType.LOBBY
+                                new BackendPolicyEntry(
+                                        BackendType.LOBBY,
+                                        100,
+                                        100
+                                )
                         )
                 );
 

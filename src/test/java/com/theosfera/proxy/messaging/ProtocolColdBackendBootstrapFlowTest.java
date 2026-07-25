@@ -13,6 +13,7 @@ import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
@@ -79,9 +80,17 @@ class ProtocolColdBackendBootstrapFlowTest {
                 new BackendAuthorizationPolicy(
                         Map.of(
                                 "lobby-1",
-                                BackendType.LOBBY,
+                                new BackendPolicyEntry(
+                                        BackendType.LOBBY,
+                                        100,
+                                        100
+                                ),
                                 "skyblock-1",
-                                BackendType.SKYBLOCK
+                                new BackendPolicyEntry(
+                                        BackendType.SKYBLOCK,
+                                        200,
+                                        100
+                                )
                         )
                 );
 

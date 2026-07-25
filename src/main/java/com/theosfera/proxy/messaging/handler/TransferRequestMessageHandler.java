@@ -15,11 +15,14 @@ import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
+import com.theosfera.proxy.transfer.BackendCapacityReservation;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.PlayerTransferRegistrationResult;
+import com.theosfera.proxy.transfer.PlayerTransferTargetAllocation;
+import com.theosfera.proxy.transfer.PlayerTransferTargetAllocationService;
 import com.theosfera.proxy.transfer.TransferResultSender;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
@@ -43,6 +46,7 @@ public final class TransferRequestMessageHandler
     private final PendingPlayerTransferRegistry transferRegistry;
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final TransferTargetResolver targetResolver;
+    private final PlayerTransferTargetAllocationService allocationService;
     private final PlayerTransferExecutor transferExecutor;
     private final TransferResultSender resultSender;
     private final Logger logger;
@@ -122,6 +126,12 @@ public final class TransferRequestMessageHandler
                 targetResolver,
                 "targetResolver cannot be null"
         );
+
+        this.allocationService =
+                new PlayerTransferTargetAllocationService(
+                        this.targetResolver,
+                        this.transferRegistry
+                );
 
         this.transferExecutor = Objects.requireNonNull(
                 transferExecutor,
@@ -246,10 +256,37 @@ public final class TransferRequestMessageHandler
             return;
         }
 
-        TransferTargetResolution targetResolution =
-                targetResolver.resolve(
-                        payload.targetBackendType()
+        long createdAt = clock.millis();
+
+        PlayerTransferTargetAllocation allocation =
+                allocationService.allocate(
+                        context.envelope().requestId(),
+                        playerId,
+                        sourceBackendName,
+                        payload.targetBackendType(),
+                        createdAt
                 );
+
+        if (allocation.isSameTarget()) {
+            reject(
+                    context,
+                    playerId,
+                    "Player is already connected to target backend"
+            );
+            return;
+        }
+
+        if (allocation.isRegistrationRejected()) {
+            rejectRegistration(
+                    context,
+                    playerId,
+                    allocation.registrationResult()
+            );
+            return;
+        }
+
+        TransferTargetResolution targetResolution =
+                allocation.targetResolution();
 
         switch (targetResolution.status()) {
             case NOT_CONFIGURED -> {
@@ -268,10 +305,24 @@ public final class TransferRequestMessageHandler
                 );
                 return;
             }
+            case NO_CAPACITY -> {
+                reject(
+                        context,
+                        playerId,
+                        "Target backend has no available capacity"
+                );
+                return;
+            }
             case RESOLVED, BOOTSTRAP_REQUIRED -> {
                 // Continúa debajo.
             }
         }
+
+        PendingPlayerTransfer transfer =
+                allocation.requireTransfer();
+
+        BackendCapacityReservation capacityReservation =
+                allocation.requireCapacityReservation();
 
         RegisteredServer target =
                 targetResolution
@@ -280,39 +331,6 @@ public final class TransferRequestMessageHandler
 
         String targetBackendName =
                 target.getServerInfo().getName();
-
-        if (sourceBackendName.equals(targetBackendName)) {
-            reject(
-                    context,
-                    playerId,
-                    "Player is already connected to target backend"
-            );
-            return;
-        }
-
-        long createdAt = clock.millis();
-
-        PendingPlayerTransfer transfer =
-                new PendingPlayerTransfer(
-                        context.envelope().requestId(),
-                        playerId,
-                        sourceBackendName,
-                        targetBackendName,
-                        createdAt
-                );
-
-        PlayerTransferRegistrationResult registrationResult =
-                transferRegistry.register(transfer);
-
-        if (registrationResult
-                != PlayerTransferRegistrationResult.REGISTERED) {
-            rejectRegistration(
-                    context,
-                    playerId,
-                    registrationResult
-            );
-            return;
-        }
 
         if (targetResolution.requiresBootstrap()) {
             BackendBootstrapReservation reservation =
@@ -332,6 +350,7 @@ public final class TransferRequestMessageHandler
                 transferRegistry.remove(
                         transfer.requestId()
                 );
+                targetResolver.releaseCapacity(capacityReservation);
 
                 rejectBootstrapRegistration(
                         context,
@@ -352,22 +371,34 @@ public final class TransferRequestMessageHandler
 
         Player player = onlinePlayer.orElseThrow();
 
-        transferExecutor
-                .execute(player, target)
-                .whenComplete(
-                        (completion, throwable) ->
-                                completeTransfer(
-                                        context,
-                                        transfer,
-                                        completion,
-                                        throwable
-                                )
-                );
+        try {
+            transferExecutor
+                    .execute(player, target)
+                    .whenComplete(
+                            (completion, throwable) ->
+                                    completeTransfer(
+                                            context,
+                                            transfer,
+                                            capacityReservation,
+                                            completion,
+                                            throwable
+                                    )
+                    );
+        } catch (RuntimeException exception) {
+            completeTransfer(
+                    context,
+                    transfer,
+                    capacityReservation,
+                    PlayerTransferCompletion.failed(),
+                    exception
+            );
+        }
     }
 
     private void completeTransfer(
             ProtocolMessageContext context,
             PendingPlayerTransfer transfer,
+            BackendCapacityReservation capacityReservation,
             PlayerTransferCompletion completion,
             Throwable throwable
     ) {
@@ -383,6 +414,8 @@ public final class TransferRequestMessageHandler
             );
             return;
         }
+
+        targetResolver.releaseCapacity(capacityReservation);
 
         PlayerTransferCompletion safeCompletion =
                 throwable == null && completion != null

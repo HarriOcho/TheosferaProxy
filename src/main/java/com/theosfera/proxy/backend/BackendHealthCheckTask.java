@@ -32,7 +32,7 @@ public final class BackendHealthCheckTask implements Runnable {
     @Override
     public void run() {
         for (String serverName
-                : authorizationPolicy.allowedBackends().keySet()) {
+                : authorizationPolicy.authorizedBackendNames()) {
             try {
                 pingEmitter.emit(serverName);
             } catch (RuntimeException exception) {

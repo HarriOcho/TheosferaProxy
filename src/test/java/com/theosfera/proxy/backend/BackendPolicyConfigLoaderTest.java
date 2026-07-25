@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,7 +20,7 @@ class BackendPolicyConfigLoaderTest {
     Path temporaryDirectory;
 
     @Test
-    void createsAndLoadsDefaultConfiguration() {
+    void createsAndLoadsDefaultConfiguration() throws IOException {
         BackendPolicyConfigLoader loader =
                 new BackendPolicyConfigLoader(
                         temporaryDirectory
@@ -33,17 +34,47 @@ class BackendPolicyConfigLoaderTest {
         ));
 
         assertEquals(
-                BackendType.AUTH,
-                policy.allowedBackends().get("auth-1")
+                new BackendPolicyEntry(
+                        BackendType.AUTH,
+                        1,
+                        100
+                ),
+                policy.backendEntries().get("auth-1")
         );
         assertEquals(
-                BackendType.LOBBY,
-                policy.allowedBackends().get("lobby-1")
+                new BackendPolicyEntry(
+                        BackendType.LOBBY,
+                        100,
+                        90
+                ),
+                policy.backendEntries().get("lobby-1")
         );
         assertEquals(
-                BackendType.SKYBLOCK,
-                policy.allowedBackends().get("skyblock-1")
+                new BackendPolicyEntry(
+                        BackendType.SKYBLOCK,
+                        200,
+                        80
+                ),
+                policy.backendEntries().get("skyblock-1")
         );
+
+        String generatedConfiguration = Files.readString(
+                loader.configFile(),
+                StandardCharsets.UTF_8
+        );
+
+        assertTrue(generatedConfiguration.contains(
+                "auth-1=AUTH,1,100"
+        ));
+        assertTrue(generatedConfiguration.contains(
+                "lobby-1=LOBBY,100,90"
+        ));
+        assertTrue(generatedConfiguration.contains(
+                "skyblock-1=SKYBLOCK,200,80"
+        ));
+        assertFalse(generatedConfiguration.contains(
+                "auth-1=AUTH\n"
+        ));
     }
 
     @Test
@@ -55,10 +86,10 @@ class BackendPolicyConfigLoaderTest {
         Files.writeString(
                 configFile,
                 """
-                auth-1=auth
-                lobby-1=lobby
-                lobby-2=LOBBY
-                skyblock-1=skyblock
+                auth-1=auth,1,100
+                lobby-1=lobby,100,90
+                lobby-2=LOBBY,150,95
+                skyblock-1=skyblock,200,80
                 """,
                 StandardCharsets.UTF_8
         );
@@ -68,10 +99,14 @@ class BackendPolicyConfigLoaderTest {
                         temporaryDirectory
                 ).load();
 
-        assertEquals(4, policy.allowedBackends().size());
+        assertEquals(4, policy.backendEntries().size());
         assertEquals(
-                BackendType.LOBBY,
-                policy.allowedBackends().get("lobby-2")
+                new BackendPolicyEntry(
+                        BackendType.LOBBY,
+                        150,
+                        95
+                ),
+                policy.backendEntries().get("lobby-2")
         );
     }
 
@@ -83,8 +118,8 @@ class BackendPolicyConfigLoaderTest {
         );
 
         String customConfiguration = """
-                custom-lobby=LOBBY
-                """;
+        custom-lobby=LOBBY,250,75
+        """;
 
         Files.writeString(
                 configFile,
@@ -98,9 +133,12 @@ class BackendPolicyConfigLoaderTest {
                 ).load();
 
         assertEquals(
-                BackendType.LOBBY,
-                policy.allowedBackends()
-                        .get("custom-lobby")
+                new BackendPolicyEntry(
+                        BackendType.LOBBY,
+                        250,
+                        75
+                ),
+                policy.backendEntries().get("custom-lobby")
         );
         assertEquals(
                 customConfiguration,
@@ -118,7 +156,64 @@ class BackendPolicyConfigLoaderTest {
                 temporaryDirectory.resolve(
                         BackendPolicyConfigLoader.FILE_NAME
                 ),
-                "lobby-1=UNKNOWN",
+                "lobby-1=UNKNOWN,100,90",
+                StandardCharsets.UTF_8
+        );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> new BackendPolicyConfigLoader(
+                        temporaryDirectory
+                ).load()
+        );
+    }
+
+    @Test
+    void rejectsIncompleteBackendEntry()
+            throws IOException {
+        Files.writeString(
+                temporaryDirectory.resolve(
+                        BackendPolicyConfigLoader.FILE_NAME
+                ),
+                "lobby-1=LOBBY,100",
+                StandardCharsets.UTF_8
+        );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> new BackendPolicyConfigLoader(
+                        temporaryDirectory
+                ).load()
+        );
+    }
+
+    @Test
+    void rejectsNonNumericCapacity()
+            throws IOException {
+        Files.writeString(
+                temporaryDirectory.resolve(
+                        BackendPolicyConfigLoader.FILE_NAME
+                ),
+                "lobby-1=LOBBY,many,90",
+                StandardCharsets.UTF_8
+        );
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> new BackendPolicyConfigLoader(
+                        temporaryDirectory
+                ).load()
+        );
+    }
+
+    @Test
+    void rejectsNonNumericPreference()
+            throws IOException {
+        Files.writeString(
+                temporaryDirectory.resolve(
+                        BackendPolicyConfigLoader.FILE_NAME
+                ),
+                "lobby-1=LOBBY,100,high",
                 StandardCharsets.UTF_8
         );
 
