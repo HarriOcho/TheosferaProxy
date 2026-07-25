@@ -4,9 +4,9 @@ import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
-import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
-import com.theosfera.proxy.transfer.BackendBootstrapReservation;
+import com.theosfera.proxy.transfer.BackendCapacityReservation;
+import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolutionStatus;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
@@ -17,6 +17,7 @@ import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.Component;
 
 import java.time.Clock;
+import java.util.HashSet;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -162,8 +163,9 @@ public final class BackendKickFailoverService {
         Set<String> exclusions =
                 Set.of(failedServerName);
 
-        Optional<TransferTargetResolution> sameTypeTarget =
-                safeTargetResolution(
+        Optional<BackendKickFailoverResolution> sameTypeTarget =
+                reserveAvailableTarget(
+                        playerId,
                         sourceType,
                         exclusions,
                         failedServerName,
@@ -171,42 +173,126 @@ public final class BackendKickFailoverService {
                 );
 
         if (sameTypeTarget.isPresent()) {
-            return reserve(
-                    playerId,
-                    sameTypeTarget.get()
-            );
+            return sameTypeTarget.orElseThrow();
         }
 
         if (sourceType == BackendType.LOBBY) {
             return disconnect(nonNullEvent);
         }
 
-        Optional<TransferTargetResolution> lobbyTarget =
-                safeTargetResolution(
+        Optional<BackendKickFailoverResolution> lobbyTarget =
+                reserveAvailableTarget(
+                        playerId,
                         BackendType.LOBBY,
                         exclusions,
                         failedServerName,
                         currentServerName
                 );
 
-        if (lobbyTarget.isEmpty()) {
-            return disconnect(nonNullEvent);
-        }
-
-        return reserve(
-                playerId,
-                lobbyTarget.get()
+        return lobbyTarget.orElseGet(
+                () -> disconnect(nonNullEvent)
         );
     }
 
     public void clearPendingFailover(UUID playerId) {
-        failoverRegistry.clear(playerId);
+        failoverRegistry
+                .clearCapacityForCompletion(playerId)
+                .ifPresent(targetResolver::releaseCapacity);
     }
 
     public void cancelPendingFailover(UUID playerId) {
         failoverRegistry
                 .clearForDisconnect(playerId)
                 .ifPresent(bootstrapRegistry::removeIfMatches);
+
+        failoverRegistry
+                .removeCapacityReservation(playerId)
+                .ifPresent(targetResolver::releaseCapacity);
+    }
+
+    private Optional<BackendKickFailoverResolution>
+    reserveAvailableTarget(
+            UUID playerId,
+            BackendType targetType,
+            Set<String> initialExclusions,
+            String failedServerName,
+            Optional<String> currentServerName
+    ) {
+        Set<String> exclusions =
+                new HashSet<>(initialExclusions);
+
+        while (true) {
+            Optional<TransferTargetResolution> targetResolution =
+                    safeTargetResolution(
+                            targetType,
+                            exclusions,
+                            failedServerName,
+                            currentServerName
+                    );
+
+            if (targetResolution.isEmpty()) {
+                return Optional.empty();
+            }
+
+            RegisteredServer target =
+                    targetResolution
+                            .orElseThrow()
+                            .resolvedTarget()
+                            .orElseThrow();
+
+            String targetName =
+                    target.getServerInfo().getName();
+
+            BackendCapacityReservation capacityReservation =
+                    new BackendCapacityReservation(
+                            requestIdGenerator.get(),
+                            playerId,
+                            targetName
+                    );
+
+            BackendCapacityReservationResult reservationResult =
+                    targetResolver.reserveCapacity(
+                            capacityReservation,
+                            target
+                    );
+
+            switch (reservationResult) {
+                case RESERVED -> {
+                    if (!failoverRegistry.reserve(
+                            playerId,
+                            capacityReservation
+                    )) {
+                        targetResolver.releaseCapacity(
+                                capacityReservation
+                        );
+
+                        return Optional.of(
+                                BackendKickFailoverResolution.ignored()
+                        );
+                    }
+
+                    return Optional.of(
+                            BackendKickFailoverResolution.redirect(
+                                    target
+                            )
+                    );
+                }
+
+                case NO_CAPACITY -> {
+                    if (!exclusions.add(targetName)) {
+                        return Optional.empty();
+                    }
+                }
+
+                case ALREADY_RESERVED, REQUEST_ID_CONFLICT -> {
+                    return Optional.of(
+                            BackendKickFailoverResolution.disconnect(
+                                    NO_SAFE_TARGET_REASON
+                            )
+                    );
+                }
+            }
+        }
     }
 
     private Optional<TransferTargetResolution>
@@ -223,7 +309,7 @@ public final class BackendKickFailoverService {
         TransferTargetResolution resolution =
                 targetResolver.resolve(
                         targetType,
-                        exclusions
+                        Set.copyOf(exclusions)
                 );
 
         if (resolution.status()
@@ -267,52 +353,6 @@ public final class BackendKickFailoverService {
                         !targetName.equals(currentName)
                 )
                 .orElse(true);
-    }
-
-    private BackendKickFailoverResolution reserve(
-            UUID playerId,
-            TransferTargetResolution targetResolution
-    ) {
-        RegisteredServer target =
-                targetResolution
-                        .resolvedTarget()
-                        .orElseThrow();
-
-        if (!targetResolution.requiresBootstrap()) {
-            if (!failoverRegistry.reserve(playerId)) {
-                return BackendKickFailoverResolution.ignored();
-            }
-
-            return BackendKickFailoverResolution.redirect(target);
-        }
-
-        BackendBootstrapReservation reservation =
-                new BackendBootstrapReservation(
-                        target.getServerInfo().getName(),
-                        requestIdGenerator.get(),
-                        playerId,
-                        clock.millis()
-                );
-
-        if (!failoverRegistry.reserve(
-                playerId,
-                reservation
-        )) {
-            return BackendKickFailoverResolution.ignored();
-        }
-
-        BackendBootstrapRegistrationResult registrationResult =
-                bootstrapRegistry.register(reservation);
-
-        if (registrationResult
-                != BackendBootstrapRegistrationResult.RESERVED) {
-            failoverRegistry.clearForDisconnect(playerId);
-            return BackendKickFailoverResolution.disconnect(
-                    NO_SAFE_TARGET_REASON
-            );
-        }
-
-        return BackendKickFailoverResolution.redirect(target);
     }
 
     private BackendKickFailoverResolution disconnect(

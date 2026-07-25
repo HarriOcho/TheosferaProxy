@@ -6,6 +6,8 @@ import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.BackendCapacityReservation;
+import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
@@ -26,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -395,6 +398,13 @@ class BackendKickFailoverListenerTest {
             TransferTargetResolver targetResolver,
             BackendBootstrapRegistry bootstrapRegistry
     ) {
+        when(targetResolver.reserveCapacity(
+                any(BackendCapacityReservation.class),
+                any(RegisteredServer.class)
+        )).thenReturn(
+                BackendCapacityReservationResult.RESERVED
+        );
+
         return new BackendKickFailoverListener(
                 new BackendKickFailoverService(
                         authenticatedSessions(),
