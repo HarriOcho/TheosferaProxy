@@ -78,11 +78,23 @@ class BackendHealthCheckTaskTest {
         return new BackendAuthorizationPolicy(
                 Map.of(
                         "auth-1",
-                        BackendType.AUTH,
+                        new BackendPolicyEntry(
+                                BackendType.AUTH,
+                                1,
+                                100
+                        ),
                         "lobby-1",
-                        BackendType.LOBBY,
+                        new BackendPolicyEntry(
+                                BackendType.LOBBY,
+                                100,
+                                100
+                        ),
                         "skyblock-1",
-                        BackendType.SKYBLOCK
+                        new BackendPolicyEntry(
+                                BackendType.SKYBLOCK,
+                                200,
+                                100
+                        )
                 )
         );
     }

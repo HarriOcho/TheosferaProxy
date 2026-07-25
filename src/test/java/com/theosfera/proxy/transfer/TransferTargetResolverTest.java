@@ -5,6 +5,7 @@ import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
@@ -71,7 +72,11 @@ class TransferTargetResolverTest {
                 resolverFor(
                         Map.of(
                                 "skyblock-1",
-                                BackendType.SKYBLOCK
+                                new BackendPolicyEntry(
+                                        BackendType.SKYBLOCK,
+                                        200,
+                                        100
+                                )
                         )
                 ).resolve(BackendType.SKYBLOCK);
 
@@ -1210,14 +1215,40 @@ class TransferTargetResolverTest {
     private TransferTargetResolver resolverFor(
             Map<String, BackendType> allowedBackends
     ) {
+        Map<String, BackendPolicyEntry> backendEntries =
+                allowedBackends.entrySet()
+                        .stream()
+                        .collect(
+                                java.util.stream.Collectors.toMap(
+                                        Map.Entry::getKey,
+                                        entry -> new BackendPolicyEntry(
+                                                entry.getValue(),
+                                                capacityFor(
+                                                        entry.getValue()
+                                                ),
+                                                100
+                                        ),
+                                        (first, second) -> first,
+                                        java.util.LinkedHashMap::new
+                                )
+                        );
+
         return new TransferTargetResolver(
                 proxyServer,
                 new BackendAuthorizationPolicy(
-                        allowedBackends
+                        backendEntries
                 ),
                 identityRegistry,
                 healthRegistry
         );
+    }
+
+    private int capacityFor(BackendType backendType) {
+        return switch (backendType) {
+            case AUTH -> 1;
+            case LOBBY -> 100;
+            case SKYBLOCK -> 200;
+        };
     }
 
     private void registerIdentity(

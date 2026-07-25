@@ -11,6 +11,7 @@ import com.theosfera.protocol.message.payload.PlayerServerReadyPayload;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
@@ -63,9 +64,17 @@ class ProtocolPlayerSessionFlowTest {
                 new BackendAuthorizationPolicy(
                         Map.of(
                                 "auth-1",
-                                BackendType.AUTH,
+                                new BackendPolicyEntry(
+                                        BackendType.AUTH,
+                                        1,
+                                        100
+                                ),
                                 "lobby-1",
-                                BackendType.LOBBY
+                                new BackendPolicyEntry(
+                                        BackendType.LOBBY,
+                                        100,
+                                        100
+                                )
                         )
                 );
 

@@ -8,6 +8,7 @@ import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
@@ -45,9 +46,17 @@ class BackendHelloMessageHandlerTest {
             new BackendAuthorizationPolicy(
                     Map.of(
                             "auth-1",
-                            BackendType.AUTH,
+                            new BackendPolicyEntry(
+                                    BackendType.AUTH,
+                                    1,
+                                    100
+                            ),
                             "lobby-1",
-                            BackendType.LOBBY
+                            new BackendPolicyEntry(
+                                    BackendType.LOBBY,
+                                    100,
+                                    100
+                            )
                     )
             );
 
