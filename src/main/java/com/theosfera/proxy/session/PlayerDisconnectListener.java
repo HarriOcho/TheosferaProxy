@@ -1,11 +1,14 @@
 package com.theosfera.proxy.session;
 
+import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
+import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import org.slf4j.Logger;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 
 public final class PlayerDisconnectListener {
@@ -16,12 +19,30 @@ public final class PlayerDisconnectListener {
             presenceRegistry;
     private final PendingPlayerTransferRegistry
             transferRegistry;
+    private final BackendCapacityReservationRegistry
+            capacityRegistry;
     private final Logger logger;
 
     public PlayerDisconnectListener(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
+            Logger logger
+    ) {
+        this(
+                sessionRegistry,
+                presenceRegistry,
+                transferRegistry,
+                new BackendCapacityReservationRegistry(),
+                logger
+        );
+    }
+
+    public PlayerDisconnectListener(
+            AuthenticatedPlayerSessionRegistry sessionRegistry,
+            PlayerServerPresenceRegistry presenceRegistry,
+            PendingPlayerTransferRegistry transferRegistry,
+            BackendCapacityReservationRegistry capacityRegistry,
             Logger logger
     ) {
         this.sessionRegistry = Objects.requireNonNull(
@@ -37,6 +58,11 @@ public final class PlayerDisconnectListener {
         this.transferRegistry = Objects.requireNonNull(
                 transferRegistry,
                 "transferRegistry cannot be null"
+        );
+
+        this.capacityRegistry = Objects.requireNonNull(
+                capacityRegistry,
+                "capacityRegistry cannot be null"
         );
 
         this.logger = Objects.requireNonNull(
@@ -55,10 +81,17 @@ public final class PlayerDisconnectListener {
         UUID playerId =
                 event.getPlayer().getUniqueId();
 
-        boolean transferRemoved =
+        Optional<PendingPlayerTransfer> removedTransfer =
                 transferRegistry
-                        .removeByPlayer(playerId)
-                        .isPresent();
+                        .removeByPlayer(playerId);
+
+        removedTransfer.ifPresent(transfer ->
+                capacityRegistry.removeByRequest(
+                        transfer.requestId()
+                )
+        );
+
+        boolean transferRemoved = removedTransfer.isPresent();
 
         boolean presenceRemoved =
                 presenceRegistry

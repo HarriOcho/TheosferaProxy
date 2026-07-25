@@ -22,6 +22,7 @@ public final class TransferTargetResolver {
     private final BackendAuthorizationPolicy authorizationPolicy;
     private final BackendIdentityRegistry identityRegistry;
     private final BackendHealthRegistry healthRegistry;
+    private final BackendCapacityReservationRegistry capacityRegistry;
     private final BackendLoadSelector loadSelector;
 
     public TransferTargetResolver(
@@ -35,6 +36,24 @@ public final class TransferTargetResolver {
                 authorizationPolicy,
                 identityRegistry,
                 healthRegistry,
+                new BackendCapacityReservationRegistry(),
+                new BackendLoadSelector()
+        );
+    }
+
+    public TransferTargetResolver(
+            ProxyServer proxyServer,
+            BackendAuthorizationPolicy authorizationPolicy,
+            BackendIdentityRegistry identityRegistry,
+            BackendHealthRegistry healthRegistry,
+            BackendCapacityReservationRegistry capacityRegistry
+    ) {
+        this(
+                proxyServer,
+                authorizationPolicy,
+                identityRegistry,
+                healthRegistry,
+                capacityRegistry,
                 new BackendLoadSelector()
         );
     }
@@ -44,6 +63,24 @@ public final class TransferTargetResolver {
             BackendAuthorizationPolicy authorizationPolicy,
             BackendIdentityRegistry identityRegistry,
             BackendHealthRegistry healthRegistry,
+            BackendLoadSelector loadSelector
+    ) {
+        this(
+                proxyServer,
+                authorizationPolicy,
+                identityRegistry,
+                healthRegistry,
+                new BackendCapacityReservationRegistry(),
+                loadSelector
+        );
+    }
+
+    TransferTargetResolver(
+            ProxyServer proxyServer,
+            BackendAuthorizationPolicy authorizationPolicy,
+            BackendIdentityRegistry identityRegistry,
+            BackendHealthRegistry healthRegistry,
+            BackendCapacityReservationRegistry capacityRegistry,
             BackendLoadSelector loadSelector
     ) {
         this.proxyServer = Objects.requireNonNull(
@@ -64,6 +101,11 @@ public final class TransferTargetResolver {
         this.healthRegistry = Objects.requireNonNull(
                 healthRegistry,
                 "healthRegistry cannot be null"
+        );
+
+        this.capacityRegistry = Objects.requireNonNull(
+                capacityRegistry,
+                "capacityRegistry cannot be null"
         );
 
         this.loadSelector = Objects.requireNonNull(
@@ -145,6 +187,59 @@ public final class TransferTargetResolver {
         }
 
         return TransferTargetResolution.notAuthenticated();
+    }
+
+    public BackendCapacityReservationResult reserveCapacity(
+            BackendCapacityReservation reservation,
+            RegisteredServer target
+    ) {
+        BackendCapacityReservation nonNullReservation =
+                Objects.requireNonNull(
+                        reservation,
+                        "reservation cannot be null"
+                );
+
+        RegisteredServer nonNullTarget = Objects.requireNonNull(
+                target,
+                "target cannot be null"
+        );
+
+        String targetName =
+                nonNullTarget.getServerInfo().getName();
+
+        if (!nonNullReservation.backendName().equals(targetName)) {
+            throw new IllegalArgumentException(
+                    "reservation backend must match target"
+            );
+        }
+
+        BackendPolicyEntry policyEntry =
+                authorizationPolicy
+                        .backendEntries()
+                        .get(targetName);
+
+        if (policyEntry == null) {
+            throw new IllegalArgumentException(
+                    "target is not present in backend policy"
+            );
+        }
+
+        return capacityRegistry.reserve(
+                nonNullReservation,
+                nonNullTarget.getPlayersConnected().size(),
+                policyEntry.capacity()
+        );
+    }
+
+    public Optional<BackendCapacityReservation> releaseCapacity(
+            BackendCapacityReservation reservation
+    ) {
+        return capacityRegistry.removeIfMatches(
+                Objects.requireNonNull(
+                        reservation,
+                        "reservation cannot be null"
+                )
+        );
     }
 
     private List<RegisteredServer> configuredTargets(
@@ -241,7 +336,8 @@ public final class TransferTargetResolver {
                         serverName,
                         server,
                         policyEntry,
-                        connectedPlayers
+                        connectedPlayers,
+                        capacityRegistry.reservedCount(serverName)
                 )
         );
     }

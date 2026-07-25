@@ -34,11 +34,11 @@ public final class BackendLoadSelector {
             BackendLoadCandidate second
     ) {
         long firstWeightedLoad =
-                (long) first.connectedPlayers()
+                first.effectivePlayers()
                         * second.policyEntry().capacity();
 
         long secondWeightedLoad =
-                (long) second.connectedPlayers()
+                second.effectivePlayers()
                         * first.policyEntry().capacity();
 
         int loadComparison =

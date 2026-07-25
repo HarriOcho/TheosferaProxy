@@ -15,6 +15,7 @@ import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
@@ -39,6 +40,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -109,6 +111,13 @@ class TransferRequestMessageHandlerTest {
 
         targetResolver =
                 mock(TransferTargetResolver.class);
+
+        when(targetResolver.reserveCapacity(
+                any(),
+                any()
+        )).thenReturn(
+                BackendCapacityReservationResult.RESERVED
+        );
 
         transferExecutor =
                 mock(PlayerTransferExecutor.class);

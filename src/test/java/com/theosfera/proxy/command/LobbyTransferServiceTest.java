@@ -5,6 +5,7 @@ import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
+import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
@@ -79,6 +80,13 @@ class LobbyTransferServiceTest {
 
         targetResolver =
                 mock(TransferTargetResolver.class);
+
+        when(targetResolver.reserveCapacity(
+                any(),
+                any()
+        )).thenReturn(
+                BackendCapacityReservationResult.RESERVED
+        );
 
         transferExecutor =
                 mock(PlayerTransferExecutor.class);

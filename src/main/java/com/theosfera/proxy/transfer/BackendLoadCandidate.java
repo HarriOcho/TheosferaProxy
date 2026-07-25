@@ -9,8 +9,18 @@ public record BackendLoadCandidate(
         String serverName,
         RegisteredServer server,
         BackendPolicyEntry policyEntry,
-        int connectedPlayers
+        int connectedPlayers,
+        int reservedPlayers
 ) {
+
+    public BackendLoadCandidate(
+            String serverName,
+            RegisteredServer server,
+            BackendPolicyEntry policyEntry,
+            int connectedPlayers
+    ) {
+        this(serverName, server, policyEntry, connectedPlayers, 0);
+    }
 
     public BackendLoadCandidate {
         Objects.requireNonNull(
@@ -37,9 +47,19 @@ public record BackendLoadCandidate(
                     "connectedPlayers cannot be negative"
             );
         }
+
+        if (reservedPlayers < 0) {
+            throw new IllegalArgumentException(
+                    "reservedPlayers cannot be negative"
+            );
+        }
+    }
+
+    public long effectivePlayers() {
+        return (long) connectedPlayers + reservedPlayers;
     }
 
     public boolean hasAvailableCapacity() {
-        return connectedPlayers < policyEntry.capacity();
+        return effectivePlayers() < policyEntry.capacity();
     }
 }

@@ -32,6 +32,7 @@ import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
@@ -69,6 +70,7 @@ public final class TheosferaProxy {
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
+    private final BackendCapacityReservationRegistry capacityRegistry;
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final PendingPlayerFailoverRegistry failoverRegistry;
     private final PlayerDisconnectListener playerDisconnectListener;
@@ -109,6 +111,9 @@ public final class TheosferaProxy {
         this.transferRegistry =
                 new PendingPlayerTransferRegistry();
 
+        this.capacityRegistry =
+                new BackendCapacityReservationRegistry();
+
         this.bootstrapRegistry =
                 new BackendBootstrapRegistry();
 
@@ -134,6 +139,7 @@ public final class TheosferaProxy {
                         sessionRegistry,
                         presenceRegistry,
                         transferRegistry,
+                        capacityRegistry,
                         logger
                 );
     }
@@ -209,6 +215,7 @@ public final class TheosferaProxy {
 
         bootstrapRegistry.clear();
         failoverRegistry.clear();
+        capacityRegistry.clear();
         transferRegistry.clear();
         presenceRegistry.clear();
         sessionRegistry.clear();
@@ -289,7 +296,8 @@ public final class TheosferaProxy {
                         proxyServer,
                         authorizationPolicy,
                         identityRegistry,
-                        healthRegistry
+                        healthRegistry,
+                        capacityRegistry
                 );
 
         PlayerTransferExecutor transferExecutor =
