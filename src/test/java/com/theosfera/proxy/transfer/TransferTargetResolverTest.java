@@ -72,11 +72,7 @@ class TransferTargetResolverTest {
                 resolverFor(
                         Map.of(
                                 "skyblock-1",
-                                new BackendPolicyEntry(
-                                        BackendType.SKYBLOCK,
-                                        200,
-                                        100
-                                )
+                                BackendType.SKYBLOCK
                         )
                 ).resolve(BackendType.SKYBLOCK);
 
@@ -1157,7 +1153,11 @@ class TransferTargetResolverTest {
                 new BackendAuthorizationPolicy(
                         Map.of(
                                 "skyblock-1",
-                                BackendType.SKYBLOCK
+                                new BackendPolicyEntry(
+                                        BackendType.SKYBLOCK,
+                                        200,
+                                        100
+                                )
                         )
                 );
 
