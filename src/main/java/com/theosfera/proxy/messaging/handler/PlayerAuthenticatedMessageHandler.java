@@ -19,6 +19,7 @@ import org.slf4j.Logger;
 
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 
@@ -120,11 +121,28 @@ public final class PlayerAuthenticatedMessageHandler
         UUID acquisitionId =
                 context.envelope().requestId();
 
-        leaseBindingRegistry.begin(
-                carrier,
-                acquisitionId
-        );
+        long attemptId =
+                leaseBindingRegistry.begin(
+                        carrier,
+                        acquisitionId
+                );
 
+        startAcquisition(
+                context,
+                carrier,
+                session,
+                acquisitionId,
+                attemptId
+        );
+    }
+
+    private void startAcquisition(
+            ProtocolMessageContext context,
+            Player carrier,
+            AuthenticatedPlayerSession session,
+            UUID acquisitionId,
+            long attemptId
+    ) {
         CompletionStage<PlayerSessionAcquireResult>
                 acquisitionStage;
 
@@ -139,6 +157,18 @@ public final class PlayerAuthenticatedMessageHandler
                     "sessionCoordinator.acquire returned null"
             );
         } catch (RuntimeException exception) {
+            boolean claimed =
+                    leaseBindingRegistry
+                            .claimAcquisitionResult(
+                                    carrier,
+                                    acquisitionId,
+                                    attemptId
+                            );
+
+            if (!claimed) {
+                return;
+            }
+
             rejectCoordinationFailure(
                     context,
                     carrier,
@@ -151,6 +181,21 @@ public final class PlayerAuthenticatedMessageHandler
 
         acquisitionStage.whenComplete(
                 (result, failure) -> {
+                    boolean claimed =
+                            leaseBindingRegistry
+                                    .claimAcquisitionResult(
+                                            carrier,
+                                            acquisitionId,
+                                            attemptId
+                                    );
+
+                    if (!claimed) {
+                        releaseUnclaimedSuccessfulAcquisition(
+                                result
+                        );
+                        return;
+                    }
+
                     if (failure != null) {
                         rejectCoordinationFailure(
                                 context,
@@ -182,6 +227,7 @@ public final class PlayerAuthenticatedMessageHandler
                                 carrier,
                                 session,
                                 acquisitionId,
+                                attemptId,
                                 result
                         );
                     } catch (RuntimeException exception) {
@@ -196,12 +242,41 @@ public final class PlayerAuthenticatedMessageHandler
                 }
         );
     }
+    private void releaseUnclaimedSuccessfulAcquisition(
+            PlayerSessionAcquireResult result
+    ) {
+        if (result == null) {
+            return;
+        }
 
+        boolean successful =
+                result.status()
+                        == PlayerSessionAcquireResult.Status.ACQUIRED
+                        || result.status()
+                        == PlayerSessionAcquireResult.Status.ALREADY_OWNED;
+
+        if (!successful) {
+            return;
+        }
+
+        PlayerSessionLease lease =
+                result.lease().orElseThrow();
+
+        if (!lease.owner().equals(proxyIdentity)) {
+            return;
+        }
+
+        releaseUnboundLease(
+                lease,
+                PlayerSessionLeaseBindingResult.STALE
+        );
+    }
     private void handleAcquisitionResult(
             ProtocolMessageContext context,
             Player carrier,
             AuthenticatedPlayerSession session,
             UUID acquisitionId,
+            long attemptId,
             PlayerSessionAcquireResult result
     ) {
         switch (result.status()) {
@@ -211,6 +286,7 @@ public final class PlayerAuthenticatedMessageHandler
                             carrier,
                             session,
                             acquisitionId,
+                            attemptId,
                             result
                     );
 
@@ -232,7 +308,8 @@ public final class PlayerAuthenticatedMessageHandler
                                 context,
                                 carrier,
                                 session,
-                                acquisitionId
+                                acquisitionId,
+                                attemptId
                         );
 
                 if (!waitingForRelease) {
@@ -266,6 +343,7 @@ public final class PlayerAuthenticatedMessageHandler
             Player carrier,
             AuthenticatedPlayerSession session,
             UUID acquisitionId,
+            long attemptId,
             PlayerSessionAcquireResult result
     ) {
         PlayerSessionLease lease =
@@ -319,11 +397,12 @@ public final class PlayerAuthenticatedMessageHandler
 
             case RELEASE_PENDING ->
                     tryWaitForPendingRelease(
-                            context,
-                            carrier,
-                            session,
-                            acquisitionId
-                    );
+                                context,
+                                carrier,
+                                session,
+                                acquisitionId,
+                                attemptId
+                        );
 
             case STALE -> {
                 releaseUnboundLease(
@@ -368,7 +447,8 @@ public final class PlayerAuthenticatedMessageHandler
             ProtocolMessageContext context,
             Player carrier,
             AuthenticatedPlayerSession session,
-            UUID acquisitionId
+            UUID acquisitionId,
+            long attemptId
     ) {
         Optional<CompletionStage<Boolean>> completion =
                 leaseBindingRegistry
@@ -387,6 +467,7 @@ public final class PlayerAuthenticatedMessageHandler
                 carrier,
                 session,
                 acquisitionId,
+                attemptId,
                 completion.orElseThrow()
         );
 
@@ -398,6 +479,7 @@ public final class PlayerAuthenticatedMessageHandler
             Player carrier,
             AuthenticatedPlayerSession session,
             UUID acquisitionId,
+            long attemptId,
             CompletionStage<Boolean> completion
     ) {
         CompletionStage<Boolean> nonNullCompletion =
@@ -408,20 +490,20 @@ public final class PlayerAuthenticatedMessageHandler
 
         nonNullCompletion.whenComplete(
                 (released, failure) -> {
-                    boolean claimed =
-                            leaseBindingRegistry
-                                    .claimReleaseCompletion(
-                                            carrier,
-                                            acquisitionId,
-                                            nonNullCompletion
-                                    );
-
-                    if (!claimed) {
-                        return;
-                    }
-
                     if (failure != null
                             || !Boolean.TRUE.equals(released)) {
+                        boolean claimed =
+                                leaseBindingRegistry
+                                        .claimReleaseCompletion(
+                                                carrier,
+                                                acquisitionId,
+                                                nonNullCompletion
+                                        );
+
+                        if (!claimed) {
+                            return;
+                        }
+
                         Throwable cause =
                                 failure != null
                                         ? failure
@@ -439,7 +521,26 @@ public final class PlayerAuthenticatedMessageHandler
                         return;
                     }
 
-                    handle(context);
+                    OptionalLong retryAttempt =
+                            leaseBindingRegistry
+                                    .claimReleaseCompletionAndBeginRetry(
+                                            carrier,
+                                            acquisitionId,
+                                            attemptId,
+                                            nonNullCompletion
+                                    );
+
+                    if (retryAttempt.isEmpty()) {
+                        return;
+                    }
+
+                    startAcquisition(
+                            context,
+                            carrier,
+                            session,
+                            acquisitionId,
+                            retryAttempt.getAsLong()
+                    );
                 }
         );
     }

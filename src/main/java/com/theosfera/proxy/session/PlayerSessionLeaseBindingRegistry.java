@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -28,8 +29,9 @@ public final class PlayerSessionLeaseBindingRegistry {
             new HashMap<>();
 
     private long lastGeneration;
+    private long lastAttempt;
 
-    public synchronized void begin(
+    public synchronized long begin(
             Player player,
             UUID acquisitionId
     ) {
@@ -40,7 +42,6 @@ public final class PlayerSessionLeaseBindingRegistry {
                         acquisitionId,
                         "acquisitionId cannot be null"
                 );
-
 
         UUID playerId = nonNullPlayer.getUniqueId();
 
@@ -72,14 +73,18 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         if (current != null
                 && current.player() == nonNullPlayer) {
-            return;
+            return current.attemptId();
         }
+
+        long attemptId = nextAttempt();
 
         pending.put(
                 nonNullAcquisitionId,
                 new PendingAcquisition(
                         nonNullPlayer,
                         generation,
+                        attemptId,
+                        false,
                         false,
                         0L,
                         null
@@ -93,6 +98,8 @@ public final class PlayerSessionLeaseBindingRegistry {
                         pending
                 )
         );
+
+        return attemptId;
     }
 
     public synchronized PlayerSessionLeaseBindingResult bind(
@@ -145,24 +152,39 @@ public final class PlayerSessionLeaseBindingRegistry {
                 pendingReleases.get(nonNullLease);
 
         if (pendingRelease != null) {
-            remaining.put(
-                    nonNullAcquisitionId,
+            PendingAcquisition waiting =
                     acquisition.waitingForRelease(
                             nonNullLease,
                             pendingRelease
-                    )
-            );
+                    );
 
-            updateState(
-                    playerId,
-                    new PlayerState(
-                            existing.boundLease(),
-                            remaining
-                    )
-            );
+            PendingRelease waitingRelease =
+                    waiting.pendingRelease();
 
-            return PlayerSessionLeaseBindingResult
-                    .RELEASE_PENDING;
+            boolean releaseCanBeAwaited =
+                    waitingRelease != null
+                            && waitingRelease
+                            .lease()
+                            .owner()
+                            .equals(nonNullLease.owner());
+
+            if (releaseCanBeAwaited) {
+                remaining.put(
+                        nonNullAcquisitionId,
+                        waiting
+                );
+
+                updateState(
+                        playerId,
+                        new PlayerState(
+                                existing.boundLease(),
+                                remaining
+                        )
+                );
+
+                return PlayerSessionLeaseBindingResult
+                        .RELEASE_PENDING;
+            }
         }
 
         PendingRelease acquisitionRelease =
@@ -648,6 +670,59 @@ public final class PlayerSessionLeaseBindingRegistry {
         return true;
     }
 
+    public synchronized boolean claimAcquisitionResult(
+            Player player,
+            UUID acquisitionId,
+            long expectedAttemptId
+    ) {
+        Player nonNullPlayer = requirePlayer(player);
+
+        UUID nonNullAcquisitionId =
+                Objects.requireNonNull(
+                        acquisitionId,
+                        "acquisitionId cannot be null"
+                );
+
+        UUID playerId =
+                nonNullPlayer.getUniqueId();
+
+        PlayerState state = states.get(playerId);
+
+        if (state == null) {
+            return false;
+        }
+
+        PendingAcquisition acquisition =
+                state.pendingAcquisitions()
+                        .get(nonNullAcquisitionId);
+
+        if (acquisition == null
+                || acquisition.player() != nonNullPlayer
+                || acquisition.attemptId() != expectedAttemptId
+                || acquisition.acquisitionResultClaimed()) {
+            return false;
+        }
+
+        Map<UUID, PendingAcquisition> pending =
+                new HashMap<>(
+                        state.pendingAcquisitions()
+                );
+
+        pending.put(
+                nonNullAcquisitionId,
+                acquisition.withAcquisitionResultClaimed()
+        );
+
+        updateState(
+                playerId,
+                new PlayerState(
+                        state.boundLease(),
+                        pending
+                )
+        );
+
+        return true;
+    }
     public synchronized Optional<CompletionStage<Boolean>>
     awaitPendingRelease(
             Player player,
@@ -725,7 +800,7 @@ public final class PlayerSessionLeaseBindingRegistry {
             }
 
             if (candidate.fencingToken()
-                    < acquisition
+                    <= acquisition
                     .minimumFencingTokenExclusive()) {
                 continue;
             }
@@ -770,6 +845,77 @@ public final class PlayerSessionLeaseBindingRegistry {
         return Optional.of(completion);
     }
 
+    public synchronized OptionalLong
+    claimReleaseCompletionAndBeginRetry(
+            Player player,
+            UUID acquisitionId,
+            long expectedAttemptId,
+            CompletionStage<Boolean> expectedCompletion
+    ) {
+        Player nonNullPlayer = requirePlayer(player);
+
+        UUID nonNullAcquisitionId =
+                Objects.requireNonNull(
+                        acquisitionId,
+                        "acquisitionId cannot be null"
+                );
+
+        CompletionStage<Boolean> nonNullExpected =
+                Objects.requireNonNull(
+                        expectedCompletion,
+                        "expectedCompletion cannot be null"
+                );
+
+        UUID playerId =
+                nonNullPlayer.getUniqueId();
+
+        PlayerState state = states.get(playerId);
+
+        if (state == null) {
+            return OptionalLong.empty();
+        }
+
+        PendingAcquisition acquisition =
+                state.pendingAcquisitions()
+                        .get(nonNullAcquisitionId);
+
+        PendingRelease pendingRelease =
+                acquisition == null
+                        ? null
+                        : acquisition.pendingRelease();
+
+        if (acquisition == null
+                || acquisition.player() != nonNullPlayer
+                || acquisition.attemptId() != expectedAttemptId
+                || !acquisition.acquisitionResultClaimed()
+                || pendingRelease == null
+                || pendingRelease.completion()
+                != nonNullExpected) {
+            return OptionalLong.empty();
+        }
+
+        long retryAttemptId = nextAttempt();
+
+        Map<UUID, PendingAcquisition> pending =
+                new HashMap<>(
+                        state.pendingAcquisitions()
+                );
+
+        pending.put(
+                nonNullAcquisitionId,
+                acquisition.beginRetry(retryAttemptId)
+        );
+
+        updateState(
+                playerId,
+                new PlayerState(
+                        state.boundLease(),
+                        pending
+                )
+        );
+
+        return OptionalLong.of(retryAttemptId);
+    }
     public synchronized boolean claimReleaseCompletion(
             Player player,
             UUID acquisitionId,
@@ -1093,6 +1239,13 @@ public final class PlayerSessionLeaseBindingRegistry {
         return lastGeneration;
     }
 
+    private long nextAttempt() {
+        lastAttempt =
+                Math.incrementExact(lastAttempt);
+
+        return lastAttempt;
+    }
+
     private Player requirePlayer(Player player) {
         Player nonNullPlayer = Objects.requireNonNull(
                 player,
@@ -1243,6 +1396,8 @@ public final class PlayerSessionLeaseBindingRegistry {
     private record PendingAcquisition(
             Player player,
             long generation,
+            long attemptId,
+            boolean acquisitionResultClaimed,
             boolean disconnected,
             long minimumFencingTokenExclusive,
             PendingRelease pendingRelease
@@ -1260,6 +1415,12 @@ public final class PlayerSessionLeaseBindingRegistry {
                 );
             }
 
+            if (attemptId <= 0) {
+                throw new IllegalArgumentException(
+                        "attemptId must be greater than zero"
+                );
+            }
+
             if (minimumFencingTokenExclusive < 0) {
                 throw new IllegalArgumentException(
                         "minimum fencing token cannot be negative"
@@ -1267,10 +1428,39 @@ public final class PlayerSessionLeaseBindingRegistry {
             }
         }
 
+        private PendingAcquisition
+        withAcquisitionResultClaimed() {
+            return new PendingAcquisition(
+                    player,
+                    generation,
+                    attemptId,
+                    true,
+                    disconnected,
+                    minimumFencingTokenExclusive,
+                    pendingRelease
+            );
+        }
+
+        private PendingAcquisition beginRetry(
+                long retryAttemptId
+        ) {
+            return new PendingAcquisition(
+                    player,
+                    generation,
+                    retryAttemptId,
+                    false,
+                    disconnected,
+                    minimumFencingTokenExclusive,
+                    null
+            );
+        }
+
         private PendingAcquisition asDisconnected() {
             return new PendingAcquisition(
                     player,
                     generation,
+                    attemptId,
+                    acquisitionResultClaimed,
                     true,
                     minimumFencingTokenExclusive,
                     pendingRelease
@@ -1294,7 +1484,7 @@ public final class PlayerSessionLeaseBindingRegistry {
                     );
 
             if (nonNullLease.fencingToken()
-                    < minimumFencingTokenExclusive) {
+                    <= minimumFencingTokenExclusive) {
                 return this;
             }
 
@@ -1315,6 +1505,8 @@ public final class PlayerSessionLeaseBindingRegistry {
                 return new PendingAcquisition(
                         player,
                         generation,
+                        attemptId,
+                        acquisitionResultClaimed,
                         disconnected,
                         nextMinimumFencingTokenExclusive,
                         pendingRelease
@@ -1324,6 +1516,8 @@ public final class PlayerSessionLeaseBindingRegistry {
             return new PendingAcquisition(
                     player,
                     generation,
+                    attemptId,
+                    acquisitionResultClaimed,
                     disconnected,
                     nextMinimumFencingTokenExclusive,
                     new PendingRelease(
@@ -1337,6 +1531,8 @@ public final class PlayerSessionLeaseBindingRegistry {
             return new PendingAcquisition(
                     player,
                     generation,
+                    attemptId,
+                    acquisitionResultClaimed,
                     disconnected,
                     minimumFencingTokenExclusive,
                     null

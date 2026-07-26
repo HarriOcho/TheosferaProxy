@@ -710,6 +710,79 @@ class PlayerSessionLeaseBindingRegistryTest {
     }
 
     @Test
+    void ignoresPendingReleaseAtExclusiveFencingFloor() {
+        Player player = player(PLAYER_ID);
+
+        PlayerSessionLease consumedLease =
+                lease(OWNER, 1L);
+
+        PlayerSessionLease sameFloorLease =
+                new PlayerSessionLease(
+                        new AuthenticatedPlayerSession(
+                                PLAYER_ID,
+                                "HarriOcho",
+                                1_750_000_000_001L
+                        ),
+                        OWNER,
+                        1L
+                );
+
+        registry.begin(
+                player,
+                ACQUISITION_1
+        );
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        consumedLease
+                )
+        );
+
+        var consumedCompletion =
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).orElseThrow();
+
+        registry.completeRelease(
+                consumedLease,
+                true
+        );
+
+        assertTrue(
+                registry.claimReleaseCompletion(
+                        player,
+                        ACQUISITION_1,
+                        consumedCompletion
+                )
+        );
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        sameFloorLease
+                )
+        );
+
+        assertTrue(
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).isEmpty()
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        sameFloorLease
+                )
+        );
+    }
+
+    @Test
     void claimsReleaseCompletionOnlyOnce() {
         Player player = player(PLAYER_ID);
 
