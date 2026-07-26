@@ -1647,3 +1647,128 @@ Punto exacto de continuación después de este checkpoint:
 - decidir después si Redis será el transporte temporal adecuado;
 - no introducir parties, amigos o escuadrones sin una fuente de verdad y una
   estrategia explícita de consistencia distribuida.
+
+## 25. Diseño de frontera de coordinación distribuida
+
+La frontera arquitectónica para coordinar múltiples instancias de
+TheosferaProxy fue definida antes de introducir Redis o cualquier estado
+compartido.
+
+Documento de diseño:
+
+```text
+docs/DISTRIBUTED_COORDINATION_BOUNDARY.md
+```
+
+El diseño conserva una separación explícita entre estado local y estado
+distribuido.
+
+Permanecen como autoridad local de cada proxy:
+
+- el registro de servidores de Velocity;
+- las identidades autenticadas mediante handshake;
+- el estado de salud y frescura de los backends;
+- las comprobaciones `PING` pendientes;
+- los callbacks y operaciones `ConnectionRequest`;
+- los listeners de conexión, desconexión y kick.
+
+La salud observada por una instancia de Proxy no constituye evidencia de que
+otra instancia pueda alcanzar el mismo backend. Un destino remoto no puede
+volverse elegible únicamente porque otro proxy lo reportó como saludable.
+
+Requieren coordinación global:
+
+- membresía e identidad de cada proceso Proxy;
+- propiedad temporal de sesiones autenticadas;
+- presencia global de jugadores;
+- exclusión de una transferencia activa por jugador;
+- reservas globales de capacidad;
+- reservas exclusivas de bootstrap;
+- deduplicación temporal de resultados terminales.
+
+La coordinación futura será independiente del transporte mediante contratos
+asíncronos y adaptadores. La lógica de dominio no dependerá directamente de
+Redis ni de un cliente concreto.
+
+Modos definidos:
+
+- `LOCAL`;
+- `DISTRIBUTED_REQUIRED`.
+
+El modo `LOCAL` conservará la semántica actual para una sola instancia.
+`DISTRIBUTED_REQUIRED` exigirá una capa de coordinación disponible y nunca
+degradará silenciosamente hacia memoria local, porque eso permitiría
+split-brain, sesiones duplicadas y sobreasignación de capacidad.
+
+Toda propiedad temporal distribuida deberá utilizar:
+
+- TTL;
+- renovación explícita cuando corresponda;
+- operaciones atómicas;
+- liberación exact-match;
+- idempotencia por `requestId`;
+- fencing tokens para invalidar propietarios anteriores.
+
+Estados operacionales previstos:
+
+- `STARTING`;
+- `HEALTHY`;
+- `DEGRADED`;
+- `FENCED`;
+- `STOPPING`.
+
+Política fail-closed definida:
+
+- una pérdida de coordinación bloquea nuevas autenticaciones globales;
+- no se inician nuevas transferencias ni reservas;
+- no se realiza fallback silencioso hacia registros locales;
+- un jugador puede permanecer temporalmente en su backend actual mientras el
+  proxy todavía pueda demostrar la vigencia de su lease;
+- cuando la instancia pierde definitivamente la propiedad, el jugador se
+  desconecta de forma controlada;
+- Auth no se utiliza como destino improvisado de recuperación;
+- los callbacks tardíos no pueden completar ni limpiar operaciones posteriores.
+
+La carga global de un backend se calculará a partir de:
+
+```text
+jugadores conectados reportados por proxies con lease fresco
++ reservas globales de capacidad vigentes
+```
+
+El conteo local de `RegisteredServer.getPlayersConnected()` no es suficiente
+para múltiples proxies, porque cada proceso Velocity observa únicamente sus
+propias conexiones.
+
+Los eventos distribuidos serán avisos o mecanismos de invalidación y no
+constituirán una fuente de verdad. Toda decisión autoritativa deberá consultar
+o modificar el estado coordinado mediante operaciones atómicas.
+
+Redis continúa siendo únicamente un candidato. Antes de seleccionarlo deberá
+demostrar:
+
+- atomicidad multi-clave;
+- TTL autoritativo;
+- fencing monotónico;
+- liberación exact-match;
+- deduplicación;
+- cliente Java 21 asíncrono;
+- timeouts y reconexión controlada;
+- comportamiento seguro ante particiones y reinicios;
+- observabilidad operacional.
+
+Redis Pub/Sub por sí solo no cumple la frontera definida.
+
+Primer incremento de implementación recomendado:
+
+1. introducir contratos de coordinación asíncronos;
+2. añadir adaptadores locales respaldados por los registros actuales;
+3. conservar exactamente la semántica runtime vigente;
+4. añadir pruebas de equivalencia;
+5. no introducir todavía Redis ni I/O de red;
+6. crear posteriormente un simulador multi-proxy compartido únicamente para
+   pruebas de exclusión, TTL, fencing y degradación.
+
+No introducir parties, amigos, escuadrones ni otras operaciones sociales antes
+de implementar una fuente de verdad persistente y una estrategia distribuida
+coherente con esta frontera.
