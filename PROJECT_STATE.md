@@ -1091,7 +1091,9 @@ Bloques principales fusionados en TheosferaProxy:
 - Fail-Closed Backend Kick Failover;
 - Backend Health Checking;
 - Capacity-Aware Backend Load Balancing;
-- Alternate Backend Transfer Retry.
+- Alternate Backend Transfer Retry;
+- Proxy Operational Observability;
+- Proxy Status Command Formatting.
 
 Bloques de contrato fusionados en TheosferaProtocol:
 
@@ -1131,6 +1133,10 @@ Commits relevantes ya integrados para el circuito Auth→Lobby:
   `e94a9fc feat: add capacity-aware backend load balancing (#37)`;
 - TheosferaProxy:
   `9d0ea02 fix: retry alternate backend after transfer failure (#38)`;
+- TheosferaProxy:
+  `6efacee feat: add proxy operational status observability (#40)`;
+- TheosferaProxy:
+  `e07eed1 feat: improve proxy status command formatting (#41)`;
 - TheosferaAuth:
   `b6ae696 Merge pull request #4 from HarriOcho/fix/auth-transfer-handoff-lifecycle`.
 
@@ -1149,13 +1155,25 @@ Estado Git del checkpoint histórico de failover:
 - rama actual del checkpoint:
   `docs/failover-runtime-checkpoint`.
 
-Estado Git del checkpoint actual de balanceo y retry:
+Estado Git del checkpoint histórico de balanceo y retry:
 
 - `main` sincronizada con `origin/main` en `9d0ea02`;
 - PR `#38` fusionado en `main`;
-- rama documental actual:
+- rama documental:
   `docs/backend-load-balancing-runtime-checkpoint`;
 - árbol limpio antes de editar `PROJECT_STATE.md`.
+
+Estado Git del checkpoint actual de observabilidad operacional:
+
+- `main` sincronizada con `origin/main` en `e07eed1`;
+- PR `#40` fusionado en `main`;
+- PR `#41` fusionado en `main`;
+- ramas locales de funcionalidad eliminadas después de los squash merge;
+- referencias remotas obsoletas eliminadas mediante `fetch --prune`;
+- rama documental actual:
+  `docs/proxy-operational-observability-checkpoint`;
+- árbol limpio antes de editar `PROJECT_STATE.md`;
+- validación runtime del comando administrativo completada.
 
 Estado posterior de desarrollo histórico del checkpoint de health checking:
 
@@ -1312,8 +1330,8 @@ El handshake, la autenticación, la presencia, la desconexión y la coordinació
 segura de transferencias están implementados. También están implementados el
 health checking periódico y correlacionado, la política explícita de frescura,
 su integración con `TransferTargetResolver`, el balanceo por capacidad, el
-retry alternativo de destinos y el failover fail-closed ante kicks de backends
-para jugadores autenticados.
+retry alternativo de destinos, el failover fail-closed ante kicks de backends
+para jugadores autenticados y la observabilidad operacional administrativa.
 
 La política fue validada en runtime con pérdida de frescura, exclusión del
 destino como backend jugable normal, resolución `BOOTSTRAP_REQUIRED`, fallo
@@ -1364,10 +1382,20 @@ instancia después de `FAILED`, `REJECTED` o `TARGET_BUSY`. `TIMED_OUT` sigue
 siendo terminal. `BOOTSTRAP_REQUIRED` permite un intento de conexión por la
 ruta de bootstrap, pero no prueba disponibilidad ni inicia procesos remotos.
 
+`/theosferaproxy status` está implementado, protegido por
+`theosferaproxy.admin`, cubierto por pruebas y validado en runtime.
+Presenta una vista administrativa de solo lectura de los backends
+autorizados. La vista es local y de mejor esfuerzo; no reemplaza los
+registros internos ni participa en routing, balanceo, reservas, health
+checking o failover.
+
 Limitaciones actuales:
 
 - el estado continúa siendo local al proceso;
 - no existe Redis ni coordinación entre múltiples proxies;
+- la vista administrativa no es transaccional entre registros;
+- no existen métricas históricas, series temporales ni auditoría durable;
+- el comando no muestra todavía el detalle de cada transferencia pendiente;
 - la distribución proporcional no fue validada directamente en runtime con
   tres jugadores simultáneos;
 - `TIMED_OUT` terminal no fue provocado deliberadamente en runtime.
@@ -1375,7 +1403,7 @@ Limitaciones actuales:
 Trabajo futuro, sin implementar todavía:
 
 - persistencia o coordinación distribuida del estado temporal;
-- observabilidad operacional de salud, reservas y transferencias;
+- observabilidad detallada de transferencias, métricas e historia;
 - modo mantenimiento.
 
 La selección de modalidades pertenece a TheosferaLobby, no a
@@ -1383,12 +1411,15 @@ TheosferaProxy.
 
 Siguiente hito técnico recomendado:
 
-- acordar si el próximo hito será diseñar una capa de coordinación global
-  distribuida para múltiples proxies o reforzar observabilidad y operación
-  sobre salud, reservas y transferencias.
+- diseñar, antes de implementar, la frontera de coordinación global
+  distribuida para múltiples proxies;
+- definir propiedad del estado, consistencia, TTL, recuperación, degradación y
+  comportamiento fail-closed ante pérdida de la capa distribuida;
+- decidir posteriormente si Redis será el transporte temporal apropiado.
 
-Redis y persistencia temporal siguen siendo decisiones futuras, pero no
-son el siguiente paso inmediato de este checkpoint.
+La observabilidad operacional básica ya no es trabajo pendiente. Redis y la
+persistencia temporal continúan sin implementar y requieren planificación
+explícita antes de escribir código.
 
 No introducir parties, amigos o escuadrones sin definir primero su
 persistencia y consistencia distribuida.
@@ -1506,11 +1537,113 @@ estaciones serán parte del ecosistema de TheosferaSkyblockAddons.
   proveedor de progreso.
 
 Estas decisiones no alteran el incremento técnico actual de TheosferaProxy.
-Health checking, capacidad, preferencia, selección proporcional y retry
-alternativo están implementados y cubiertos por pruebas automatizadas. El
-retry alternativo Auth→Lobby y `/hub` fue además validado en runtime. La
+Health checking, capacidad, preferencia, selección proporcional, retry
+alternativo y observabilidad operacional administrativa están implementados y
+cubiertos por pruebas automatizadas. El retry alternativo Auth→Lobby, `/hub`
+y `/theosferaproxy status` fueron además validados en runtime.
 distribución proporcional entre dos Lobbies activos continúa pendiente de
 una prueba runtime con tres jugadores simultáneos, y `TIMED_OUT` terminal
 no fue provocado deliberadamente en runtime. El siguiente incremento
-requiere acordar primero si se priorizará coordinación global distribuida u
-observabilidad operacional.
+recomendado es diseñar la frontera de coordinación global distribuida antes
+de introducir Redis o estado compartido entre múltiples proxies.
+
+## 24. Checkpoint de observabilidad operacional
+
+La observabilidad operacional básica de TheosferaProxy está implementada,
+fusionada y validada en runtime mediante:
+
+- `6efacee feat: add proxy operational status observability (#40)`;
+- `e07eed1 feat: improve proxy status command formatting (#41)`.
+
+Comando administrativo:
+
+`/theosferaproxy status`
+
+Permiso requerido:
+
+`theosferaproxy.admin`
+
+La implementación incluye:
+
+- `BackendOperationalSnapshot`;
+- `BackendOperationalSnapshotService`;
+- `ProxyStatusCommand`;
+- `ProxyStatusCommandRegistration`;
+- captura inmutable de las reservas bootstrap registradas;
+- registro del comando durante la inicialización;
+- desregistro del comando durante el apagado.
+
+El comando muestra únicamente backends autorizados por la política y expone:
+
+- nombre y tipo del backend;
+- presencia del servidor en Velocity;
+- identidad backend autenticada;
+- estado de salud;
+- jugadores conectados;
+- capacidad reservada;
+- carga total frente a la capacidad configurada;
+- preferencia;
+- presencia de una entrada en el registro bootstrap;
+- última actividad saludable.
+
+La captura es de solo lectura y de mejor esfuerzo. Consulta varios registros
+independientes del proceso, por lo que no constituye una instantánea
+transaccional global. No participa en routing, balanceo, reservas, health
+checking ni failover, y no modifica ninguno de esos estados.
+
+La presencia de una entrada bootstrap significa únicamente que existe un
+registro observable en `BackendBootstrapRegistry`; no demuestra por sí sola
+vigencia, disponibilidad o salud del backend.
+
+La salida administrativa usa la identidad visual aprobada de Theosfera:
+
+- oro principal `#E8B85B`;
+- oro luminoso `#F8E798`;
+- ámbar `#C46C19`;
+- bronce `#8E5B29`;
+- marfil `#F2E4C5`;
+- texto secundario `#B89A79`;
+- aqua `#55FFFF` para identificadores técnicos;
+- verde para `HEALTHY`;
+- ámbar para `STALE`;
+- gris para `UNKNOWN`.
+
+Cada backend se envía como un único componente multilínea para evitar que el
+cliente agrupe líneas repetidas mediante indicadores como `[x2]`. La última
+actividad saludable se presenta de forma relativa, por ejemplo `ahora`,
+`hace 30 s`, `hace 4 min`, `hace 2 h`, `hace 3 d` o `nunca`. La línea
+bootstrap solo aparece cuando existe una entrada registrada.
+
+Validación confirmada:
+
+1. la prueba específica de `ProxyStatusCommandTest` terminó correctamente;
+2. la suite completa terminó en `BUILD SUCCESSFUL`;
+3. una fuente sin `theosferaproxy.admin` no pudo ejecutar el comando;
+4. después de conceder el permiso mediante LuckPerms, el comando fue accesible;
+5. se observaron estados `HEALTHY`, `STALE` y `UNKNOWN`;
+6. se comprobaron registro Velocity, autenticación, carga, conectados,
+   reservados, capacidad, preferencia y última salud;
+7. se observó un backend `STALE` con la última salud expresada mediante tiempo
+   relativo;
+8. el formato multilínea eliminó el agrupamiento visual `[x2]`;
+9. la operación existente de Auth, Lobby y health checking permaneció funcional;
+10. no se observaron errores de TheosferaProxy durante esta validación.
+
+Limitaciones honestas:
+
+- toda la información continúa siendo local al proceso de Velocity;
+- la vista no es transaccional entre registros;
+- no existen Redis, métricas históricas, series temporales ni auditoría durable;
+- el comando no reemplaza una futura capa de monitoreo;
+- no se validó la distribución proporcional con tres jugadores simultáneos;
+- `TIMED_OUT` terminal no fue provocado deliberadamente en runtime.
+
+Punto exacto de continuación después de este checkpoint:
+
+- diseñar la frontera de coordinación global distribuida para múltiples
+  proxies;
+- definir propiedad del estado, consistencia, TTL, recuperación y degradación;
+- conservar comportamiento fail-closed ante pérdida de la capa distribuida;
+- decidir después si Redis será el transporte temporal adecuado;
+- no introducir parties, amigos o escuadrones sin una fuente de verdad y una
+  estrategia explícita de consistencia distribuida.
