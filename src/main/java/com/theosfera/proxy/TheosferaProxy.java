@@ -16,6 +16,9 @@ import com.theosfera.proxy.command.LobbyCommandRegistration;
 import com.theosfera.proxy.command.LobbyTransferService;
 import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
+import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
+import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
+import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.theosfera.proxy.failover.BackendKickFailoverService;
 import com.theosfera.proxy.failover.PendingPlayerFailoverRegistry;
@@ -35,6 +38,7 @@ import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
@@ -71,6 +75,10 @@ public final class TheosferaProxy {
     private final ProtocolChannelRegistration channelRegistration;
     private final BackendIdentityRegistry identityRegistry;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
+    private final ProxyInstanceIdentity proxyInstanceIdentity;
+    private final PlayerSessionCoordinator sessionCoordinator;
+    private final PlayerSessionLeaseBindingRegistry
+            sessionLeaseBindingRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
     private final BackendCapacityReservationRegistry capacityRegistry;
@@ -108,6 +116,20 @@ public final class TheosferaProxy {
         this.sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
 
+        this.proxyInstanceIdentity =
+                new ProxyInstanceIdentity(
+                        "theosfera-proxy-local",
+                        UUID.randomUUID()
+                );
+
+        this.sessionCoordinator =
+                new LocalPlayerSessionCoordinator(
+                        sessionRegistry
+                );
+
+        this.sessionLeaseBindingRegistry =
+                new PlayerSessionLeaseBindingRegistry();
+
         this.presenceRegistry =
                 new PlayerServerPresenceRegistry(
                         sessionRegistry
@@ -141,7 +163,8 @@ public final class TheosferaProxy {
 
         this.playerDisconnectListener =
                 new PlayerDisconnectListener(
-                        sessionRegistry,
+                        sessionCoordinator,
+                        sessionLeaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
                         capacityRegistry,
@@ -228,6 +251,7 @@ public final class TheosferaProxy {
         capacityRegistry.clear();
         transferRegistry.clear();
         presenceRegistry.clear();
+        sessionLeaseBindingRegistry.clear();
         sessionRegistry.clear();
         pendingPingRegistry.clear();
         healthRegistry.clear();
@@ -386,7 +410,9 @@ public final class TheosferaProxy {
                                         logger
                                 ),
                                 new PlayerAuthenticatedMessageHandler(
-                                        sessionRegistry,
+                                        sessionCoordinator,
+                                        sessionLeaseBindingRegistry,
+                                        proxyInstanceIdentity,
                                         authenticationAckSender,
                                         logger
                                 ),

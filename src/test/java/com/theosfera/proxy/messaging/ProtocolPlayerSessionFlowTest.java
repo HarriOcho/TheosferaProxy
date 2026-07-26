@@ -12,6 +12,9 @@ import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
+import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
+import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
+import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
@@ -21,6 +24,7 @@ import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
@@ -51,6 +55,14 @@ class ProtocolPlayerSessionFlowTest {
     private static final UUID PLAYER_ID =
             UUID.fromString(
                     "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+            );
+
+    private static final ProxyInstanceIdentity PROXY_IDENTITY =
+            new ProxyInstanceIdentity(
+                    "proxy-session-flow",
+                    UUID.fromString(
+                            "c76d77c1-c14e-4898-b2ea-a68936ac6265"
+                    )
             );
 
     @Test
@@ -84,6 +96,14 @@ class ProtocolPlayerSessionFlowTest {
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
 
+        PlayerSessionCoordinator sessionCoordinator =
+                new LocalPlayerSessionCoordinator(
+                        sessionRegistry
+                );
+
+        PlayerSessionLeaseBindingRegistry leaseBindingRegistry =
+                new PlayerSessionLeaseBindingRegistry();
+
         PlayerServerPresenceRegistry presenceRegistry =
                 new PlayerServerPresenceRegistry(
                         sessionRegistry
@@ -114,7 +134,9 @@ class ProtocolPlayerSessionFlowTest {
                                         logger
                                 ),
                                 new PlayerAuthenticatedMessageHandler(
-                                        sessionRegistry,
+                                        sessionCoordinator,
+                                        leaseBindingRegistry,
+                                        PROXY_IDENTITY,
                                         acknowledgementSender,
                                         logger
                                 ),
@@ -134,17 +156,32 @@ class ProtocolPlayerSessionFlowTest {
 
         PlayerDisconnectListener disconnectListener =
                 new PlayerDisconnectListener(
-                        sessionRegistry,
+                        sessionCoordinator,
+                        leaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
                         logger
                 );
 
+        Player player = mock(Player.class);
+
+        when(player.getUniqueId())
+                .thenReturn(PLAYER_ID);
+
+        when(player.getUsername())
+                .thenReturn("HarriOcho");
+
         ServerConnection authSource =
-                createServerConnection("auth-1");
+                createServerConnection(
+                        "auth-1",
+                        player
+                );
 
         ServerConnection lobbySource =
-                createServerConnection("lobby-1");
+                createServerConnection(
+                        "lobby-1",
+                        player
+                );
 
         when(sender.send(
                 any(ServerConnection.class),
@@ -286,12 +323,8 @@ class ProtocolPlayerSessionFlowTest {
                 presence.readyAt()
         );
 
-        Player player = mock(Player.class);
-
         DisconnectEvent disconnectEvent =
                 mock(DisconnectEvent.class);
-
-        when(player.getUniqueId()).thenReturn(PLAYER_ID);
 
         when(disconnectEvent.getPlayer())
                 .thenReturn(player);
@@ -335,7 +368,8 @@ class ProtocolPlayerSessionFlowTest {
     }
 
     private ServerConnection createServerConnection(
-            String serverName
+            String serverName,
+            Player player
     ) {
         ServerConnection source =
                 mock(ServerConnection.class);
@@ -343,21 +377,14 @@ class ProtocolPlayerSessionFlowTest {
         ServerInfo serverInfo =
                 mock(ServerInfo.class);
 
-        Player player = mock(Player.class);
-
-        when(serverInfo.getName()).thenReturn(serverName);
+        when(serverInfo.getName())
+                .thenReturn(serverName);
 
         when(source.getServerInfo())
                 .thenReturn(serverInfo);
 
         when(source.getPlayer())
                 .thenReturn(player);
-
-        when(player.getUniqueId())
-                .thenReturn(PLAYER_ID);
-
-        when(player.getUsername())
-                .thenReturn("HarriOcho");
 
         return source;
     }

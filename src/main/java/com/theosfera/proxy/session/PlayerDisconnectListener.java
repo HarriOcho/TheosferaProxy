@@ -1,20 +1,25 @@
 package com.theosfera.proxy.session;
 
+import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
+import com.theosfera.proxy.coordination.PlayerSessionLease;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
+import com.velocitypowered.api.proxy.Player;
 import org.slf4j.Logger;
 
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 
 public final class PlayerDisconnectListener {
 
-    private final AuthenticatedPlayerSessionRegistry
-            sessionRegistry;
+    private final PlayerSessionCoordinator sessionCoordinator;
+    private final PlayerSessionLeaseBindingRegistry
+            leaseBindingRegistry;
     private final PlayerServerPresenceRegistry
             presenceRegistry;
     private final PendingPlayerTransferRegistry
@@ -24,13 +29,16 @@ public final class PlayerDisconnectListener {
     private final Logger logger;
 
     public PlayerDisconnectListener(
-            AuthenticatedPlayerSessionRegistry sessionRegistry,
+            PlayerSessionCoordinator sessionCoordinator,
+            PlayerSessionLeaseBindingRegistry
+                    leaseBindingRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
             Logger logger
     ) {
         this(
-                sessionRegistry,
+                sessionCoordinator,
+                leaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
                 new BackendCapacityReservationRegistry(),
@@ -39,16 +47,24 @@ public final class PlayerDisconnectListener {
     }
 
     public PlayerDisconnectListener(
-            AuthenticatedPlayerSessionRegistry sessionRegistry,
+            PlayerSessionCoordinator sessionCoordinator,
+            PlayerSessionLeaseBindingRegistry
+                    leaseBindingRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
             BackendCapacityReservationRegistry capacityRegistry,
             Logger logger
     ) {
-        this.sessionRegistry = Objects.requireNonNull(
-                sessionRegistry,
-                "sessionRegistry cannot be null"
+        this.sessionCoordinator = Objects.requireNonNull(
+                sessionCoordinator,
+                "sessionCoordinator cannot be null"
         );
+
+        this.leaseBindingRegistry =
+                Objects.requireNonNull(
+                        leaseBindingRegistry,
+                        "leaseBindingRegistry cannot be null"
+                );
 
         this.presenceRegistry = Objects.requireNonNull(
                 presenceRegistry,
@@ -78,8 +94,8 @@ public final class PlayerDisconnectListener {
                 "event cannot be null"
         );
 
-        UUID playerId =
-                event.getPlayer().getUniqueId();
+        Player player = event.getPlayer();
+        UUID playerId = player.getUniqueId();
 
         Optional<PendingPlayerTransfer> removedTransfer =
                 transferRegistry
@@ -91,26 +107,103 @@ public final class PlayerDisconnectListener {
                 )
         );
 
-        boolean transferRemoved = removedTransfer.isPresent();
+        boolean transferRemoved =
+                removedTransfer.isPresent();
 
         boolean presenceRemoved =
                 presenceRegistry
                         .remove(playerId)
                         .isPresent();
 
-        boolean sessionRemoved =
-                sessionRegistry
-                        .remove(playerId)
-                        .isPresent();
+        Optional<PlayerSessionLease> lease =
+                leaseBindingRegistry
+                        .removeForDisconnect(player);
 
-        if (transferRemoved
-                || presenceRemoved
-                || sessionRemoved) {
-            logger.debug(
-                    "Estado de sesión eliminado para {} "
-                            + "al desconectarse del proxy.",
-                    playerId
-            );
+        boolean localStateRemoved =
+                transferRemoved || presenceRemoved;
+
+        if (lease.isEmpty()) {
+            if (localStateRemoved) {
+                logStateRemoval(playerId);
+            }
+
+            return;
         }
+
+        releaseLease(
+                lease.orElseThrow(),
+                playerId,
+                localStateRemoved
+        );
+    }
+
+    private void releaseLease(
+            PlayerSessionLease lease,
+            UUID playerId,
+            boolean localStateRemoved
+    ) {
+        CompletionStage<Boolean> releaseStage;
+
+        try {
+            releaseStage = Objects.requireNonNull(
+                    sessionCoordinator.releaseIfOwned(lease),
+                    "sessionCoordinator.releaseIfOwned "
+                            + "returned null"
+            );
+        } catch (RuntimeException exception) {
+            logger.error(
+                    "No se pudo iniciar la liberación del lease "
+                            + "de sesión para {}.",
+                    playerId,
+                    exception
+            );
+
+            if (localStateRemoved) {
+                logStateRemoval(playerId);
+            }
+
+            return;
+        }
+
+        releaseStage.whenComplete(
+                (released, failure) -> {
+                    if (failure != null) {
+                        logger.error(
+                                "No se pudo liberar el lease "
+                                        + "de sesión para {}.",
+                                playerId,
+                                failure
+                        );
+
+                        if (localStateRemoved) {
+                            logStateRemoval(playerId);
+                        }
+
+                        return;
+                    }
+
+                    if (!Boolean.TRUE.equals(released)) {
+                        logger.debug(
+                                "El lease de sesión para {} "
+                                        + "ya no coincidía con la "
+                                        + "propiedad vigente.",
+                                playerId
+                        );
+                    }
+
+                    if (localStateRemoved
+                            || Boolean.TRUE.equals(released)) {
+                        logStateRemoval(playerId);
+                    }
+                }
+        );
+    }
+
+    private void logStateRemoval(UUID playerId) {
+        logger.debug(
+                "Estado de sesión eliminado para {} "
+                        + "al desconectarse del proxy.",
+                playerId
+        );
     }
 }
