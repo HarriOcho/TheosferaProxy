@@ -14,6 +14,8 @@ import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import com.theosfera.proxy.command.LobbyCommand;
 import com.theosfera.proxy.command.LobbyCommandRegistration;
 import com.theosfera.proxy.command.LobbyTransferService;
+import com.theosfera.proxy.command.ProxyStatusCommand;
+import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.theosfera.proxy.failover.BackendKickFailoverService;
 import com.theosfera.proxy.failover.PendingPlayerFailoverRegistry;
@@ -28,6 +30,7 @@ import com.theosfera.proxy.messaging.handler.PongMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
+import com.theosfera.proxy.observability.BackendOperationalSnapshotService;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
@@ -80,6 +83,8 @@ public final class TheosferaProxy {
     private ProtocolMessageListener protocolMessageListener;
     private BackendKickFailoverListener backendKickFailoverListener;
     private LobbyCommandRegistration lobbyCommandRegistration;
+    private ProxyStatusCommandRegistration
+            proxyStatusCommandRegistration;
     private BackendHealthCheckScheduler healthCheckScheduler;
 
     @Inject
@@ -152,6 +157,7 @@ public final class TheosferaProxy {
 
         channelRegistration.register();
         lobbyCommandRegistration.register();
+        proxyStatusCommandRegistration.register();
 
         proxyServer.getEventManager().register(
                 this,
@@ -199,6 +205,10 @@ public final class TheosferaProxy {
 
         if (lobbyCommandRegistration != null) {
             lobbyCommandRegistration.unregister();
+        }
+
+        if (proxyStatusCommandRegistration != null) {
+            proxyStatusCommandRegistration.unregister();
         }
 
         proxyServer.getEventManager().unregisterListener(
@@ -334,6 +344,26 @@ public final class TheosferaProxy {
                         proxyServer,
                         this,
                         new LobbyCommand(lobbyTransferService)
+                );
+
+        BackendOperationalSnapshotService
+                operationalSnapshotService =
+                new BackendOperationalSnapshotService(
+                        proxyServer,
+                        authorizationPolicy,
+                        identityRegistry,
+                        healthRegistry,
+                        capacityRegistry,
+                        bootstrapRegistry
+                );
+
+        proxyStatusCommandRegistration =
+                new ProxyStatusCommandRegistration(
+                        proxyServer,
+                        this,
+                        new ProxyStatusCommand(
+                                operationalSnapshotService
+                        )
                 );
 
         ProtocolMessageDispatcher dispatcher =

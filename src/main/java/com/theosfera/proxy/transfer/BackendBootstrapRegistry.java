@@ -208,6 +208,11 @@ public final class BackendBootstrapRegistry {
         return reservationsByRequest.size();
     }
 
+    public synchronized Map<UUID, BackendBootstrapReservation>
+    snapshotByRequest() {
+        return Map.copyOf(reservationsByRequest);
+    }
+
     public synchronized void clear() {
         reservationsByTarget.clear();
         reservationsByRequest.clear();
