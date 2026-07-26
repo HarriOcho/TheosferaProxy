@@ -259,6 +259,24 @@ public final class PlayerAuthenticatedMessageHandler
         PlayerSessionLease lease =
                 result.lease().orElseThrow();
 
+        boolean matchesRequest =
+                lease.session().equals(session)
+                        && lease.owner().equals(proxyIdentity);
+
+        if (!matchesRequest) {
+            rejectCoordinationFailure(
+                    context,
+                    carrier,
+                    session,
+                    acquisitionId,
+                    new IllegalStateException(
+                            "Session coordinator returned a lease "
+                                    + "that does not match the request"
+                    )
+            );
+            return;
+        }
+
         PlayerSessionLeaseBindingResult bindingResult =
                 leaseBindingRegistry.bind(
                         carrier,
@@ -280,8 +298,21 @@ public final class PlayerAuthenticatedMessageHandler
                             bindingResult
                     );
 
-            case STALE ->
-                    logger.debug(
+            case RELEASE_PENDING ->
+                    waitForPendingRelease(
+                            context,
+                            carrier,
+                            session,
+                            acquisitionId
+                    );
+
+            case STALE -> {
+                releaseUnboundLease(
+                        lease,
+                        bindingResult
+                );
+
+                logger.debug(
                             "Resultado obsoleto de adquisición "
                                     + "ignorado para {} desde {} "
                                     + "(token {}).",
@@ -289,6 +320,7 @@ public final class PlayerAuthenticatedMessageHandler
                             context.serverName(),
                             lease.fencingToken()
                     );
+            }
 
             case CONFLICT -> {
                 releaseUnboundLease(
@@ -313,6 +345,56 @@ public final class PlayerAuthenticatedMessageHandler
         }
     }
 
+    private void waitForPendingRelease(
+            ProtocolMessageContext context,
+            Player carrier,
+            AuthenticatedPlayerSession session,
+            UUID acquisitionId
+    ) {
+        CompletionStage<Boolean> completion =
+                leaseBindingRegistry
+                        .releaseCompletion(
+                                carrier,
+                                acquisitionId
+                        )
+                        .orElseThrow(() ->
+                                new IllegalStateException(
+                                        "Release completion missing "
+                                                + "for pending lease"
+                                )
+                        );
+
+        completion.whenComplete(
+                (released, failure) -> {
+                    if (failure != null
+                            || !Boolean.TRUE.equals(released)) {
+                        Throwable cause =
+                                failure != null
+                                        ? failure
+                                        : new IllegalStateException(
+                                        "Pending lease release failed"
+                                );
+
+                        rejectCoordinationFailure(
+                                context,
+                                carrier,
+                                session,
+                                acquisitionId,
+                                cause
+                        );
+                        return;
+                    }
+
+                    leaseBindingRegistry
+                            .consumeReleaseCompletion(
+                                    carrier,
+                                    acquisitionId
+                            );
+
+                    handle(context);
+                }
+        );
+    }
     private void acknowledgeSuccessfulAcquisition(
             ProtocolMessageContext context,
             AuthenticatedPlayerSession session,
@@ -450,6 +532,23 @@ public final class PlayerAuthenticatedMessageHandler
             PlayerSessionLease lease,
             PlayerSessionLeaseBindingResult bindingResult
     ) {
+        boolean releaseReserved =
+                leaseBindingRegistry
+                        .reserveReleaseIfUnbound(lease);
+
+        if (!releaseReserved) {
+            logger.debug(
+                    "No se liberó el lease de {} porque está "
+                            + "protegido por un binding activo "
+                            + "o ya tiene una liberación pendiente "
+                            + "({}, token {}).",
+                    lease.session().playerId(),
+                    bindingResult,
+                    lease.fencingToken()
+            );
+            return;
+        }
+
         CompletionStage<Boolean> releaseStage;
 
         try {
@@ -459,6 +558,11 @@ public final class PlayerAuthenticatedMessageHandler
                             + "returned null"
             );
         } catch (RuntimeException exception) {
+            leaseBindingRegistry.failRelease(
+                    lease,
+                    exception
+            );
+
             logger.error(
                     "No se pudo iniciar la liberación del lease "
                             + "no vinculado de {} ({}, token {}).",
@@ -473,6 +577,11 @@ public final class PlayerAuthenticatedMessageHandler
         releaseStage.whenComplete(
                 (released, failure) -> {
                     if (failure != null) {
+                        leaseBindingRegistry.failRelease(
+                                lease,
+                                failure
+                        );
+
                         logger.error(
                                 "Falló la liberación del lease "
                                         + "no vinculado de {} "
@@ -485,7 +594,15 @@ public final class PlayerAuthenticatedMessageHandler
                         return;
                     }
 
-                    if (!Boolean.TRUE.equals(released)) {
+                    boolean releaseSucceeded =
+                            Boolean.TRUE.equals(released);
+
+                    leaseBindingRegistry.completeRelease(
+                            lease,
+                            releaseSucceeded
+                    );
+
+                    if (!releaseSucceeded) {
                         logger.debug(
                                 "El lease no vinculado de {} "
                                         + "ya no era propiedad exacta "

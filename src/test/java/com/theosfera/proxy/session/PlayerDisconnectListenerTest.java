@@ -302,6 +302,7 @@ class PlayerDisconnectListenerTest {
 
         verify(coordinator).releaseIfOwned(lease);
 
+
         verify(
                 logger,
                 never()
@@ -312,6 +313,7 @@ class PlayerDisconnectListenerTest {
         );
 
         releaseFuture.complete(true);
+
 
         verify(logger).debug(
                 "Estado de sesión eliminado para {} "

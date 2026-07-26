@@ -5,6 +5,7 @@ public enum PlayerSessionLeaseBindingResult {
     ALREADY_BOUND,
     REPLACED,
     DISCONNECTED,
+    RELEASE_PENDING,
     STALE,
     CONFLICT
 }

@@ -142,6 +142,18 @@ public final class PlayerDisconnectListener {
             UUID playerId,
             boolean localStateRemoved
     ) {
+        boolean releaseReserved =
+                leaseBindingRegistry
+                        .reserveReleaseIfUnbound(lease);
+
+        if (!releaseReserved) {
+            if (localStateRemoved) {
+                logStateRemoval(playerId);
+            }
+
+            return;
+        }
+
         CompletionStage<Boolean> releaseStage;
 
         try {
@@ -151,6 +163,11 @@ public final class PlayerDisconnectListener {
                             + "returned null"
             );
         } catch (RuntimeException exception) {
+            leaseBindingRegistry.failRelease(
+                    lease,
+                    exception
+            );
+
             logger.error(
                     "No se pudo iniciar la liberación del lease "
                             + "de sesión para {}.",
@@ -168,6 +185,11 @@ public final class PlayerDisconnectListener {
         releaseStage.whenComplete(
                 (released, failure) -> {
                     if (failure != null) {
+                        leaseBindingRegistry.failRelease(
+                                lease,
+                                failure
+                        );
+
                         logger.error(
                                 "No se pudo liberar el lease "
                                         + "de sesión para {}.",
@@ -182,7 +204,15 @@ public final class PlayerDisconnectListener {
                         return;
                     }
 
-                    if (!Boolean.TRUE.equals(released)) {
+                    boolean releaseSucceeded =
+                            Boolean.TRUE.equals(released);
+
+                    leaseBindingRegistry.completeRelease(
+                            lease,
+                            releaseSucceeded
+                    );
+
+                    if (!releaseSucceeded) {
                         logger.debug(
                                 "El lease de sesión para {} "
                                         + "ya no coincidía con la "
