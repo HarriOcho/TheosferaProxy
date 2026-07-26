@@ -40,6 +40,21 @@ Tipos de backend definidos:
 La arquitectura debe permitir añadir servidores y modalidades sin
 introducir su lógica específica dentro del proxy.
 
+Topología runtime ampliada validada en el checkpoint de balanceo y retry:
+
+```text
+Proxy:      127.0.0.1:25565
+lobby-1:    127.0.0.1:25566
+skyblock-1: 127.0.0.1:25567
+auth-1:     127.0.0.1:25568
+lobby-2:    127.0.0.1:25569
+```
+
+Durante la validación final de `9d0ea02`, `lobby-1` estuvo configurado
+pero apagado, mientras `proxy`, `skyblock-1`, `auth-1` y `lobby-2`
+estuvieron activos. La topología inicial se conserva como contexto
+histórico; el estado actual ya incluye una segunda instancia Lobby.
+
 ## 3. Separación de responsabilidades
 
 TheosferaProxy coordina o coordinará:
@@ -204,8 +219,11 @@ El handler:
 
 Existen pruebas unitarias y una prueba integral del flujo heartbeat.
 
-La rama `feature/backend-health-checking` implementa el health checking
-periódico y su integración con la resolución de destinos:
+El health checking periódico y correlacionado está fusionado en `main`:
+
+- `fa2dccc feat: integrate backend health checking (#36)`.
+
+Implementa su integración con la resolución de destinos:
 
 - el Proxy emite `PING` periódicos hacia los backends registrados;
 - cada comprobación conserva correlación entre solicitud y respuesta;
@@ -233,6 +251,7 @@ Componentes:
 
 - `BackendAuthorizationPolicy`;
 - `BackendPolicyConfigLoader`;
+- `BackendPolicyEntry`;
 - `BackendIdentity`;
 - `BackendIdentityRegistry`;
 - `BackendRegistrationResult`;
@@ -245,15 +264,31 @@ Archivo runtime:
 plugins/theosferaproxy/backends.properties
 ```
 
-Configuración inicial:
+Formato vigente:
+
+```text
+nombre=TIPO,capacidad,preferencia
+```
+
+Configuración actual validada:
 
 ```properties
-auth-1=AUTH
-lobby-1=LOBBY
-skyblock-1=SKYBLOCK
+auth-1=AUTH,1,100
+lobby-1=LOBBY,100,90
+lobby-2=LOBBY,100,80
+skyblock-1=SKYBLOCK,200,80
 ```
 
 El archivo se crea con valores predeterminados si no existe.
+
+Cada entrada define tipo, capacidad y preferencia. La capacidad debe ser
+mayor que cero y la preferencia no puede ser negativa. La carga valida
+estrictamente la estructura de tres campos, el tipo declarado y los valores
+numéricos antes de construir la política.
+
+La política autoriza identidades y provee capacidad/preferencia para la
+selección, pero no sustituye el health checking: identidad registrada,
+estado `HEALTHY` y frescura vigente siguen siendo conceptos separados.
 
 Flujo:
 
@@ -362,6 +397,15 @@ Componentes:
 - `PlayerTransferCompletion`;
 - `PlayerTransferExecutor`;
 - `TransferResultSender`;
+- `PlayerTransferTargetAllocationService`;
+- `BackendLoadCandidate`;
+- `BackendLoadSelector`;
+- `BackendCapacityReservation`;
+- `BackendCapacityReservationRegistry`;
+- `BackendBootstrapReservation`;
+- `BackendBootstrapRegistry`;
+- `PlayerTransferRetryCoordinator`;
+- `TransferTargetResolutionContractViolationException`;
 - `TransferRequestMessageHandler`;
 - `LobbyCommand`;
 - `LobbyCommandRegistration`;
@@ -385,6 +429,66 @@ Flujo:
 12. el proxy responde `TRANSFER_RESULT` conservando el `requestId`;
 13. una transferencia exitosa elimina la presencia anterior únicamente
     si todavía pertenece al backend de origen.
+
+El balanceo por capacidad está fusionado en `main`:
+
+- `e94a9fc feat: add capacity-aware backend load balancing (#37)`.
+
+La resolución actual selecciona entre instancias elegibles del mismo
+`BackendType`. Los candidatos jugables con jugadores conectados deben estar
+autenticados, `HEALTHY` y frescos. `BackendLoadSelector` compara la carga
+proporcional respecto de la capacidad configurada, excluye backends llenos o
+por encima de capacidad, usa la preferencia como desempate y finalmente el
+nombre del servidor como desempate determinista.
+
+La selección de destinos fríos o de bootstrap está separada de la selección
+de candidatos jugables activos. Un backend vacío puede ser elegible para un
+intento de conexión mediante la ruta de bootstrap, pero `BOOTSTRAP_REQUIRED`
+no afirma que el proceso remoto esté encendido. Una reserva bootstrap tampoco
+inicia un proceso remoto.
+
+Las transferencias pendientes reservan capacidad de forma correlacionada
+antes de ejecutar `ConnectionRequest`. Esa reserva protege frente a
+sobreasignación concurrente y se libera en éxito, rechazo, fallo, timeout,
+desconexión o apagado mediante coincidencia exacta. Si una carrera de
+capacidad devuelve `NO_CAPACITY`, el backend se excluye y se intenta otro
+candidato. Las exclusiones iniciales se copian defensivamente y
+`TransferTargetResolutionContractViolationException` protege contra un
+resolver que devuelva un destino ya excluido.
+
+El retry alternativo de destinos está fusionado en `main`:
+
+- `9d0ea02 fix: retry alternate backend after transfer failure (#38)`.
+
+`LobbyTransferService` y `TransferRequestMessageHandler` usan
+`PlayerTransferRetryCoordinator` como coordinador compartido del ciclo:
+
+```text
+asignar → reservar bootstrap → conectar → limpiar → excluir → reintentar
+```
+
+Semántica confirmada:
+
+- `SUCCESS`: resultado terminal exitoso; conserva la reserva bootstrap
+  ganadora hasta el handshake normal;
+- `FAILED`: limpia el intento exacto, excluye el backend fallido e intenta
+  otro destino elegible;
+- `REJECTED`: limpia el intento exacto, excluye el backend rechazado e intenta
+  otro destino elegible;
+- `TARGET_BUSY` durante bootstrap: no elimina la reserva ajena, excluye ese
+  destino e intenta otro backend;
+- `TIMED_OUT`: es terminal, limpia los recursos exactos y no intenta otro
+  backend para evitar una segunda conexión mientras la operación subyacente
+  de Velocity podría continuar;
+- `REQUEST_ID_CONFLICT` y `ALREADY_RESERVED`: son terminales y no realizan
+  retries entre destinos.
+
+Durante los reintentos se conserva el mismo `requestId` lógico, las
+exclusiones se acumulan, existe guard anti-loop si el resolver devuelve un
+destino excluido, y la limpieza usa garantías exact-match para no eliminar
+estado posterior. Los callbacks tardíos no emiten doble resultado ni eliminan
+transferencias, capacidad o bootstrap de intentos nuevos. Cada jugador u
+origen recibe un único mensaje o `TRANSFER_RESULT` terminal.
 
 Reglas especiales confirmadas para el handoff Auth→Lobby:
 
@@ -426,10 +530,14 @@ Comandos públicos de retorno al Lobby:
 - solo jugadores pueden ejecutarlos;
 - el jugador debe poseer una sesión autenticada;
 - ambos resuelven exclusivamente `BackendType.LOBBY`;
-- solo `TransferTargetResolutionStatus.RESOLVED` es aceptable;
-- `NOT_CONFIGURED`, `NOT_AUTHENTICATED` y `BOOTSTRAP_REQUIRED` fallan
-  cerrados;
-- los comandos no inician bootstrap intencionalmente;
+- pueden usar destinos `RESOLVED` y `BOOTSTRAP_REQUIRED` mediante el
+  coordinador compartido;
+- `BOOTSTRAP_REQUIRED` no se trata como prueba de disponibilidad;
+- los comandos no inician deliberadamente un proceso remoto;
+- pueden reintentar otro Lobby después de `FAILED`, `REJECTED` o
+  `TARGET_BUSY` durante bootstrap;
+- `TIMED_OUT` es terminal y no intenta otro backend;
+- no envían al jugador hacia Auth;
 - si el jugador ya está conectado al Lobby resuelto, no se crea una
   conexión;
 - se reutiliza `PendingPlayerTransferRegistry` para impedir operaciones
@@ -438,10 +546,8 @@ Comandos públicos de retorno al Lobby:
 - no se modifica presencia de forma anticipada;
 - `PLAYER_SERVER_READY` continúa siendo la confirmación autoritativa de
   llegada;
-- no existen schedulers, reintentos ni bloqueos síncronos para estos
-  comandos;
-- no se implementaron failover, selección de modalidades ni
-  mantenimiento.
+- no existen bloqueos síncronos para estos comandos;
+- no se implementaron selección de modalidades ni mantenimiento.
 
 Flujo confirmado de comando:
 
@@ -468,8 +574,18 @@ skyblock-1
   → jugador permanece en skyblock-1
 ```
 
-La selección entre varias instancias autenticadas del mismo tipo es
-determinista por nombre hasta introducir una estrategia de balanceo.
+Flujo multiinstancia validado posteriormente:
+
+```text
+skyblock-1
+  → /hub con lobby-1 apagado y lobby-2 activo
+  → coordinación de destino LOBBY con retry alternativo
+  → lobby-2
+  → PLAYER_SERVER_READY
+```
+
+El flujo histórico con `lobby-1` se conserva como evidencia previa; el estado
+actual ya incluye balanceo por capacidad y retry alternativo entre instancias.
 
 ### Failover ante kicks de backends
 
@@ -516,12 +632,12 @@ Si el Lobby está apagado y no existe otro destino jugable activo, el
 jugador es desconectado de forma controlada. Velocity no recibe una
 redirección hacia el Lobby inactivo ni puede improvisar un retorno hacia
 Auth.
-No constituye todavía balanceo por carga ni una estrategia multiinstancia
-basada en métricas de carga. El failover reutiliza `TransferTargetResolver`,
-por lo que los destinos resueltos como jugables deben conservar salud
-`HEALTHY` y frescura vigente. Un backend autenticado pero `STALE` no puede
-convertirse en destino normal de recuperación, y `BOOTSTRAP_REQUIRED`
-continúa rechazándose para failover.
+El failover reutiliza `TransferTargetResolver`, por lo que los destinos
+resueltos como jugables participan de la selección por capacidad, preferencia
+y nombre, pero la política de kicks continúa aceptando únicamente destinos
+`RESOLVED` seguros. Un backend autenticado pero `STALE` no puede convertirse
+en destino normal de recuperación, y `BOOTSTRAP_REQUIRED` continúa
+rechazándose para failover.
 
 ## 15. Limpieza por desconexión
 
@@ -544,7 +660,9 @@ Durante el apagado también se limpian:
 1. transferencias pendientes;
 2. presencias;
 3. sesiones;
-4. identidades de backends.
+4. identidades de backends;
+5. comprobaciones de salud pendientes;
+6. reservas temporales de bootstrap y capacidad.
 
 ## 16. Pruebas confirmadas
 
@@ -562,6 +680,7 @@ Existen pruebas para:
 - timeout y limpieza del health checking;
 - política de backends;
 - carga de `backends.properties`;
+- capacidad y preferencia en la política de backends;
 - registro de identidades;
 - autorización por rol;
 - handshake;
@@ -571,6 +690,10 @@ Existen pruebas para:
 - limpieza por desconexión;
 - registro de transferencias pendientes;
 - resolución segura del backend destino;
+- selección por carga proporcional, preferencia y nombre;
+- exclusión de backends llenos o por encima de capacidad;
+- reservas de capacidad durante transferencias pendientes;
+- retry ante carreras de capacidad;
 - ejecución asíncrona, rechazo, fallo y timeout;
 - correlación de `TRANSFER_RESULT`;
 - validaciones del handler de transferencia;
@@ -578,6 +701,11 @@ Existen pruebas para:
 - flujo integral de transferencia;
 - pruebas negativas Auth→Lobby;
 - comandos públicos `/hub` y `/lobby`;
+- retry alternativo de `/hub`, `/lobby` y `TRANSFER_REQUEST`;
+- `TARGET_BUSY` durante bootstrap con fallback alternativo;
+- `REQUEST_ID_CONFLICT` y `ALREADY_RESERVED` terminales;
+- `TIMED_OUT` terminal sin fallback;
+- guard anti-loop ante destinos excluidos;
 - rechazo de fuente no jugador;
 - jugador no autenticado;
 - jugador sin conexión actual;
@@ -637,7 +765,23 @@ BUILD SUCCESSFUL
 ```
 
 La rama `feature/backend-health-checking` alcanzó 318 pruebas automatizadas
-exitosas en su última validación confirmada.
+exitosas en su validación histórica confirmada.
+
+Validación automatizada del checkpoint actual:
+
+```powershell
+.\gradlew.bat clean test --no-daemon
+.\gradlew.bat clean build --no-daemon
+```
+
+Resultado:
+
+```text
+BUILD SUCCESSFUL
+416 tests, 0 failures, 0 errors, 0 skipped
+```
+
+El conteo actual fue calculado desde los XML de `build/test-results/test`.
 
 ## 17. Prueba runtime confirmada
 
@@ -648,7 +792,7 @@ validados el circuito runtime real Auth→Lobby y los comandos públicos
 Confirmado:
 
 - carga correcta del plugin;
-- carga de tres backends autorizados;
+- carga de tres backends autorizados en la topología inicial;
 - registro de `theosfera:network`;
 - inicio correcto;
 - apagado correcto;
@@ -666,7 +810,21 @@ Confirmado:
 - limpieza del pending tras fallo de conexión;
 - ausencia de la advertencia falsa antigua de transferencia fallida.
 
-Último JAR desplegado de TheosferaProxy:
+Artefacto final validado para el checkpoint actual:
+
+```text
+JAR: TheosferaProxy-0.1.0-SNAPSHOT.jar
+Commit main: 9d0ea02
+Tamaño: 504351 bytes
+SHA-256: 6CCA10788FEA205E4621FF476BC37701C3B92E3514887B09B9A45CB8749EC29E
+Ruta instalada: C:\Theosfera\Network\dev\proxy\plugins\TheosferaProxy-0.1.0-SNAPSHOT.jar
+Backup previo: C:\Theosfera\Network\dev\_runtime-jar-backup-20260725-032722
+```
+
+El hash del JAR generado coincidió exactamente con el instalado y con las
+copias conservadas como evidencia.
+
+JAR desplegado de TheosferaProxy en el checkpoint histórico anterior:
 
 ```text
 SHA256: 2E1F2C211DD3F703B251872126B8F0D8857DDC95D3D788237CEBE9CDD1F622FA
@@ -736,6 +894,73 @@ Matriz runtime confirmada para `/hub` y `/lobby`:
 13. No hubo errores de TheosferaProxy ni advertencias falsas de
     transferencia fallida.
 
+Matriz runtime confirmada para retry multiinstancia Auth→Lobby:
+
+1. `lobby-1` estuvo apagado y `lobby-2` activo.
+2. El jugador HarriOcho se conectó mediante Velocity.
+3. `auth-1` autenticó al jugador.
+4. TheosferaProxy registró la sesión.
+5. Se reservó bootstrap inicialmente para `lobby-1`.
+6. La conexión a `lobby-1` no prosperó.
+7. Se reservó bootstrap para `lobby-2`.
+8. Se conservó el mismo `requestId`:
+   `f892913d-04d4-447c-98a1-33079dd2bd15`.
+9. El jugador conectó a `lobby-2`.
+10. `auth-1` se desconectó normalmente.
+11. `lobby-2` completó handshake.
+12. TheosferaProxy recibió `PLAYER_SERVER_READY`.
+13. El jugador quedó listo en `lobby-2`.
+
+Evidencia preservada en:
+
+```text
+C:\Theosfera\Network\dev\_runtime-failover-retry-success-20260725-033324
+```
+
+Incluye:
+
+- `auth-latest.log`;
+- `lobby-2-latest.log`;
+- `proxy-latest.log`;
+- `skyblock-1-latest.log`;
+- `listening-ports.txt`;
+- `jar-sha256.txt`;
+- `TheosferaProxy-0.1.0-SNAPSHOT.jar`.
+
+Matriz runtime confirmada para `/hub` con retry hacia `lobby-2`:
+
+1. El jugador fue enviado manualmente desde `lobby-2` hacia `skyblock-1`.
+2. TheosferaProxy recibió `PLAYER_SERVER_READY` desde `skyblock-1`.
+3. `lobby-1` continuó apagado y `lobby-2` continuó activo.
+4. El jugador ejecutó `/hub`.
+5. El jugador conectó correctamente a `lobby-2`.
+6. `skyblock-1` se desconectó normalmente.
+7. TheosferaProxy recibió `PLAYER_SERVER_READY` desde `lobby-2`.
+8. El jugador recibió `Te enviamos al Lobby.`
+
+Evidencia preservada en:
+
+```text
+C:\Theosfera\Network\dev\_runtime-hub-retry-success-20260725-033635
+```
+
+Incluye:
+
+- `proxy-latest.log`;
+- `lobby-2-latest.log`;
+- `skyblock-1-latest.log`;
+- `listening-ports.txt`;
+- `jar-sha256.txt`;
+- `validation-summary.txt`;
+- `TheosferaProxy-0.1.0-SNAPSHOT.jar`.
+
+Los logs de `/hub` muestran la llegada efectiva a `lobby-2`.
+`listening-ports.txt` confirma que `lobby-1` estaba apagado en la topología de
+puertos. No se afirma una línea explícita de log del fallo a `lobby-1` si esa
+línea no existe; el resultado valida el fallback alternativo dentro del
+escenario configurado por observación directa de la llegada final y por
+inferencia basada en la configuración y el código.
+
 Semántica confirmada:
 
 - `PlayerTransferRequestStatus.SUBMITTED` significa que
@@ -769,8 +994,10 @@ Estado de identidad, salud y frescura:
   jugable normal;
 - un destino vacío elegible puede resolverse como `BOOTSTRAP_REQUIRED`, sin
   ser confundido con un backend actualmente sano;
-- `/hub`, `/lobby` y el failover ante kicks únicamente aceptan destinos
-  `RESOLVED` y no arrancan backends mediante bootstrap;
+- el failover ante kicks únicamente acepta destinos `RESOLVED` seguros;
+- `/hub` y `/lobby` pueden usar la ruta de bootstrap coordinada para intentar
+  conexión a un Lobby alternativo, pero no inician procesos remotos ni tratan
+  `BOOTSTRAP_REQUIRED` como prueba de disponibilidad;
 - las solicitudes explícitas de transferencia pueden utilizar la resolución
   `BOOTSTRAP_REQUIRED` y registrar temporalmente una reserva;
 - una reserva de bootstrap no enciende por sí sola el proceso remoto: el Proxy
@@ -789,7 +1016,7 @@ Estado de identidad, salud y frescura:
 - el comportamiento runtime fue seguro, recuperable y coherente con la
   política fail-closed.
 
-Matriz runtime confirmada para salud, frescura y bootstrap:
+Matriz runtime histórica confirmada para salud, frescura y bootstrap:
 
 1. Con `skyblock-1` inicialmente operativo, el backend participó normalmente
    en el flujo de red.
@@ -816,7 +1043,7 @@ Matriz runtime confirmada para salud, frescura y bootstrap:
 12. TheosferaProxy recibió posteriormente `PLAYER_SERVER_READY` desde
     `skyblock-1`.
 
-Topología validada:
+Topología histórica validada para los checkpoints Auth→Lobby y health checking:
 
 - Proxy: `127.0.0.1:25565`;
 - Lobby-1: `127.0.0.1:25566`;
@@ -861,7 +1088,10 @@ Bloques principales fusionados en TheosferaProxy:
 - Backend Kick Failover;
 - Failover Target Exclusions;
 - Current Server Failover Protection;
-- Fail-Closed Backend Kick Failover.
+- Fail-Closed Backend Kick Failover;
+- Backend Health Checking;
+- Capacity-Aware Backend Load Balancing;
+- Alternate Backend Transfer Retry.
 
 Bloques de contrato fusionados en TheosferaProtocol:
 
@@ -895,13 +1125,19 @@ Commits relevantes ya integrados para el circuito Auth→Lobby:
   `c3fc274 fix: support failover to cold lobby targets (#33)`;
 - TheosferaProxy:
   `d862c78 fix: restrict failover to live targets (#34)`;
+- TheosferaProxy:
+  `fa2dccc feat: integrate backend health checking (#36)`;
+- TheosferaProxy:
+  `e94a9fc feat: add capacity-aware backend load balancing (#37)`;
+- TheosferaProxy:
+  `9d0ea02 fix: retry alternate backend after transfer failure (#38)`;
 - TheosferaAuth:
   `b6ae696 Merge pull request #4 from HarriOcho/fix/auth-transfer-handoff-lifecycle`.
 
 Los cambios importantes se realizan mediante ramas y Pull Requests con
 squash merge.
 
-Estado Git al crear este checkpoint:
+Estado Git del checkpoint histórico de failover:
 
 - `main` sincronizada con `origin/main` en `d862c78`;
 - PR `#34` fusionado en `main`;
@@ -913,7 +1149,15 @@ Estado Git al crear este checkpoint:
 - rama actual del checkpoint:
   `docs/failover-runtime-checkpoint`.
 
-Estado posterior de desarrollo:
+Estado Git del checkpoint actual de balanceo y retry:
+
+- `main` sincronizada con `origin/main` en `9d0ea02`;
+- PR `#38` fusionado en `main`;
+- rama documental actual:
+  `docs/backend-load-balancing-runtime-checkpoint`;
+- árbol limpio antes de editar `PROJECT_STATE.md`.
+
+Estado posterior de desarrollo histórico del checkpoint de health checking:
 
 - rama activa: `feature/backend-health-checking`;
 - último avance confirmado de la rama: `2f9ea16`;
@@ -924,8 +1168,9 @@ Estado posterior de desarrollo:
 - build local exitoso mediante `.\gradlew.bat build --no-daemon`;
 - validación runtime completada con pérdida de frescura, exclusión segura,
   fallo controlado y recuperación mediante el flujo de bootstrap;
-- siguiente incremento todavía sin implementar: selección entre múltiples
-  instancias `HEALTHY` mediante métricas de carga.
+- siguiente incremento entonces pendiente: selección entre múltiples
+  instancias `HEALTHY` mediante métricas de carga. Ese incremento ya fue
+  implementado y fusionado en `e94a9fc`.
 
 El health checking, su integración con la resolución de destinos y el failover
 fail-closed están cubiertos por pruebas automatizadas, build local exitoso y
@@ -947,7 +1192,7 @@ Evidencia runtime confirmada para salud, frescura y bootstrap:
 - no se afirma haber observado directamente una transición autónoma
   `STALE`→`FRESH` mediante un `PONG` previo a esa transferencia.
 
-Artefacto validado:
+Artefacto validado en el checkpoint histórico de health checking:
 
 - JAR: `TheosferaProxy-0.1.0-SNAPSHOT.jar`;
 - tamaño: `474108` bytes;
@@ -973,7 +1218,8 @@ Actualmente son únicamente memoria local del proceso:
 - transferencias pendientes;
 - estado de salud y frescura de backends;
 - comprobaciones `PING` pendientes;
-- reservas temporales de bootstrap.
+- reservas temporales de bootstrap;
+- reservas temporales de capacidad.
 
 Las identidades registradas indican que un backend completó correctamente el
 handshake durante el proceso actual, pero no constituyen por sí solas una
@@ -988,6 +1234,22 @@ obtener `BOOTSTRAP_REQUIRED`; esa resolución no afirma que el proceso remoto
 esté encendido. La conexión final continúa bajo `ConnectionRequest`, que falla
 cerrado, y cualquier transferencia o reserva fallida se limpia de forma
 correlacionada.
+
+Limitaciones honestas del checkpoint actual:
+
+- la selección proporcional está cubierta por pruebas automatizadas;
+- no fue validada directamente en runtime con tres jugadores simultáneos, uno
+  manteniendo actividad en cada Lobby y un tercero como solicitante;
+- con un único jugador no puede demostrarse experimentalmente la distribución
+  proporcional entre dos instancias activas;
+- `TIMED_OUT` terminal está cubierto por pruebas automatizadas, pero no fue
+  provocado deliberadamente en runtime;
+- el estado de salud, reservas, sesiones, presencia y transferencias sigue
+  siendo local al proceso de Proxy;
+- no existe Redis ni coordinación entre múltiples proxies;
+- el inventario observado inicialmente en `lobby-2` se debía a que `lobby-2`
+  fue clonado desde `lobby-1`; no constituye sincronización cross-server y no
+  debe presentarse como evidencia del Proxy.
 
 Todavía no existen:
 
@@ -1026,10 +1288,11 @@ Un fallo de Redis no debe causar pérdida de perfiles o progreso.
 - Una identidad autenticada no debe confundirse con salud actual.
 - La resolución jugable de un backend con jugadores conectados debe exigir
   salud `HEALTHY` y frescura vigente.
-- `BOOTSTRAP_REQUIRED` no debe tratarse como disponibilidad actual ni ser
-  aceptado por `/hub`, `/lobby` o el failover.
-- La selección futura por carga deberá añadirse sobre la política de salud
-  existente, sin debilitar su comportamiento fail-closed.
+- `BOOTSTRAP_REQUIRED` no debe tratarse como disponibilidad actual.
+- El failover ante kicks debe seguir aceptando únicamente destinos `RESOLVED`
+  seguros.
+- La selección por carga, capacidad, preferencia y retry alternativo no deben
+  debilitar el comportamiento fail-closed.
 
 ## 21. Punto exacto de reanudación
 
@@ -1048,13 +1311,15 @@ Backend
 El handshake, la autenticación, la presencia, la desconexión y la coordinación
 segura de transferencias están implementados. También están implementados el
 health checking periódico y correlacionado, la política explícita de frescura,
-su integración con `TransferTargetResolver` y el failover fail-closed ante
-kicks de backends para jugadores autenticados.
+su integración con `TransferTargetResolver`, el balanceo por capacidad, el
+retry alternativo de destinos y el failover fail-closed ante kicks de backends
+para jugadores autenticados.
 
 La política fue validada en runtime con pérdida de frescura, exclusión del
 destino como backend jugable normal, resolución `BOOTSTRAP_REQUIRED`, fallo
 seguro con el backend apagado, limpieza correlacionada y recuperación mediante
-una nueva transferencia después de encenderlo.
+una nueva transferencia después de encenderlo. El retry multiinstancia fue
+validado en runtime con `lobby-1` apagado y `lobby-2` activo.
 
 Flujos de transferencia confirmados:
 
@@ -1071,9 +1336,9 @@ Lobby o Skyblock
 Auth
   → TRANSFER_REQUEST targeting LOBBY
   → validación de identidad, sesión, UUID, conexión actual y origen
-  → resolución de lobby autenticado
+  → resolución de lobby autenticado o ruta bootstrap
   → ConnectionRequest de Velocity
-  → lobby-1
+  → lobby-1 o fallback a lobby-2
   → PLAYER_SERVER_READY
 
 Jugador autenticado en skyblock-1
@@ -1082,7 +1347,7 @@ Jugador autenticado en skyblock-1
   → resolución exclusiva de LOBBY
   → registro pendiente
   → ConnectionRequest de Velocity
-  → lobby-1
+  → lobby-1 o fallback a lobby-2
   → limpieza correlacionada
   → PLAYER_SERVER_READY
 ```
@@ -1094,21 +1359,23 @@ cambio hacia `lobby-1` es parte normal del ciclo de vida, no un fallo.
 Los comandos `/hub` y `/lobby` están implementados, probados y validados
 en runtime real. Ambos son públicos para jugadores autenticados,
 comparten el mismo comportamiento, resuelven únicamente `LOBBY`, fallan
-cerrados cuando el Lobby no está disponible, no aceptan
-`TransferTargetResolutionStatus.BOOTSTRAP_REQUIRED` y no reservan
-bootstrap explícitamente desde el flujo del comando.
+cerrados cuando no existe un Lobby disponible y pueden reintentar otra
+instancia después de `FAILED`, `REJECTED` o `TARGET_BUSY`. `TIMED_OUT` sigue
+siendo terminal. `BOOTSTRAP_REQUIRED` permite un intento de conexión por la
+ruta de bootstrap, pero no prueba disponibilidad ni inicia procesos remotos.
 
 Limitaciones actuales:
 
 - el estado continúa siendo local al proceso;
 - no existe Redis ni coordinación entre múltiples proxies;
-- no existe selección por carga entre varias instancias;
+- la distribución proporcional no fue validada directamente en runtime con
+  tres jugadores simultáneos;
+- `TIMED_OUT` terminal no fue provocado deliberadamente en runtime.
 
 Trabajo futuro, sin implementar todavía:
 
-- selección por carga entre varias instancias saludables;
-- failover multiinstancia con una política explícita de preferencia y capacidad;
 - persistencia o coordinación distribuida del estado temporal;
+- observabilidad operacional de salud, reservas y transferencias;
 - modo mantenimiento.
 
 La selección de modalidades pertenece a TheosferaLobby, no a
@@ -1116,8 +1383,9 @@ TheosferaProxy.
 
 Siguiente hito técnico recomendado:
 
-- definir e implementar selección entre múltiples instancias `HEALTHY`,
-  incorporando métricas de carga y conservando la política fail-closed.
+- acordar si el próximo hito será diseñar una capa de coordinación global
+  distribuida para múltiples proxies o reforzar observabilidad y operación
+  sobre salud, reservas y transferencias.
 
 Redis y persistencia temporal siguen siendo decisiones futuras, pero no
 son el siguiente paso inmediato de este checkpoint.
@@ -1238,6 +1506,11 @@ estaciones serán parte del ecosistema de TheosferaSkyblockAddons.
   proveedor de progreso.
 
 Estas decisiones no alteran el incremento técnico actual de TheosferaProxy.
-La integración de salud y frescura con `TransferTargetResolver` ya está
-implementada y validada; el siguiente incremento deberá planificar la
-selección entre múltiples instancias saludables.
+Health checking, capacidad, preferencia, selección proporcional y retry
+alternativo están implementados y cubiertos por pruebas automatizadas. El
+retry alternativo Auth→Lobby y `/hub` fue además validado en runtime. La
+distribución proporcional entre dos Lobbies activos continúa pendiente de
+una prueba runtime con tres jugadores simultáneos, y `TIMED_OUT` terminal
+no fue provocado deliberadamente en runtime. El siguiente incremento
+requiere acordar primero si se priorizará coordinación global distribuida u
+observabilidad operacional.
