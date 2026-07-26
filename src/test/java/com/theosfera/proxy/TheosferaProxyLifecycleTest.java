@@ -1,6 +1,7 @@
 package com.theosfera.proxy;
 
 import com.theosfera.proxy.command.LobbyCommand;
+import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
@@ -29,7 +30,7 @@ class TheosferaProxyLifecycleTest {
     Path temporaryDirectory;
 
     @Test
-    void registersAndUnregistersLobbyCommandInLifecycle() {
+    void registersAndUnregistersCommandsInLifecycle() {
         ProxyServer proxyServer =
                 mock(ProxyServer.class);
 
@@ -42,10 +43,16 @@ class TheosferaProxyLifecycleTest {
         CommandManager commandManager =
                 mock(CommandManager.class);
 
-        CommandMeta.Builder builder =
+        CommandMeta.Builder lobbyBuilder =
                 mock(CommandMeta.Builder.class);
 
-        CommandMeta commandMeta =
+        CommandMeta lobbyCommandMeta =
+                mock(CommandMeta.class);
+
+        CommandMeta.Builder proxyStatusBuilder =
+                mock(CommandMeta.Builder.class);
+
+        CommandMeta proxyStatusCommandMeta =
                 mock(CommandMeta.class);
 
         Scheduler velocityScheduler =
@@ -81,16 +88,26 @@ class TheosferaProxyLifecycleTest {
                 .thenReturn(scheduledTask);
 
         when(commandManager.metaBuilder("hub"))
-                .thenReturn(builder);
+                .thenReturn(lobbyBuilder);
 
-        when(builder.aliases("lobby"))
-                .thenReturn(builder);
+        when(lobbyBuilder.aliases("lobby"))
+                .thenReturn(lobbyBuilder);
 
-        when(builder.plugin(any()))
-                .thenReturn(builder);
+        when(lobbyBuilder.plugin(any()))
+                .thenReturn(lobbyBuilder);
 
-        when(builder.build())
-                .thenReturn(commandMeta);
+        when(lobbyBuilder.build())
+                .thenReturn(lobbyCommandMeta);
+
+        when(commandManager.metaBuilder(
+                "theosferaproxy"
+        )).thenReturn(proxyStatusBuilder);
+
+        when(proxyStatusBuilder.plugin(any()))
+                .thenReturn(proxyStatusBuilder);
+
+        when(proxyStatusBuilder.build())
+                .thenReturn(proxyStatusCommandMeta);
 
         TheosferaProxy plugin =
                 new TheosferaProxy(
@@ -102,8 +119,13 @@ class TheosferaProxyLifecycleTest {
         plugin.onProxyInitialization(null);
 
         verify(commandManager).register(
-                eq(commandMeta),
+                eq(lobbyCommandMeta),
                 any(LobbyCommand.class)
+        );
+
+        verify(commandManager).register(
+                eq(proxyStatusCommandMeta),
+                any(ProxyStatusCommand.class)
         );
 
         ArgumentCaptor<BackendKickFailoverListener> listenerCaptor =
@@ -121,7 +143,10 @@ class TheosferaProxyLifecycleTest {
 
         plugin.onProxyShutdown(null);
 
-        verify(commandManager).unregister(commandMeta);
+        verify(commandManager).unregister(lobbyCommandMeta);
+        verify(commandManager).unregister(
+                proxyStatusCommandMeta
+        );
 
         verify(eventManager).unregisterListener(
                 eq(plugin),

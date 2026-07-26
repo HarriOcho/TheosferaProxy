@@ -63,6 +63,44 @@ class BackendBootstrapRegistryTest {
     }
 
     @Test
+    void snapshotByRequestIsImmutableAndDetached() {
+        BackendBootstrapReservation reservation =
+                reservation(
+                        "skyblock-1",
+                        REQUEST_ID,
+                        PLAYER_ID,
+                        NOW
+                );
+
+        registry.register(reservation);
+
+        var snapshot = registry.snapshotByRequest();
+
+        assertSame(
+                reservation,
+                snapshot.get(REQUEST_ID)
+        );
+
+        assertThrows(
+                UnsupportedOperationException.class,
+                snapshot::clear
+        );
+
+        registry.removeByRequest(REQUEST_ID);
+
+        assertTrue(
+                registry.findByRequest(
+                        REQUEST_ID
+                ).isEmpty()
+        );
+
+        assertSame(
+                reservation,
+                snapshot.get(REQUEST_ID)
+        );
+    }
+
+    @Test
     void acceptsIdenticalReservationIdempotently() {
         BackendBootstrapReservation reservation =
                 reservation(
