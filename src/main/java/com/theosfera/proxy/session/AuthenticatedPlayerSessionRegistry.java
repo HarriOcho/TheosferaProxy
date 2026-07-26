@@ -88,6 +88,24 @@ public final class AuthenticatedPlayerSessionRegistry {
         );
     }
 
+    public Optional<AuthenticatedPlayerSession> removeIfMatches(
+            AuthenticatedPlayerSession expected
+    ) {
+        AuthenticatedPlayerSession nonNullExpected =
+                Objects.requireNonNull(
+                        expected,
+                        "expected cannot be null"
+                );
+
+        boolean removed = sessions.remove(
+                nonNullExpected.playerId(),
+                nonNullExpected
+        );
+
+        return removed
+                ? Optional.of(nonNullExpected)
+                : Optional.empty();
+    }
     public Map<UUID, AuthenticatedPlayerSession> snapshot() {
         return Map.copyOf(sessions);
     }
