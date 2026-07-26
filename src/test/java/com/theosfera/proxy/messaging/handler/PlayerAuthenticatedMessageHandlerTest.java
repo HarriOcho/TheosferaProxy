@@ -235,7 +235,7 @@ class PlayerAuthenticatedMessageHandlerTest {
     }
 
     @Test
-    void rejectsLeaseWithDifferentSession() {
+    void rejectsAndReleasesLeaseWithDifferentSessionOwnedByThisProxy() {
         PlayerSessionCoordinator coordinator =
                 mock(PlayerSessionCoordinator.class);
 
@@ -251,6 +251,11 @@ class PlayerAuthenticatedMessageHandlerTest {
                         wrongSession,
                         PROXY_IDENTITY,
                         1L
+                );
+
+        when(coordinator.releaseIfOwned(wrongLease))
+                .thenReturn(
+                        CompletableFuture.completedFuture(true)
                 );
 
         when(coordinator.acquire(
@@ -299,6 +304,8 @@ class PlayerAuthenticatedMessageHandlerTest {
                 true,
                 "Player session registered"
         );
+
+        verify(coordinator).releaseIfOwned(wrongLease);
     }
 
     @Test
@@ -848,6 +855,290 @@ class PlayerAuthenticatedMessageHandlerTest {
         ).releaseIfOwned(newLease);
     }
 
+    @Test
+    void claimsPendingReleaseCompletionOnlyOnceForDuplicateEnvelope() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        PlayerSessionLease newLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        2L
+                );
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.acquired(
+                                oldLease
+                        )
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.alreadyOwned(
+                                oldLease
+                        )
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.alreadyOwned(
+                                oldLease
+                        )
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.acquired(
+                                newLease
+                        )
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.alreadyOwned(
+                                newLease
+                        )
+                )
+        );
+
+        PlayerAuthenticatedMessageHandler asyncHandler =
+                handlerWith(coordinator);
+
+        ContextFixture oldConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        ContextFixture newConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        asyncHandler.handle(oldConnection.context());
+
+        PlayerSessionLease removedLease =
+                leaseBindingRegistry
+                        .removeForDisconnect(
+                                oldConnection.player()
+                        )
+                        .orElseThrow();
+
+        assertEquals(oldLease, removedLease);
+
+        assertTrue(
+                leaseBindingRegistry
+                        .reserveReleaseIfUnbound(
+                                oldLease
+                        )
+        );
+
+        asyncHandler.handle(newConnection.context());
+        asyncHandler.handle(newConnection.context());
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                eq(newConnection.context()),
+                eq(PLAYER_ID),
+                anyBoolean(),
+                anyString()
+        );
+
+        leaseBindingRegistry.completeRelease(
+                oldLease,
+                true
+        );
+
+        assertEquals(
+                newLease,
+                leaseBindingRegistry
+                        .find(newConnection.player())
+                        .orElseThrow()
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                true,
+                "Player session already registered"
+        );
+
+        verify(
+                coordinator,
+                times(4)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+    @Test
+    void waitsForPendingReleaseBeforeRejectingNewSessionConflict() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        AuthenticatedPlayerSession oldSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        AuthenticatedPlayerSession newSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT + 1
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        oldSession,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        PlayerSessionLease newLease =
+                new PlayerSessionLease(
+                        newSession,
+                        PROXY_IDENTITY,
+                        2L
+                );
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.acquired(
+                                oldLease
+                        )
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.withoutLease(
+                                PlayerSessionAcquireResult.Status
+                                        .CONFLICT
+                        )
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.acquired(
+                                newLease
+                        )
+                )
+        );
+
+        PlayerAuthenticatedMessageHandler asyncHandler =
+                handlerWith(coordinator);
+
+        ContextFixture oldConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        ContextFixture newConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT + 1
+                );
+
+        asyncHandler.handle(oldConnection.context());
+
+        PlayerSessionLease removedLease =
+                leaseBindingRegistry
+                        .removeForDisconnect(
+                                oldConnection.player()
+                        )
+                        .orElseThrow();
+
+        assertEquals(oldLease, removedLease);
+
+        assertTrue(
+                leaseBindingRegistry
+                        .reserveReleaseIfUnbound(
+                                oldLease
+                        )
+        );
+
+        asyncHandler.handle(newConnection.context());
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                eq(newConnection.context()),
+                eq(PLAYER_ID),
+                anyBoolean(),
+                anyString()
+        );
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(newConnection.player())
+                        .isEmpty()
+        );
+
+        leaseBindingRegistry.completeRelease(
+                oldLease,
+                true
+        );
+
+        assertEquals(
+                newLease,
+                leaseBindingRegistry
+                        .find(newConnection.player())
+                        .orElseThrow()
+        );
+
+        verify(acknowledgementSender).send(
+                newConnection.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        verify(
+                coordinator,
+                times(3)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
     @Test
     void waitsForPendingReleaseBeforeAcknowledgingRapidReconnect() {
         PlayerSessionCoordinator coordinator =

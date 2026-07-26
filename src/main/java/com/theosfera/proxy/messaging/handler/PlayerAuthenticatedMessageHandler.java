@@ -18,6 +18,7 @@ import com.velocitypowered.api.proxy.Player;
 import org.slf4j.Logger;
 
 import java.util.Objects;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
 
@@ -225,7 +226,16 @@ public final class PlayerAuthenticatedMessageHandler
                                     + "a otra instancia Proxy."
                     );
 
-            case CONFLICT ->
+            case CONFLICT -> {
+                boolean waitingForRelease =
+                        tryWaitForPendingRelease(
+                                context,
+                                carrier,
+                                session,
+                                acquisitionId
+                        );
+
+                if (!waitingForRelease) {
                     rejectAcquisition(
                             context,
                             carrier,
@@ -235,6 +245,8 @@ public final class PlayerAuthenticatedMessageHandler
                             "Conflicto de sesión autenticada "
                                     + "para {} recibido desde {}."
                     );
+                }
+            }
 
             case COORDINATION_UNAVAILABLE ->
                     rejectAcquisition(
@@ -264,6 +276,13 @@ public final class PlayerAuthenticatedMessageHandler
                         && lease.owner().equals(proxyIdentity);
 
         if (!matchesRequest) {
+            if (lease.owner().equals(proxyIdentity)) {
+                releaseUnboundLease(
+                        lease,
+                        PlayerSessionLeaseBindingResult.CONFLICT
+                );
+            }
+
             rejectCoordinationFailure(
                     context,
                     carrier,
@@ -299,7 +318,7 @@ public final class PlayerAuthenticatedMessageHandler
                     );
 
             case RELEASE_PENDING ->
-                    waitForPendingRelease(
+                    tryWaitForPendingRelease(
                             context,
                             carrier,
                             session,
@@ -345,27 +364,62 @@ public final class PlayerAuthenticatedMessageHandler
         }
     }
 
-    private void waitForPendingRelease(
+    private boolean tryWaitForPendingRelease(
             ProtocolMessageContext context,
             Player carrier,
             AuthenticatedPlayerSession session,
             UUID acquisitionId
     ) {
-        CompletionStage<Boolean> completion =
+        Optional<CompletionStage<Boolean>> completion =
                 leaseBindingRegistry
-                        .releaseCompletion(
+                        .awaitPendingRelease(
                                 carrier,
-                                acquisitionId
-                        )
-                        .orElseThrow(() ->
-                                new IllegalStateException(
-                                        "Release completion missing "
-                                                + "for pending lease"
-                                )
+                                acquisitionId,
+                                proxyIdentity
                         );
 
-        completion.whenComplete(
+        if (completion.isEmpty()) {
+            return false;
+        }
+
+        waitForPendingRelease(
+                context,
+                carrier,
+                session,
+                acquisitionId,
+                completion.orElseThrow()
+        );
+
+        return true;
+    }
+
+    private void waitForPendingRelease(
+            ProtocolMessageContext context,
+            Player carrier,
+            AuthenticatedPlayerSession session,
+            UUID acquisitionId,
+            CompletionStage<Boolean> completion
+    ) {
+        CompletionStage<Boolean> nonNullCompletion =
+                Objects.requireNonNull(
+                        completion,
+                        "completion cannot be null"
+                );
+
+        nonNullCompletion.whenComplete(
                 (released, failure) -> {
+                    boolean claimed =
+                            leaseBindingRegistry
+                                    .claimReleaseCompletion(
+                                            carrier,
+                                            acquisitionId,
+                                            nonNullCompletion
+                                    );
+
+                    if (!claimed) {
+                        return;
+                    }
+
                     if (failure != null
                             || !Boolean.TRUE.equals(released)) {
                         Throwable cause =
@@ -385,16 +439,11 @@ public final class PlayerAuthenticatedMessageHandler
                         return;
                     }
 
-                    leaseBindingRegistry
-                            .consumeReleaseCompletion(
-                                    carrier,
-                                    acquisitionId
-                            );
-
                     handle(context);
                 }
         );
     }
+
     private void acknowledgeSuccessfulAcquisition(
             ProtocolMessageContext context,
             AuthenticatedPlayerSession session,

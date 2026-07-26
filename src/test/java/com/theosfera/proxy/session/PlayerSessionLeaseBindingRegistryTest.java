@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -560,6 +561,193 @@ class PlayerSessionLeaseBindingRegistryTest {
 
         assertTrue(
                 registry.find(oldConnection).isEmpty()
+        );
+    }
+    @Test
+    void preservesOriginalReleaseClaimWhenNewerReleaseCompletesFirst() {
+        Player player = player(PLAYER_ID);
+
+        PlayerSessionLease originalLease =
+                lease(OWNER, 1L);
+
+        PlayerSessionLease newerLease =
+                lease(OWNER, 2L);
+
+        registry.begin(
+                player,
+                ACQUISITION_1
+        );
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        originalLease
+                )
+        );
+
+        var originalCompletion =
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).orElseThrow();
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        newerLease
+                )
+        );
+
+        registry.completeRelease(
+                newerLease,
+                true
+        );
+
+        registry.completeRelease(
+                originalLease,
+                true
+        );
+
+        assertTrue(
+                registry.claimReleaseCompletion(
+                        player,
+                        ACQUISITION_1,
+                        originalCompletion
+                )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        newerLease
+                )
+        );
+
+        assertTrue(registry.find(player).isEmpty());
+
+        assertFalse(
+                registry.claimReleaseCompletion(
+                        player,
+                        ACQUISITION_1,
+                        originalCompletion
+                )
+        );
+    }
+
+    @Test
+    void ignoresCompletedReleaseOwnedByUnexpectedProxy() {
+        Player player = player(PLAYER_ID);
+
+        PlayerSessionLease otherOwnerLease =
+                lease(OTHER_OWNER, 1L);
+
+        registry.begin(
+                player,
+                ACQUISITION_1
+        );
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        otherOwnerLease
+                )
+        );
+
+        registry.completeRelease(
+                otherOwnerLease,
+                true
+        );
+
+        assertTrue(
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).isEmpty()
+        );
+
+        assertTrue(
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OTHER_OWNER
+                ).isPresent()
+        );
+    }
+    @Test
+    void waitsOnlyForReleaseOwnedByExpectedProxy() {
+        Player player = player(PLAYER_ID);
+
+        PlayerSessionLease otherOwnerLease =
+                lease(OTHER_OWNER, 1L);
+
+        registry.begin(
+                player,
+                ACQUISITION_1
+        );
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        otherOwnerLease
+                )
+        );
+
+        assertTrue(
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).isEmpty()
+        );
+
+        assertTrue(
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OTHER_OWNER
+                ).isPresent()
+        );
+    }
+
+    @Test
+    void claimsReleaseCompletionOnlyOnce() {
+        Player player = player(PLAYER_ID);
+
+        PlayerSessionLease lease =
+                lease(OWNER, 1L);
+
+        registry.begin(
+                player,
+                ACQUISITION_1
+        );
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        lease
+                )
+        );
+
+        var completion =
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).orElseThrow();
+
+        assertTrue(
+                registry.claimReleaseCompletion(
+                        player,
+                        ACQUISITION_1,
+                        completion
+                )
+        );
+
+        assertFalse(
+                registry.claimReleaseCompletion(
+                        player,
+                        ACQUISITION_1,
+                        completion
+                )
         );
     }
     @Test
