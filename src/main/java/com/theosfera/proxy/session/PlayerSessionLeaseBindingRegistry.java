@@ -15,10 +15,15 @@ import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.function.LongSupplier;
 
 public final class PlayerSessionLeaseBindingRegistry {
 
-    private static final int TERMINAL_REQUEST_LIMIT = 4_096;
+    private static final int DEFAULT_REQUEST_CAPACITY = 4_096;
+
+    private static final long
+            DEFAULT_TERMINAL_REPLAY_WINDOW =
+            60_000_000_000L;
 
     private final Map<UUID, PlayerState> states =
             new HashMap<>();
@@ -37,8 +42,49 @@ public final class PlayerSessionLeaseBindingRegistry {
     private final Map<UUID, TerminalRequest> terminalRequests =
             new LinkedHashMap<>();
 
+    private final LongSupplier monotonicTime;
+    private final int requestCapacity;
+    private final long terminalReplayWindow;
+
     private long lastGeneration;
     private long lastAttempt;
+
+    public PlayerSessionLeaseBindingRegistry() {
+        this(
+                System::nanoTime,
+                DEFAULT_REQUEST_CAPACITY,
+                DEFAULT_TERMINAL_REPLAY_WINDOW
+        );
+    }
+
+    PlayerSessionLeaseBindingRegistry(
+            LongSupplier monotonicTime,
+            int requestCapacity,
+            long terminalReplayWindow
+    ) {
+        this.monotonicTime =
+                Objects.requireNonNull(
+                        monotonicTime,
+                        "monotonicTime cannot be null"
+                );
+
+        if (requestCapacity <= 0) {
+            throw new IllegalArgumentException(
+                    "requestCapacity must be greater than zero"
+            );
+        }
+
+        if (terminalReplayWindow <= 0) {
+            throw new IllegalArgumentException(
+                    "terminalReplayWindow "
+                            + "must be greater than zero"
+            );
+        }
+
+        this.requestCapacity = requestCapacity;
+        this.terminalReplayWindow =
+                terminalReplayWindow;
+    }
 
     public synchronized long begin(
             Player player,
@@ -138,18 +184,19 @@ public final class PlayerSessionLeaseBindingRegistry {
             );
         }
 
+        purgeExpiredTerminalRequests();
+
         TerminalRequest terminal =
                 terminalRequests.get(nonNullAcquisitionId);
 
         if (terminal != null) {
             if (terminal.session().equals(nonNullSession)) {
-                return BeginResult.completedReplay();
-            }
+                if (terminal.acknowledgement().isEmpty()) {
+                    return BeginResult.pendingReplay();
+                }
 
-            if (!terminal.conflicted()) {
-                rememberTerminal(
-                        nonNullAcquisitionId,
-                        terminal.asConflicted()
+                return BeginResult.completedReplay(
+                        terminal.acknowledgement()
                 );
             }
 
@@ -184,24 +231,14 @@ public final class PlayerSessionLeaseBindingRegistry {
                     && active.session().equals(nonNullSession)) {
                 return BeginResult.pendingReplay();
             } else {
-                Cancellation cancellation =
-                        cancel(
-                                active.player(),
-                                nonNullAcquisitionId
-                        );
-
-                rememberTerminal(
-                        nonNullAcquisitionId,
-                        new TerminalRequest(
-                                active.session(),
-                                true
-                        )
-                );
-
                 return BeginResult.conflict(
-                        cancellation.leaseToRelease()
+                        Optional.empty()
                 );
             }
+        }
+
+        if (trackedRequestCount() >= requestCapacity) {
+            return BeginResult.capacityExhausted();
         }
 
         long attemptId =
@@ -1342,6 +1379,60 @@ public final class PlayerSessionLeaseBindingRegistry {
                 List.copyOf(connections)
         );
     }
+    public synchronized boolean
+    recordTerminalAcknowledgement(
+            UUID acquisitionId,
+            AuthenticatedPlayerSession session,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        UUID nonNullAcquisitionId =
+                Objects.requireNonNull(
+                        acquisitionId,
+                        "acquisitionId cannot be null"
+                );
+
+        AuthenticatedPlayerSession nonNullSession =
+                Objects.requireNonNull(
+                        session,
+                        "session cannot be null"
+                );
+
+        TerminalAcknowledgement
+                nonNullAcknowledgement =
+                Objects.requireNonNull(
+                        acknowledgement,
+                        "acknowledgement cannot be null"
+                );
+
+        purgeExpiredTerminalRequests();
+
+        TerminalRequest terminal =
+                terminalRequests.get(
+                        nonNullAcquisitionId
+                );
+
+        if (terminal == null
+                || !terminal.session()
+                .equals(nonNullSession)) {
+            return false;
+        }
+
+        if (terminal.acknowledgement().isPresent()
+                && !terminal.acknowledgement()
+                .orElseThrow()
+                .equals(nonNullAcknowledgement)) {
+            return false;
+        }
+
+        rememberTerminal(
+                nonNullAcquisitionId,
+                terminal.withAcknowledgement(
+                        nonNullAcknowledgement
+                )
+        );
+
+        return true;
+    }
     private void completeActiveRequest(
             UUID acquisitionId
     ) {
@@ -1352,11 +1443,14 @@ public final class PlayerSessionLeaseBindingRegistry {
             return;
         }
 
+        purgeExpiredTerminalRequests();
+
         rememberTerminal(
                 acquisitionId,
                 new TerminalRequest(
                         active.session(),
-                        false
+                        Optional.empty(),
+                        terminalExpirationMillis()
                 )
         );
     }
@@ -1376,17 +1470,46 @@ public final class PlayerSessionLeaseBindingRegistry {
                 )
         );
 
-        while (terminalRequests.size()
-                > TERMINAL_REQUEST_LIMIT) {
-            UUID eldest =
-                    terminalRequests
-                            .keySet()
-                            .iterator()
-                            .next();
-
-            terminalRequests.remove(eldest);
+        if (terminalRequests.size()
+                > requestCapacity) {
+            throw new IllegalStateException(
+                    "terminal request capacity invariant violated"
+            );
         }
     }
+
+    private void purgeExpiredTerminalRequests() {
+        long now = monotonicTime.getAsLong();
+
+        terminalRequests
+                .entrySet()
+                .removeIf(entry ->
+                        entry.getValue()
+                                .expiresAtMillis()
+                                <= now
+                );
+    }
+
+    private int trackedRequestCount() {
+        return Math.addExact(
+                activeRequests.size(),
+                terminalRequests.size()
+        );
+    }
+
+    private long terminalExpirationMillis() {
+        long now = monotonicTime.getAsLong();
+
+        try {
+            return Math.addExact(
+                    now,
+                    terminalReplayWindow
+            );
+        } catch (ArithmeticException exception) {
+            return Long.MAX_VALUE;
+        }
+    }
+
     private void updateState(
             UUID playerId,
             PlayerState state
@@ -1446,13 +1569,15 @@ public final class PlayerSessionLeaseBindingRegistry {
         PROCEED,
         PENDING_REPLAY,
         COMPLETED_REPLAY,
-        CONFLICT
+        CONFLICT,
+        CAPACITY_EXHAUSTED
     }
 
     public record BeginResult(
             BeginDecision decision,
             long attemptId,
-            Optional<PlayerSessionLease> leaseToRelease
+            Optional<PlayerSessionLease> leaseToRelease,
+            Optional<TerminalAcknowledgement> acknowledgement
     ) {
 
         public BeginResult {
@@ -1464,6 +1589,11 @@ public final class PlayerSessionLeaseBindingRegistry {
             leaseToRelease = Objects.requireNonNull(
                     leaseToRelease,
                     "leaseToRelease cannot be null"
+            );
+
+            acknowledgement = Objects.requireNonNull(
+                    acknowledgement,
+                    "acknowledgement cannot be null"
             );
 
             if (decision == BeginDecision.PROCEED
@@ -1479,6 +1609,13 @@ public final class PlayerSessionLeaseBindingRegistry {
                         "non-proceed attempt id must be zero"
                 );
             }
+
+            if (decision != BeginDecision.COMPLETED_REPLAY
+                    && acknowledgement.isPresent()) {
+                throw new IllegalArgumentException(
+                        "only completed replay may expose an acknowledgement"
+                );
+            }
         }
 
         private static BeginResult proceed(
@@ -1487,6 +1624,7 @@ public final class PlayerSessionLeaseBindingRegistry {
             return new BeginResult(
                     BeginDecision.PROCEED,
                     attemptId,
+                    Optional.empty(),
                     Optional.empty()
             );
         }
@@ -1495,15 +1633,20 @@ public final class PlayerSessionLeaseBindingRegistry {
             return new BeginResult(
                     BeginDecision.PENDING_REPLAY,
                     0L,
+                    Optional.empty(),
                     Optional.empty()
             );
         }
 
-        private static BeginResult completedReplay() {
+        private static BeginResult completedReplay(
+                Optional<TerminalAcknowledgement>
+                        acknowledgement
+        ) {
             return new BeginResult(
                     BeginDecision.COMPLETED_REPLAY,
                     0L,
-                    Optional.empty()
+                    Optional.empty(),
+                    acknowledgement
             );
         }
 
@@ -1513,7 +1656,30 @@ public final class PlayerSessionLeaseBindingRegistry {
             return new BeginResult(
                     BeginDecision.CONFLICT,
                     0L,
-                    leaseToRelease
+                    leaseToRelease,
+                    Optional.empty()
+            );
+        }
+
+        private static BeginResult capacityExhausted() {
+            return new BeginResult(
+                    BeginDecision.CAPACITY_EXHAUSTED,
+                    0L,
+                    Optional.empty(),
+                    Optional.empty()
+            );
+        }
+    }
+
+    public record TerminalAcknowledgement(
+            boolean successful,
+            String message
+    ) {
+
+        public TerminalAcknowledgement {
+            message = Objects.requireNonNull(
+                    message,
+                    "message cannot be null"
             );
         }
     }
@@ -1538,7 +1704,8 @@ public final class PlayerSessionLeaseBindingRegistry {
 
     private record TerminalRequest(
             AuthenticatedPlayerSession session,
-            boolean conflicted
+            Optional<TerminalAcknowledgement> acknowledgement,
+            long expiresAtMillis
     ) {
 
         private TerminalRequest {
@@ -1546,15 +1713,29 @@ public final class PlayerSessionLeaseBindingRegistry {
                     session,
                     "session cannot be null"
             );
+
+            acknowledgement = Objects.requireNonNull(
+                    acknowledgement,
+                    "acknowledgement cannot be null"
+            );
         }
 
-        private TerminalRequest asConflicted() {
+        private TerminalRequest withAcknowledgement(
+                TerminalAcknowledgement acknowledgement
+        ) {
             return new TerminalRequest(
                     session,
-                    true
+                    Optional.of(
+                            Objects.requireNonNull(
+                                    acknowledgement,
+                                    "acknowledgement cannot be null"
+                            )
+                    ),
+                    expiresAtMillis
             );
         }
     }
+
     public record Cancellation(
             boolean shouldRespond,
             Optional<PlayerSessionLease> leaseToRelease

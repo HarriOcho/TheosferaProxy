@@ -13,6 +13,7 @@ import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
+import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry.TerminalAcknowledgement;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingResult;
 import com.velocitypowered.api.proxy.Player;
 import org.slf4j.Logger;
@@ -150,10 +151,39 @@ public final class PlayerAuthenticatedMessageHandler
             }
 
             case COMPLETED_REPLAY -> {
+                beginResult.acknowledgement().ifPresent(
+                        acknowledgement ->
+                                acknowledgementSender.send(
+                                        context,
+                                        session.playerId(),
+                                        acknowledgement.successful(),
+                                        acknowledgement.message()
+                                )
+                );
+
                 logger.debug(
                         "Replay terminal de PLAYER_AUTHENTICATED "
-                                + "ignorado para {} desde {} "
+                                + "respondido para {} desde {} "
                                 + "(requestId {}).",
+                        session.playerId(),
+                        context.serverName(),
+                        acquisitionId
+                );
+                return;
+            }
+
+            case CAPACITY_EXHAUSTED -> {
+                acknowledgementSender.send(
+                        context,
+                        session.playerId(),
+                        false,
+                        "Player authentication request capacity exhausted"
+                );
+
+                logger.error(
+                        "PLAYER_AUTHENTICATED rechazado para {} "
+                                + "desde {}: capacidad de deduplicación "
+                                + "agotada (requestId {}).",
                         session.playerId(),
                         context.serverName(),
                         acquisitionId
@@ -441,6 +471,7 @@ public final class PlayerAuthenticatedMessageHandler
                     acknowledgeSuccessfulAcquisition(
                             context,
                             session,
+                            acquisitionId,
                             result.status()
                     );
 
@@ -481,9 +512,10 @@ public final class PlayerAuthenticatedMessageHandler
                         bindingResult
                 );
 
-                acknowledgementSender.send(
+                sendTerminalAcknowledgement(
                         context,
-                        session.playerId(),
+                        session,
+                        acquisitionId,
                         false,
                         "Player session binding conflict"
                 );
@@ -603,13 +635,15 @@ public final class PlayerAuthenticatedMessageHandler
     private void acknowledgeSuccessfulAcquisition(
             ProtocolMessageContext context,
             AuthenticatedPlayerSession session,
+            UUID acquisitionId,
             PlayerSessionAcquireResult.Status status
     ) {
         if (status
                 == PlayerSessionAcquireResult.Status.ACQUIRED) {
-            acknowledgementSender.send(
+            sendTerminalAcknowledgement(
                     context,
-                    session.playerId(),
+                    session,
+                    acquisitionId,
                     true,
                     "Player session registered"
             );
@@ -625,9 +659,10 @@ public final class PlayerAuthenticatedMessageHandler
             return;
         }
 
-        acknowledgementSender.send(
+        sendTerminalAcknowledgement(
                 context,
-                session.playerId(),
+                session,
+                acquisitionId,
                 true,
                 "Player session already registered"
         );
@@ -672,9 +707,10 @@ public final class PlayerAuthenticatedMessageHandler
             return;
         }
 
-        acknowledgementSender.send(
+        sendTerminalAcknowledgement(
                 context,
-                session.playerId(),
+                session,
+                acquisitionId,
                 false,
                 acknowledgementMessage
         );
@@ -717,9 +753,10 @@ public final class PlayerAuthenticatedMessageHandler
             return;
         }
 
-        acknowledgementSender.send(
+        sendTerminalAcknowledgement(
                 context,
-                session.playerId(),
+                session,
+                acquisitionId,
                 false,
                 "Player session coordination unavailable"
         );
@@ -730,6 +767,46 @@ public final class PlayerAuthenticatedMessageHandler
                 session.playerId(),
                 context.serverName(),
                 failure
+        );
+    }
+
+    private void sendTerminalAcknowledgement(
+            ProtocolMessageContext context,
+            AuthenticatedPlayerSession session,
+            UUID acquisitionId,
+            boolean successful,
+            String message
+    ) {
+        TerminalAcknowledgement acknowledgement =
+                new TerminalAcknowledgement(
+                        successful,
+                        message
+                );
+
+        boolean recorded =
+                leaseBindingRegistry
+                        .recordTerminalAcknowledgement(
+                                acquisitionId,
+                                session,
+                                acknowledgement
+                        );
+
+        if (!recorded) {
+            logger.debug(
+                    "ACK terminal obsoleto ignorado para {} "
+                            + "desde {} (requestId {}).",
+                    session.playerId(),
+                    context.serverName(),
+                    acquisitionId
+            );
+            return;
+        }
+
+        acknowledgementSender.send(
+                context,
+                session.playerId(),
+                acknowledgement.successful(),
+                acknowledgement.message()
         );
     }
 

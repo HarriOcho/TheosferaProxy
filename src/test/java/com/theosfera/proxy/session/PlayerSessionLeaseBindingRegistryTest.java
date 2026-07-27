@@ -6,6 +6,7 @@ import com.velocitypowered.api.proxy.Player;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -864,6 +865,293 @@ class PlayerSessionLeaseBindingRegistryTest {
         );
     }
 
+    @Test
+    void keepsTerminalReplayPendingUntilAcknowledgementIsRecorded() {
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                ).decision()
+        );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                cancellation =
+                registry.cancel(
+                        player,
+                        ACQUISITION_1
+                );
+
+        assertTrue(cancellation.shouldRespond());
+
+        PlayerSessionLeaseBindingRegistry.BeginResult
+                beforeAcknowledgement =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PENDING_REPLAY,
+                beforeAcknowledgement.decision()
+        );
+
+        assertTrue(
+                beforeAcknowledgement
+                        .acknowledgement()
+                        .isEmpty()
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        assertTrue(
+                registry.recordTerminalAcknowledgement(
+                        ACQUISITION_1,
+                        session,
+                        acknowledgement
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult
+                completedReplay =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                completedReplay.decision()
+        );
+
+        assertEquals(
+                acknowledgement,
+                completedReplay
+                        .acknowledgement()
+                        .orElseThrow()
+        );
+    }
+    @Test
+    void failsClosedInsteadOfEvictingUnexpiredTerminalRequests() {
+        AtomicLong currentTimeMillis =
+                new AtomicLong(1_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        currentTimeMillis::get,
+                        2,
+                        60_000L
+                );
+
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                ).decision()
+        );
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement terminalAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        boundedRegistry.cancel(
+                player,
+                ACQUISITION_1
+        );
+
+        assertTrue(
+                boundedRegistry
+                        .recordTerminalAcknowledgement(
+                                ACQUISITION_1,
+                                session,
+                                terminalAcknowledgement
+                        )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        session
+                ).decision()
+        );
+
+        boundedRegistry.cancel(
+                player,
+                ACQUISITION_2
+        );
+
+        assertTrue(
+                boundedRegistry
+                        .recordTerminalAcknowledgement(
+                                ACQUISITION_2,
+                                session,
+                                terminalAcknowledgement
+                        )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.CAPACITY_EXHAUSTED,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_3,
+                        session
+                ).decision()
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                ).decision()
+        );
+
+        AuthenticatedPlayerSession conflictingSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_001L
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.CONFLICT,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        conflictingSession
+                ).decision()
+        );
+    }
+
+    @Test
+    void releasesTerminalCapacityOnlyAfterFullReplayWindow() {
+        AtomicLong currentTimeMillis =
+                new AtomicLong(2_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        currentTimeMillis::get,
+                        1,
+                        60_000L
+                );
+
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                ).decision()
+        );
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement terminalAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        boundedRegistry.cancel(
+                player,
+                ACQUISITION_1
+        );
+
+        assertTrue(
+                boundedRegistry
+                        .recordTerminalAcknowledgement(
+                                ACQUISITION_1,
+                                session,
+                                terminalAcknowledgement
+                        )
+        );
+
+        currentTimeMillis.addAndGet(59_999L);
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.CAPACITY_EXHAUSTED,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        session
+                ).decision()
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                ).decision()
+        );
+
+        currentTimeMillis.incrementAndGet();
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        session
+                ).decision()
+        );
+    }
     @Test
     void rejectsNullArguments() {
         Player player = player(PLAYER_ID);

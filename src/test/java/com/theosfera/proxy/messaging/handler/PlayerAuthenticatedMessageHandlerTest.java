@@ -150,7 +150,7 @@ class PlayerAuthenticatedMessageHandlerTest {
     }
 
     @Test
-    void doesNotReacquireOrAcknowledgeCompletedExactReplay() {
+    void replaysCompletedAcknowledgementWithoutReacquiring() {
         PlayerSessionCoordinator coordinator =
                 spy(sessionCoordinator);
 
@@ -182,7 +182,7 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         verify(
                 acknowledgementSender,
-                times(1)
+                times(2)
         ).send(
                 fixture.context(),
                 PLAYER_ID,
@@ -200,9 +200,8 @@ class PlayerAuthenticatedMessageHandlerTest {
                 "Player session already registered"
         );
     }
-
     @Test
-    void rejectsRequestIdReuseWithDifferentAuthenticatedSession() {
+    void rejectsConflictingRequestIdReuseWithoutCancellingOriginalRequest() {
         PlayerSessionCoordinator coordinator =
                 mock(PlayerSessionCoordinator.class);
 
@@ -224,15 +223,9 @@ class PlayerAuthenticatedMessageHandlerTest {
                 originalAcquisition =
                 new CompletableFuture<>();
 
-
         when(coordinator.acquire(
                 any(PlayerSessionLeaseRequest.class)
         )).thenReturn(originalAcquisition);
-
-        when(coordinator.releaseIfOwned(originalLease))
-                .thenReturn(
-                        CompletableFuture.completedFuture(true)
-                );
 
         PlayerAuthenticatedMessageHandler asyncHandler =
                 handlerWith(coordinator);
@@ -294,26 +287,27 @@ class PlayerAuthenticatedMessageHandlerTest {
                 )
         );
 
-        assertTrue(
+        assertEquals(
+                originalLease,
                 leaseBindingRegistry
                         .find(original.player())
-                        .isEmpty()
+                        .orElseThrow()
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                original.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
         );
 
         verify(
                 coordinator,
-                times(1)
-        ).releaseIfOwned(originalLease);
-
-        verify(
-                acknowledgementSender,
                 never()
-        ).send(
-                any(ProtocolMessageContext.class),
-                eq(PLAYER_ID),
-                eq(true),
-                anyString()
-        );
+        ).releaseIfOwned(originalLease);
     }
     @Test
     void doesNotStartSecondAcquisitionForPendingExactReplay() {
@@ -1964,7 +1958,7 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         verify(
                 acknowledgementSender,
-                times(1)
+                times(2)
         ).send(
                 oldConnection.context(),
                 PLAYER_ID,
