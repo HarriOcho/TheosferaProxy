@@ -121,19 +121,74 @@ public final class PlayerAuthenticatedMessageHandler
         UUID acquisitionId =
                 context.envelope().requestId();
 
-        long attemptId =
-                leaseBindingRegistry.begin(
+        PlayerSessionLeaseBindingRegistry.BeginResult
+                beginResult =
+                leaseBindingRegistry.beginTracked(
                         carrier,
-                        acquisitionId
+                        acquisitionId,
+                        session
                 );
 
-        startAcquisition(
-                context,
-                carrier,
-                session,
-                acquisitionId,
-                attemptId
+        beginResult.leaseToRelease().ifPresent(
+                lease -> releaseUnboundLease(
+                        lease,
+                        PlayerSessionLeaseBindingResult.CONFLICT
+                )
         );
+
+        switch (beginResult.decision()) {
+            case PENDING_REPLAY -> {
+                logger.debug(
+                        "Replay pendiente de PLAYER_AUTHENTICATED "
+                                + "ignorado para {} desde {} "
+                                + "(requestId {}).",
+                        session.playerId(),
+                        context.serverName(),
+                        acquisitionId
+                );
+                return;
+            }
+
+            case COMPLETED_REPLAY -> {
+                logger.debug(
+                        "Replay terminal de PLAYER_AUTHENTICATED "
+                                + "ignorado para {} desde {} "
+                                + "(requestId {}).",
+                        session.playerId(),
+                        context.serverName(),
+                        acquisitionId
+                );
+                return;
+            }
+
+            case CONFLICT -> {
+                acknowledgementSender.send(
+                        context,
+                        session.playerId(),
+                        false,
+                        "Player authentication request conflict"
+                );
+
+                logger.warn(
+                        "PLAYER_AUTHENTICATED rechazado para {} "
+                                + "desde {}: requestId {} reutilizado "
+                                + "con otro payload.",
+                        session.playerId(),
+                        context.serverName(),
+                        acquisitionId
+                );
+                return;
+            }
+
+            case PROCEED ->
+                    startAcquisition(
+                            context,
+                            carrier,
+                            session,
+                            acquisitionId,
+                            beginResult.attemptId()
+                    );
+        }
     }
 
     private void startAcquisition(

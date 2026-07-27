@@ -6,6 +6,7 @@ import com.velocitypowered.api.proxy.Player;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -17,6 +18,8 @@ import java.util.concurrent.CompletionStage;
 
 public final class PlayerSessionLeaseBindingRegistry {
 
+    private static final int TERMINAL_REQUEST_LIMIT = 4_096;
+
     private final Map<UUID, PlayerState> states =
             new HashMap<>();
 
@@ -27,6 +30,12 @@ public final class PlayerSessionLeaseBindingRegistry {
     private final Map<PlayerSessionLease, CompletableFuture<Boolean>>
             pendingReleases =
             new HashMap<>();
+
+    private final Map<UUID, ActiveRequest> activeRequests =
+            new HashMap<>();
+
+    private final Map<UUID, TerminalRequest> terminalRequests =
+            new LinkedHashMap<>();
 
     private long lastGeneration;
     private long lastAttempt;
@@ -102,6 +111,115 @@ public final class PlayerSessionLeaseBindingRegistry {
         return attemptId;
     }
 
+    public synchronized BeginResult beginTracked(
+            Player player,
+            UUID acquisitionId,
+            AuthenticatedPlayerSession session
+    ) {
+        Player nonNullPlayer = requirePlayer(player);
+
+        UUID nonNullAcquisitionId =
+                Objects.requireNonNull(
+                        acquisitionId,
+                        "acquisitionId cannot be null"
+                );
+
+        AuthenticatedPlayerSession nonNullSession =
+                Objects.requireNonNull(
+                        session,
+                        "session cannot be null"
+                );
+
+        UUID playerId = nonNullPlayer.getUniqueId();
+
+        if (!playerId.equals(nonNullSession.playerId())) {
+            throw new IllegalArgumentException(
+                    "player identity must match session"
+            );
+        }
+
+        TerminalRequest terminal =
+                terminalRequests.get(nonNullAcquisitionId);
+
+        if (terminal != null) {
+            if (terminal.session().equals(nonNullSession)) {
+                return BeginResult.completedReplay();
+            }
+
+            if (!terminal.conflicted()) {
+                rememberTerminal(
+                        nonNullAcquisitionId,
+                        terminal.asConflicted()
+                );
+            }
+
+            return BeginResult.conflict(Optional.empty());
+        }
+
+        ActiveRequest active =
+                activeRequests.get(nonNullAcquisitionId);
+
+        if (active != null) {
+            UUID activePlayerId =
+                    active.player().getUniqueId();
+
+            PlayerState activeState =
+                    states.get(activePlayerId);
+
+            PendingAcquisition activeAcquisition =
+                    activeState == null
+                            ? null
+                            : activeState
+                            .pendingAcquisitions()
+                            .get(nonNullAcquisitionId);
+
+            boolean stillActive =
+                    activeAcquisition != null
+                            && activeAcquisition.player()
+                            == active.player();
+
+            if (!stillActive) {
+                activeRequests.remove(nonNullAcquisitionId);
+            } else if (active.player() == nonNullPlayer
+                    && active.session().equals(nonNullSession)) {
+                return BeginResult.pendingReplay();
+            } else {
+                Cancellation cancellation =
+                        cancel(
+                                active.player(),
+                                nonNullAcquisitionId
+                        );
+
+                rememberTerminal(
+                        nonNullAcquisitionId,
+                        new TerminalRequest(
+                                active.session(),
+                                true
+                        )
+                );
+
+                return BeginResult.conflict(
+                        cancellation.leaseToRelease()
+                );
+            }
+        }
+
+        long attemptId =
+                begin(
+                        nonNullPlayer,
+                        nonNullAcquisitionId
+                );
+
+        activeRequests.put(
+                nonNullAcquisitionId,
+                new ActiveRequest(
+                        nonNullPlayer,
+                        nonNullSession
+                )
+        );
+
+        return BeginResult.proceed(attemptId);
+    }
     public synchronized PlayerSessionLeaseBindingResult bind(
             Player player,
             UUID acquisitionId,
@@ -215,6 +333,8 @@ public final class PlayerSessionLeaseBindingRegistry {
         }
 
         remaining.remove(nonNullAcquisitionId);
+
+        completeActiveRequest(nonNullAcquisitionId);
 
         if (releaseMatchesLeaseOwner
                 && nonNullLease.fencingToken()
@@ -590,6 +710,8 @@ public final class PlayerSessionLeaseBindingRegistry {
                 );
 
         remaining.remove(nonNullAcquisitionId);
+
+        completeActiveRequest(nonNullAcquisitionId);
 
         Optional<PlayerSessionLease> leaseToRelease =
                 Optional.empty();
@@ -1092,6 +1214,8 @@ public final class PlayerSessionLeaseBindingRegistry {
         states.clear();
         generationsByPlayerId.clear();
         pendingReleases.clear();
+        activeRequests.clear();
+        terminalRequests.clear();
     }
 
     private Map<UUID, PendingAcquisition> markDisconnected(
@@ -1218,6 +1342,51 @@ public final class PlayerSessionLeaseBindingRegistry {
                 List.copyOf(connections)
         );
     }
+    private void completeActiveRequest(
+            UUID acquisitionId
+    ) {
+        ActiveRequest active =
+                activeRequests.remove(acquisitionId);
+
+        if (active == null) {
+            return;
+        }
+
+        rememberTerminal(
+                acquisitionId,
+                new TerminalRequest(
+                        active.session(),
+                        false
+                )
+        );
+    }
+
+    private void rememberTerminal(
+            UUID acquisitionId,
+            TerminalRequest request
+    ) {
+        terminalRequests.put(
+                Objects.requireNonNull(
+                        acquisitionId,
+                        "acquisitionId cannot be null"
+                ),
+                Objects.requireNonNull(
+                        request,
+                        "request cannot be null"
+                )
+        );
+
+        while (terminalRequests.size()
+                > TERMINAL_REQUEST_LIMIT) {
+            UUID eldest =
+                    terminalRequests
+                            .keySet()
+                            .iterator()
+                            .next();
+
+            terminalRequests.remove(eldest);
+        }
+    }
     private void updateState(
             UUID playerId,
             PlayerState state
@@ -1273,6 +1442,119 @@ public final class PlayerSessionLeaseBindingRegistry {
         }
     }
 
+    public enum BeginDecision {
+        PROCEED,
+        PENDING_REPLAY,
+        COMPLETED_REPLAY,
+        CONFLICT
+    }
+
+    public record BeginResult(
+            BeginDecision decision,
+            long attemptId,
+            Optional<PlayerSessionLease> leaseToRelease
+    ) {
+
+        public BeginResult {
+            decision = Objects.requireNonNull(
+                    decision,
+                    "decision cannot be null"
+            );
+
+            leaseToRelease = Objects.requireNonNull(
+                    leaseToRelease,
+                    "leaseToRelease cannot be null"
+            );
+
+            if (decision == BeginDecision.PROCEED
+                    && attemptId <= 0) {
+                throw new IllegalArgumentException(
+                        "proceed attempt id must be greater than zero"
+                );
+            }
+
+            if (decision != BeginDecision.PROCEED
+                    && attemptId != 0) {
+                throw new IllegalArgumentException(
+                        "non-proceed attempt id must be zero"
+                );
+            }
+        }
+
+        private static BeginResult proceed(
+                long attemptId
+        ) {
+            return new BeginResult(
+                    BeginDecision.PROCEED,
+                    attemptId,
+                    Optional.empty()
+            );
+        }
+
+        private static BeginResult pendingReplay() {
+            return new BeginResult(
+                    BeginDecision.PENDING_REPLAY,
+                    0L,
+                    Optional.empty()
+            );
+        }
+
+        private static BeginResult completedReplay() {
+            return new BeginResult(
+                    BeginDecision.COMPLETED_REPLAY,
+                    0L,
+                    Optional.empty()
+            );
+        }
+
+        private static BeginResult conflict(
+                Optional<PlayerSessionLease> leaseToRelease
+        ) {
+            return new BeginResult(
+                    BeginDecision.CONFLICT,
+                    0L,
+                    leaseToRelease
+            );
+        }
+    }
+
+    private record ActiveRequest(
+            Player player,
+            AuthenticatedPlayerSession session
+    ) {
+
+        private ActiveRequest {
+            Objects.requireNonNull(
+                    player,
+                    "player cannot be null"
+            );
+
+            Objects.requireNonNull(
+                    session,
+                    "session cannot be null"
+            );
+        }
+    }
+
+    private record TerminalRequest(
+            AuthenticatedPlayerSession session,
+            boolean conflicted
+    ) {
+
+        private TerminalRequest {
+            Objects.requireNonNull(
+                    session,
+                    "session cannot be null"
+            );
+        }
+
+        private TerminalRequest asConflicted() {
+            return new TerminalRequest(
+                    session,
+                    true
+            );
+        }
+    }
     public record Cancellation(
             boolean shouldRespond,
             Optional<PlayerSessionLease> leaseToRelease

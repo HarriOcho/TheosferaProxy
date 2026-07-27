@@ -150,7 +150,13 @@ class PlayerAuthenticatedMessageHandlerTest {
     }
 
     @Test
-    void treatsRepeatedSessionAsAlreadyRegistered() {
+    void doesNotReacquireOrAcknowledgeCompletedExactReplay() {
+        PlayerSessionCoordinator coordinator =
+                spy(sessionCoordinator);
+
+        PlayerAuthenticatedMessageHandler replayHandler =
+                handlerWith(coordinator);
+
         ContextFixture fixture = authenticatedContext(
                 PLAYER_ID,
                 "HarriOcho",
@@ -159,36 +165,318 @@ class PlayerAuthenticatedMessageHandlerTest {
                 AUTHENTICATED_AT
         );
 
-        handler.handle(fixture.context());
-        handler.handle(fixture.context());
+        replayHandler.handle(fixture.context());
+        replayHandler.handle(fixture.context());
 
         assertEquals(
                 1,
                 sessionRegistry.snapshot().size()
         );
 
-        verify(acknowledgementSender).send(
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
                 fixture.context(),
                 PLAYER_ID,
                 true,
                 "Player session registered"
         );
 
-        verify(acknowledgementSender).send(
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
                 fixture.context(),
                 PLAYER_ID,
                 true,
                 "Player session already registered"
         );
-
-        verify(logger).debug(
-                "Sesión autenticada ya registrada para {} "
-                        + "({}).",
-                "HarriOcho",
-                PLAYER_ID
-        );
     }
 
+    @Test
+    void rejectsRequestIdReuseWithDifferentAuthenticatedSession() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        AuthenticatedPlayerSession originalSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease originalLease =
+                new PlayerSessionLease(
+                        originalSession,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                originalAcquisition =
+                new CompletableFuture<>();
+
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(originalAcquisition);
+
+        when(coordinator.releaseIfOwned(originalLease))
+                .thenReturn(
+                        CompletableFuture.completedFuture(true)
+                );
+
+        PlayerAuthenticatedMessageHandler asyncHandler =
+                handlerWith(coordinator);
+
+        ContextFixture original = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        ProtocolEnvelope<?> originalEnvelope =
+                original.context().envelope();
+
+        ProtocolEnvelope<PlayerAuthenticatedPayload>
+                conflictingEnvelope =
+                new ProtocolEnvelope<>(
+                        originalEnvelope.version(),
+                        originalEnvelope.type(),
+                        originalEnvelope.requestId(),
+                        originalEnvelope.timestamp() + 1,
+                        new PlayerAuthenticatedPayload(
+                                PLAYER_ID,
+                                "HarriOcho",
+                                AUTHENTICATED_AT + 1
+                        )
+                );
+
+        ProtocolMessageContext conflictingContext =
+                new ProtocolMessageContext(
+                        original.context().source(),
+                        conflictingEnvelope
+                );
+
+        asyncHandler.handle(original.context());
+        asyncHandler.handle(conflictingContext);
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                conflictingContext,
+                PLAYER_ID,
+                false,
+                "Player authentication request conflict"
+        );
+
+        originalAcquisition.complete(
+                PlayerSessionAcquireResult.acquired(
+                        originalLease
+                )
+        );
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(original.player())
+                        .isEmpty()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).releaseIfOwned(originalLease);
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                any(ProtocolMessageContext.class),
+                eq(PLAYER_ID),
+                eq(true),
+                anyString()
+        );
+    }
+    @Test
+    void doesNotStartSecondAcquisitionForPendingExactReplay() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        when(coordinator.releaseIfOwned(lease))
+                .thenReturn(
+                        CompletableFuture.completedFuture(true)
+                );
+
+        PlayerAuthenticatedMessageHandler asyncHandler =
+                handlerWith(coordinator);
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        asyncHandler.handle(fixture.context());
+        asyncHandler.handle(fixture.context());
+
+        acquisition.complete(
+                PlayerSessionAcquireResult.acquired(lease)
+        );
+
+        assertEquals(
+                lease,
+                leaseBindingRegistry
+                        .find(fixture.player())
+                        .orElseThrow()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        verify(
+                coordinator,
+                never()
+        ).releaseIfOwned(lease);
+    }
+
+    @Test
+    void rejectsFurtherDifferentPayloadReuseAfterTerminalConflict() {
+        PlayerSessionCoordinator coordinator =
+                spy(sessionCoordinator);
+
+        PlayerAuthenticatedMessageHandler replayHandler =
+                handlerWith(coordinator);
+
+        ContextFixture original = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        ProtocolEnvelope<?> originalEnvelope =
+                original.context().envelope();
+
+        ProtocolMessageContext firstConflict =
+                new ProtocolMessageContext(
+                        original.context().source(),
+                        new ProtocolEnvelope<>(
+                                originalEnvelope.version(),
+                                originalEnvelope.type(),
+                                originalEnvelope.requestId(),
+                                originalEnvelope.timestamp() + 1,
+                                new PlayerAuthenticatedPayload(
+                                        PLAYER_ID,
+                                        "HarriOcho",
+                                        AUTHENTICATED_AT + 1
+                                )
+                        )
+                );
+
+        ProtocolMessageContext secondConflict =
+                new ProtocolMessageContext(
+                        original.context().source(),
+                        new ProtocolEnvelope<>(
+                                originalEnvelope.version(),
+                                originalEnvelope.type(),
+                                originalEnvelope.requestId(),
+                                originalEnvelope.timestamp() + 2,
+                                new PlayerAuthenticatedPayload(
+                                        PLAYER_ID,
+                                        "HarriOcho",
+                                        AUTHENTICATED_AT + 2
+                                )
+                        )
+                );
+
+        replayHandler.handle(original.context());
+        replayHandler.handle(firstConflict);
+        replayHandler.handle(secondConflict);
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                firstConflict,
+                PLAYER_ID,
+                false,
+                "Player authentication request conflict"
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                secondConflict,
+                PLAYER_ID,
+                false,
+                "Player authentication request conflict"
+        );
+    }
     @Test
     void preservesExistingSessionWhenAcquisitionConflicts() {
         AuthenticatedPlayerSession existingSession =
@@ -695,6 +983,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                 )
         );
 
+
         assertEquals(
                 newLease,
                 leaseBindingRegistry
@@ -870,25 +1159,11 @@ class PlayerAuthenticatedMessageHandlerTest {
                         AUTHENTICATED_AT
                 );
 
-        AuthenticatedPlayerSession newSession =
-                new AuthenticatedPlayerSession(
-                        PLAYER_ID,
-                        "HarriOcho",
-                        AUTHENTICATED_AT + 1
-                );
-
         PlayerSessionLease oldLease =
                 new PlayerSessionLease(
                         oldSession,
                         PROXY_IDENTITY,
                         1L
-                );
-
-        PlayerSessionLease newLease =
-                new PlayerSessionLease(
-                        newSession,
-                        PROXY_IDENTITY,
-                        2L
                 );
 
         when(coordinator.acquire(
@@ -904,18 +1179,8 @@ class PlayerAuthenticatedMessageHandlerTest {
                                 PlayerSessionAcquireResult.Status
                                         .CONFLICT
                         )
-                ),
-                CompletableFuture.completedFuture(
-                        PlayerSessionAcquireResult.acquired(
-                                newLease
-                        )
                 )
         );
-
-        when(coordinator.releaseIfOwned(newLease))
-                .thenReturn(
-                        CompletableFuture.completedFuture(true)
-                );
 
         PlayerSessionLeaseBindingRegistry coordinatedRegistry =
                 spy(
@@ -1039,19 +1304,20 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         verify(
                 coordinator,
-                times(3)
+                times(2)
         ).acquire(
                 any(PlayerSessionLeaseRequest.class)
         );
 
         verify(
                 coordinator,
-                times(1)
-        ).releaseIfOwned(newLease);
+                never()
+        ).releaseIfOwned(
+                any(PlayerSessionLease.class)
+        );
     }
-
     @Test
-    void ignoresLateDuplicateCallbackAfterPendingReleaseRetry() {
+    void ignoresPendingExactReplayBeforePendingReleaseRetry() {
         PlayerSessionCoordinator coordinator =
                 mock(PlayerSessionCoordinator.class);
 
@@ -1084,11 +1350,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                 );
 
         CompletableFuture<PlayerSessionAcquireResult>
-                firstDuplicate =
-                new CompletableFuture<>();
-
-        CompletableFuture<PlayerSessionAcquireResult>
-                secondDuplicate =
+                firstAttempt =
                 new CompletableFuture<>();
 
         CompletableFuture<PlayerSessionAcquireResult>
@@ -1103,8 +1365,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                                 oldLease
                         )
                 ),
-                firstDuplicate,
-                secondDuplicate,
+                firstAttempt,
                 retry
         );
 
@@ -1155,7 +1416,7 @@ class PlayerAuthenticatedMessageHandlerTest {
         asyncHandler.handle(newConnection.context());
         asyncHandler.handle(newConnection.context());
 
-        firstDuplicate.complete(
+        firstAttempt.complete(
                 PlayerSessionAcquireResult.withoutLease(
                         PlayerSessionAcquireResult.Status.CONFLICT
                 )
@@ -1164,13 +1425,6 @@ class PlayerAuthenticatedMessageHandlerTest {
         leaseBindingRegistry.completeRelease(
                 oldLease,
                 true
-        );
-
-        secondDuplicate.complete(
-                PlayerSessionAcquireResult.withoutLease(
-                        PlayerSessionAcquireResult.Status
-                                .COORDINATION_UNAVAILABLE
-                )
         );
 
         retry.complete(
@@ -1213,12 +1467,11 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         verify(
                 coordinator,
-                times(4)
+                times(3)
         ).acquire(
                 any(PlayerSessionLeaseRequest.class)
         );
     }
-
     @Test
     void claimsPendingReleaseCompletionOnlyOnceForDuplicateEnvelope() {
         PlayerSessionCoordinator coordinator =
@@ -1259,17 +1512,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                         )
                 ),
                 CompletableFuture.completedFuture(
-                        PlayerSessionAcquireResult.alreadyOwned(
-                                oldLease
-                        )
-                ),
-                CompletableFuture.completedFuture(
                         PlayerSessionAcquireResult.acquired(
-                                newLease
-                        )
-                ),
-                CompletableFuture.completedFuture(
-                        PlayerSessionAcquireResult.alreadyOwned(
                                 newLease
                         )
                 )
@@ -1358,13 +1601,13 @@ class PlayerAuthenticatedMessageHandlerTest {
                 true,
                 "Player session already registered"
         );
-
         verify(
                 coordinator,
-                times(4)
+                times(3)
         ).acquire(
                 any(PlayerSessionLeaseRequest.class)
         );
+
     }
     @Test
     void waitsForPendingReleaseBeforeRejectingNewSessionConflict() {
