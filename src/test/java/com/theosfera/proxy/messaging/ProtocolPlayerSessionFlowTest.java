@@ -138,6 +138,8 @@ class ProtocolPlayerSessionFlowTest {
                                         leaseBindingRegistry,
                                         PROXY_IDENTITY,
                                         acknowledgementSender,
+                                        (key, timeout) -> () -> {
+                                        },
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(

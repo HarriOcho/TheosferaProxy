@@ -39,6 +39,7 @@ import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
+import com.theosfera.proxy.session.velocity.VelocityPlayerSessionAcquisitionTimeoutScheduler;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
@@ -325,6 +326,13 @@ public final class TheosferaProxy {
                         logger
                 );
 
+        VelocityPlayerSessionAcquisitionTimeoutScheduler
+                acquisitionTimeoutScheduler =
+                new VelocityPlayerSessionAcquisitionTimeoutScheduler(
+                        proxyServer,
+                        this
+                );
+
         TransferTargetResolver targetResolver =
                 new TransferTargetResolver(
                         proxyServer,
@@ -414,6 +422,7 @@ public final class TheosferaProxy {
                                         sessionLeaseBindingRegistry,
                                         proxyInstanceIdentity,
                                         authenticationAckSender,
+                                        acquisitionTimeoutScheduler,
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(

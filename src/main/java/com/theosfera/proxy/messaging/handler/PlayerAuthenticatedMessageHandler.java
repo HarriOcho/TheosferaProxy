@@ -12,6 +12,8 @@ import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
+import com.theosfera.proxy.session.PlayerSessionAcquisitionTimeoutScheduler;
+import com.theosfera.proxy.session.PlayerSessionAcquisitionTimeoutScheduler.ScheduledAcquisitionTimeout;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry.TerminalAcknowledgement;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingResult;
@@ -33,6 +35,8 @@ public final class PlayerAuthenticatedMessageHandler
     private final ProxyInstanceIdentity proxyIdentity;
     private final PlayerAuthenticationAckSender
             acknowledgementSender;
+    private final PlayerSessionAcquisitionTimeoutScheduler
+            acquisitionTimeoutScheduler;
     private final Logger logger;
 
     public PlayerAuthenticatedMessageHandler(
@@ -41,6 +45,8 @@ public final class PlayerAuthenticatedMessageHandler
                     leaseBindingRegistry,
             ProxyInstanceIdentity proxyIdentity,
             PlayerAuthenticationAckSender acknowledgementSender,
+            PlayerSessionAcquisitionTimeoutScheduler
+                    acquisitionTimeoutScheduler,
             Logger logger
     ) {
         this.sessionCoordinator = Objects.requireNonNull(
@@ -63,6 +69,12 @@ public final class PlayerAuthenticatedMessageHandler
                 Objects.requireNonNull(
                         acknowledgementSender,
                         "acknowledgementSender cannot be null"
+                );
+
+        this.acquisitionTimeoutScheduler =
+                Objects.requireNonNull(
+                        acquisitionTimeoutScheduler,
+                        "acquisitionTimeoutScheduler cannot be null"
                 );
 
         this.logger = Objects.requireNonNull(
@@ -259,13 +271,25 @@ public final class PlayerAuthenticatedMessageHandler
                     carrier,
                     session,
                     acquisitionId,
+                    attemptId,
                     exception
             );
             return;
         }
 
+        ScheduledAcquisitionTimeout timeout =
+                scheduleAcquisitionTimeout(
+                        context,
+                        carrier,
+                        session,
+                        acquisitionId,
+                        attemptId
+                );
+
         acquisitionStage.whenComplete(
                 (result, failure) -> {
+                    cancelAcquisitionTimeoutSafely(timeout);
+
                     boolean claimed =
                             leaseBindingRegistry
                                     .claimAcquisitionResult(
@@ -287,6 +311,7 @@ public final class PlayerAuthenticatedMessageHandler
                                 carrier,
                                 session,
                                 acquisitionId,
+                                attemptId,
                                 failure
                         );
                         return;
@@ -298,6 +323,7 @@ public final class PlayerAuthenticatedMessageHandler
                                 carrier,
                                 session,
                                 acquisitionId,
+                                attemptId,
                                 new IllegalStateException(
                                         "Session acquisition "
                                                 + "returned null"
@@ -321,10 +347,259 @@ public final class PlayerAuthenticatedMessageHandler
                                 carrier,
                                 session,
                                 acquisitionId,
+                                attemptId,
                                 exception
                         );
                     }
                 }
+        );
+    }
+
+    private ScheduledAcquisitionTimeout scheduleAcquisitionTimeout(
+            ProtocolMessageContext context,
+            Player carrier,
+            AuthenticatedPlayerSession session,
+            UUID acquisitionId,
+            long attemptId
+    ) {
+        try {
+            return Objects.requireNonNull(
+                    acquisitionTimeoutScheduler.schedule(
+                            new PlayerSessionAcquisitionTimeoutScheduler
+                                    .AcquisitionTimeoutKey(
+                                    session.playerId(),
+                                    acquisitionId,
+                                    attemptId
+                            ),
+                            () -> handleAcquisitionTimeout(
+                                    context,
+                                    carrier,
+                                    session,
+                                    acquisitionId,
+                                    attemptId
+                            )
+                    ),
+                    "acquisitionTimeoutScheduler.schedule returned null"
+            );
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudo programar el timeout de adquisicion "
+                            + "de sesion para {} desde {} "
+                            + "(requestId {}, attemptId {}).",
+                    session.playerId(),
+                    context.serverName(),
+                    acquisitionId,
+                    attemptId,
+                    exception
+            );
+
+            handleAcquisitionTimeout(
+                    context,
+                    carrier,
+                    session,
+                    acquisitionId,
+                    attemptId
+            );
+
+            return () -> {
+            };
+        }
+    }
+
+    private void cancelAcquisitionTimeoutSafely(
+            ScheduledAcquisitionTimeout timeout
+    ) {
+        try {
+            timeout.cancel();
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudo cancelar el timeout de adquisicion "
+                            + "de sesion.",
+                    exception
+            );
+        }
+    }
+
+    private ScheduledAcquisitionTimeout schedulePendingReleaseTimeout(
+            ProtocolMessageContext context,
+            Player carrier,
+            AuthenticatedPlayerSession session,
+            UUID acquisitionId,
+            long attemptId,
+            CompletionStage<Boolean> completion,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        Runnable timeout =
+                () -> handlePendingReleaseTimeout(
+                        context,
+                        carrier,
+                        session,
+                        acquisitionId,
+                        attemptId,
+                        completion,
+                        acknowledgement
+                );
+
+        try {
+            return Objects.requireNonNull(
+                    acquisitionTimeoutScheduler.schedule(
+                            new PlayerSessionAcquisitionTimeoutScheduler
+                                    .AcquisitionTimeoutKey(
+                                    session.playerId(),
+                                    acquisitionId,
+                                    attemptId
+                            ),
+                            timeout
+                    ),
+                    "acquisitionTimeoutScheduler.schedule returned null"
+            );
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudo programar el timeout de espera "
+                            + "de liberacion de sesion para {} "
+                            + "desde {} (requestId {}, attemptId {}).",
+                    session.playerId(),
+                    context.serverName(),
+                    acquisitionId,
+                    attemptId,
+                    exception
+            );
+
+            timeout.run();
+
+            return () -> {
+            };
+        }
+    }
+
+    private void cancelPendingReleaseTimeoutSafely(
+            ScheduledAcquisitionTimeout timeout
+    ) {
+        try {
+            timeout.cancel();
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudo cancelar el timeout de espera "
+                            + "de liberacion de sesion.",
+                    exception
+            );
+        }
+    }
+
+    private void handlePendingReleaseTimeout(
+            ProtocolMessageContext context,
+            Player carrier,
+            AuthenticatedPlayerSession session,
+            UUID acquisitionId,
+            long attemptId,
+            CompletionStage<Boolean> completion,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                cancellation =
+                leaseBindingRegistry.claimPendingReleaseTimeout(
+                        carrier,
+                        acquisitionId,
+                        attemptId,
+                        session,
+                        completion,
+                        acknowledgement
+                );
+
+        cancellation.leaseToRelease().ifPresent(
+                lease -> releaseUnboundLease(
+                        lease,
+                        PlayerSessionLeaseBindingResult.DISCONNECTED
+                )
+        );
+
+        if (!cancellation.shouldRespond()) {
+            logger.debug(
+                    "Timeout obsoleto de espera de liberacion "
+                            + "ignorado para {} desde {} "
+                            + "(requestId {}, attemptId {}).",
+                    session.playerId(),
+                    context.serverName(),
+                    acquisitionId,
+                    attemptId
+            );
+            return;
+        }
+
+        acknowledgementSender.send(
+                context,
+                session.playerId(),
+                acknowledgement.successful(),
+                acknowledgement.message()
+        );
+
+        logger.warn(
+                "Timeout de espera de liberacion de sesion para {} "
+                        + "desde {} (requestId {}, attemptId {}).",
+                session.playerId(),
+                context.serverName(),
+                acquisitionId,
+                attemptId
+        );
+    }
+
+    private void handleAcquisitionTimeout(
+            ProtocolMessageContext context,
+            Player carrier,
+            AuthenticatedPlayerSession session,
+            UUID acquisitionId,
+            long attemptId
+    ) {
+        TerminalAcknowledgement acknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                cancellation =
+                leaseBindingRegistry.claimAcquisitionTimeout(
+                        carrier,
+                        acquisitionId,
+                        attemptId,
+                        session,
+                        acknowledgement
+                );
+
+        cancellation.leaseToRelease().ifPresent(
+                lease -> releaseUnboundLease(
+                        lease,
+                        PlayerSessionLeaseBindingResult.DISCONNECTED
+                )
+        );
+
+        if (!cancellation.shouldRespond()) {
+            logger.debug(
+                    "Timeout obsoleto de adquisicion ignorado "
+                            + "para {} desde {} "
+                            + "(requestId {}, attemptId {}).",
+                    session.playerId(),
+                    context.serverName(),
+                    acquisitionId,
+                    attemptId
+            );
+            return;
+        }
+
+        acknowledgementSender.send(
+                context,
+                session.playerId(),
+                acknowledgement.successful(),
+                acknowledgement.message()
+        );
+
+        logger.warn(
+                "Timeout de adquisicion de sesion para {} "
+                        + "desde {} (requestId {}, attemptId {}).",
+                session.playerId(),
+                context.serverName(),
+                acquisitionId,
+                attemptId
         );
     }
     private void releaseUnclaimedSuccessfulAcquisition(
@@ -381,6 +656,7 @@ public final class PlayerAuthenticatedMessageHandler
                             carrier,
                             session,
                             acquisitionId,
+                            attemptId,
                             "Player session owned by another proxy",
                             "La sesión autenticada de {} "
                                     + "recibida desde {} ya pertenece "
@@ -403,6 +679,7 @@ public final class PlayerAuthenticatedMessageHandler
                             carrier,
                             session,
                             acquisitionId,
+                            attemptId,
                             "Player session conflict",
                             "Conflicto de sesión autenticada "
                                     + "para {} recibido desde {}."
@@ -416,6 +693,7 @@ public final class PlayerAuthenticatedMessageHandler
                             carrier,
                             session,
                             acquisitionId,
+                            attemptId,
                             "Player session coordination unavailable",
                             "Coordinación de sesión no disponible "
                                     + "para {} desde {}."
@@ -451,6 +729,7 @@ public final class PlayerAuthenticatedMessageHandler
                     carrier,
                     session,
                     acquisitionId,
+                    attemptId,
                     new IllegalStateException(
                             "Session coordinator returned a lease "
                                     + "that does not match the request"
@@ -459,21 +738,73 @@ public final class PlayerAuthenticatedMessageHandler
             return;
         }
 
+        String successfulMessage =
+                switch (result.status()) {
+                    case ACQUIRED ->
+                            "Player session registered";
+                    case ALREADY_OWNED ->
+                            "Player session already registered";
+                    default ->
+                            throw new IllegalArgumentException(
+                                    "Unexpected successful acquisition "
+                                            + "status: "
+                                            + result.status()
+                            );
+                };
+
+        TerminalAcknowledgement successfulAcknowledgement =
+                new TerminalAcknowledgement(
+                        true,
+                        successfulMessage
+                );
+
+        TerminalAcknowledgement conflictAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
         PlayerSessionLeaseBindingResult bindingResult =
                 leaseBindingRegistry.bind(
                         carrier,
                         acquisitionId,
-                        lease
+                        attemptId,
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 );
 
         switch (bindingResult) {
-            case BOUND, ALREADY_BOUND, REPLACED ->
-                    acknowledgeSuccessfulAcquisition(
+            case BOUND, ALREADY_BOUND, REPLACED -> {
+                acknowledgementSender.send(
                             context,
-                            session,
-                            acquisitionId,
-                            result.status()
+                            session.playerId(),
+                            successfulAcknowledgement.successful(),
+                            successfulAcknowledgement.message()
+                );
+
+                if (result.status()
+                        == PlayerSessionAcquireResult
+                        .Status.ACQUIRED) {
+                    logger.info(
+                            "Sesión autenticada registrada para {} "
+                                    + "({}) desde {}.",
+                            session.playerName(),
+                            session.playerId(),
+                            context.serverName()
                     );
+
+                    return;
+                }
+
+                logger.debug(
+                        "Sesión autenticada ya registrada para {} "
+                                + "({}).",
+                        session.playerName(),
+                        session.playerId()
+                );
+            }
 
             case DISCONNECTED ->
                     releaseUnboundLease(
@@ -512,12 +843,11 @@ public final class PlayerAuthenticatedMessageHandler
                         bindingResult
                 );
 
-                sendTerminalAcknowledgement(
+                acknowledgementSender.send(
                         context,
-                        session,
-                        acquisitionId,
-                        false,
-                        "Player session binding conflict"
+                        session.playerId(),
+                        conflictAcknowledgement.successful(),
+                        conflictAcknowledgement.message()
                 );
 
                 logger.error(
@@ -575,8 +905,29 @@ public final class PlayerAuthenticatedMessageHandler
                         "completion cannot be null"
                 );
 
+        TerminalAcknowledgement timeoutAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        ScheduledAcquisitionTimeout pendingReleaseTimeout =
+                schedulePendingReleaseTimeout(
+                        context,
+                        carrier,
+                        session,
+                        acquisitionId,
+                        attemptId,
+                        nonNullCompletion,
+                        timeoutAcknowledgement
+                );
+
         nonNullCompletion.whenComplete(
                 (released, failure) -> {
+                    cancelPendingReleaseTimeoutSafely(
+                            pendingReleaseTimeout
+                    );
+
                     if (failure != null
                             || !Boolean.TRUE.equals(released)) {
                         boolean claimed =
@@ -603,6 +954,7 @@ public final class PlayerAuthenticatedMessageHandler
                                 carrier,
                                 session,
                                 acquisitionId,
+                                attemptId,
                                 cause
                         );
                         return;
@@ -632,72 +984,40 @@ public final class PlayerAuthenticatedMessageHandler
         );
     }
 
-    private void acknowledgeSuccessfulAcquisition(
-            ProtocolMessageContext context,
-            AuthenticatedPlayerSession session,
-            UUID acquisitionId,
-            PlayerSessionAcquireResult.Status status
-    ) {
-        if (status
-                == PlayerSessionAcquireResult.Status.ACQUIRED) {
-            sendTerminalAcknowledgement(
-                    context,
-                    session,
-                    acquisitionId,
-                    true,
-                    "Player session registered"
-            );
-
-            logger.info(
-                    "Sesión autenticada registrada para {} "
-                            + "({}) desde {}.",
-                    session.playerName(),
-                    session.playerId(),
-                    context.serverName()
-            );
-
-            return;
-        }
-
-        sendTerminalAcknowledgement(
-                context,
-                session,
-                acquisitionId,
-                true,
-                "Player session already registered"
-        );
-
-        logger.debug(
-                "Sesión autenticada ya registrada para {} "
-                        + "({}).",
-                session.playerName(),
-                session.playerId()
-        );
-    }
 
     private void rejectAcquisition(
             ProtocolMessageContext context,
             Player carrier,
             AuthenticatedPlayerSession session,
             UUID acquisitionId,
+            long attemptId,
             String acknowledgementMessage,
             String logMessage
     ) {
-        PlayerSessionLeaseBindingRegistry.Cancellation
-                cancellation =
-                leaseBindingRegistry.cancel(
-                        carrier,
-                        acquisitionId
+        TerminalAcknowledgement acknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        acknowledgementMessage
                 );
 
-        cancellation.leaseToRelease().ifPresent(
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                completion =
+                leaseBindingRegistry.completeTerminalRequest(
+                        carrier,
+                        acquisitionId,
+                        attemptId,
+                        session,
+                        acknowledgement
+                );
+
+        completion.leaseToRelease().ifPresent(
                 lease -> releaseUnboundLease(
                         lease,
                         PlayerSessionLeaseBindingResult.DISCONNECTED
                 )
         );
 
-        if (!cancellation.shouldRespond()) {
+        if (!completion.shouldRespond()) {
             logger.debug(
                     "Resultado tardío de adquisición ignorado "
                             + "para {} desde {}.",
@@ -707,12 +1027,11 @@ public final class PlayerAuthenticatedMessageHandler
             return;
         }
 
-        sendTerminalAcknowledgement(
+        acknowledgementSender.send(
                 context,
-                session,
-                acquisitionId,
-                false,
-                acknowledgementMessage
+                session.playerId(),
+                acknowledgement.successful(),
+                acknowledgement.message()
         );
 
         logger.warn(
@@ -727,23 +1046,33 @@ public final class PlayerAuthenticatedMessageHandler
             Player carrier,
             AuthenticatedPlayerSession session,
             UUID acquisitionId,
+            long attemptId,
             Throwable failure
     ) {
-        PlayerSessionLeaseBindingRegistry.Cancellation
-                cancellation =
-                leaseBindingRegistry.cancel(
-                        carrier,
-                        acquisitionId
+        TerminalAcknowledgement acknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
                 );
 
-        cancellation.leaseToRelease().ifPresent(
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                completion =
+                leaseBindingRegistry.completeTerminalRequest(
+                        carrier,
+                        acquisitionId,
+                        attemptId,
+                        session,
+                        acknowledgement
+                );
+
+        completion.leaseToRelease().ifPresent(
                 lease -> releaseUnboundLease(
                         lease,
                         PlayerSessionLeaseBindingResult.DISCONNECTED
                 )
         );
 
-        if (!cancellation.shouldRespond()) {
+        if (!completion.shouldRespond()) {
             logger.debug(
                     "Fallo tardío de coordinación ignorado "
                             + "para {} desde {}.",
@@ -753,12 +1082,11 @@ public final class PlayerAuthenticatedMessageHandler
             return;
         }
 
-        sendTerminalAcknowledgement(
+        acknowledgementSender.send(
                 context,
-                session,
-                acquisitionId,
-                false,
-                "Player session coordination unavailable"
+                session.playerId(),
+                acknowledgement.successful(),
+                acknowledgement.message()
         );
 
         logger.error(
@@ -770,45 +1098,6 @@ public final class PlayerAuthenticatedMessageHandler
         );
     }
 
-    private void sendTerminalAcknowledgement(
-            ProtocolMessageContext context,
-            AuthenticatedPlayerSession session,
-            UUID acquisitionId,
-            boolean successful,
-            String message
-    ) {
-        TerminalAcknowledgement acknowledgement =
-                new TerminalAcknowledgement(
-                        successful,
-                        message
-                );
-
-        boolean recorded =
-                leaseBindingRegistry
-                        .recordTerminalAcknowledgement(
-                                acquisitionId,
-                                session,
-                                acknowledgement
-                        );
-
-        if (!recorded) {
-            logger.debug(
-                    "ACK terminal obsoleto ignorado para {} "
-                            + "desde {} (requestId {}).",
-                    session.playerId(),
-                    context.serverName(),
-                    acquisitionId
-            );
-            return;
-        }
-
-        acknowledgementSender.send(
-                context,
-                session.playerId(),
-                acknowledgement.successful(),
-                acknowledgement.message()
-        );
-    }
 
     private void releaseUnboundLease(
             PlayerSessionLease lease,

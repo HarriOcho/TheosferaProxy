@@ -14,7 +14,10 @@ import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
+import com.theosfera.proxy.session.PlayerSessionAcquisitionTimeoutScheduler;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
+import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry.TerminalAcknowledgement;
+import com.theosfera.proxy.session.PlayerSessionLeaseBindingResult;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.ServerInfo;
@@ -23,20 +26,26 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.same;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -387,6 +396,1113 @@ class PlayerAuthenticatedMessageHandlerTest {
                 coordinator,
                 never()
         ).releaseIfOwned(lease);
+    }
+
+    @Test
+    void acquisitionTimeoutSendsFailClosedAckAndKeepsTerminalReplay() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        timeoutHandler.handle(fixture.context());
+
+        verifyNoInteractions(acknowledgementSender);
+
+        PlayerSessionAcquisitionTimeoutScheduler
+                .AcquisitionTimeoutKey timeoutKey =
+                timeoutScheduler.lastKey();
+
+        assertEquals(
+                PLAYER_ID,
+                timeoutKey.playerId()
+        );
+
+        assertEquals(
+                fixture.context().envelope().requestId(),
+                timeoutKey.requestId()
+        );
+
+        assertTrue(timeoutKey.attemptId() > 0);
+
+        timeoutScheduler.trigger();
+
+        verify(acknowledgementSender).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        timeoutHandler.handle(fixture.context());
+
+        verify(
+                acknowledgementSender,
+                times(2)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        assertFalse(acquisition.isDone());
+    }
+
+    @Test
+    void timeoutUsesAtomicTerminalAcknowledgementTransition() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        PlayerSessionLeaseBindingRegistry registry =
+                spy(new PlayerSessionLeaseBindingRegistry());
+
+        AtomicReference<PlayerSessionAcquisitionTimeoutScheduler
+                .AcquisitionTimeoutKey> keyRef =
+                new AtomicReference<>();
+
+        AtomicReference<Runnable> timeoutRef =
+                new AtomicReference<>();
+
+        PlayerSessionAcquisitionTimeoutScheduler scheduler =
+                (key, timeout) -> {
+                    keyRef.set(key);
+                    timeoutRef.set(timeout);
+                    return () -> {
+                    };
+                };
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        registry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        scheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        timeoutHandler.handle(fixture.context());
+
+        PlayerSessionAcquisitionTimeoutScheduler
+                .AcquisitionTimeoutKey key =
+                keyRef.get();
+
+        timeoutRef.get().run();
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        verify(
+                registry,
+                times(1)
+        ).claimAcquisitionTimeout(
+                same(fixture.player()),
+                eq(key.requestId()),
+                eq(key.attemptId()),
+                eq(session),
+                eq(acknowledgement)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                registry.beginTracked(
+                        fixture.player(),
+                        key.requestId(),
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                acknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        assertFalse(acquisition.isDone());
+    }
+
+    @Test
+    void coordinationFailureUsesAtomicTerminalCompletion() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        PlayerSessionLeaseBindingRegistry registry =
+                spy(new PlayerSessionLeaseBindingRegistry());
+
+        PlayerSessionAcquisitionTimeoutScheduler scheduler =
+                (key, timeout) -> () -> {
+                };
+
+        PlayerAuthenticatedMessageHandler failureHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        registry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        scheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        failureHandler.handle(fixture.context());
+
+        acquisition.completeExceptionally(
+                new IllegalStateException(
+                        "coordination unavailable"
+                )
+        );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        ArgumentCaptor<UUID> requestIdCaptor =
+                ArgumentCaptor.forClass(UUID.class);
+
+        ArgumentCaptor<Long> attemptIdCaptor =
+                ArgumentCaptor.forClass(Long.class);
+
+        verify(
+                registry,
+                times(1)
+        ).completeTerminalRequest(
+                same(fixture.player()),
+                requestIdCaptor.capture(),
+                attemptIdCaptor.capture(),
+                eq(session),
+                eq(acknowledgement)
+        );
+
+        verify(
+                registry,
+                never()
+        ).claimAcquisitionTimeout(
+                any(Player.class),
+                any(UUID.class),
+                anyLong(),
+                any(AuthenticatedPlayerSession.class),
+                any(PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement.class)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                registry.beginTracked(
+                        fixture.player(),
+                        requestIdCaptor.getValue(),
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                acknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+
+    @Test
+    void rejectedAcquisitionUsesAtomicTerminalCompletion() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        PlayerSessionLeaseBindingRegistry registry =
+                spy(new PlayerSessionLeaseBindingRegistry());
+
+        PlayerSessionAcquisitionTimeoutScheduler scheduler =
+                (key, timeout) -> () -> {
+                };
+
+        PlayerAuthenticatedMessageHandler rejectedHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        registry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        scheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        rejectedHandler.handle(fixture.context());
+
+        acquisition.complete(
+                PlayerSessionAcquireResult.withoutLease(
+                        PlayerSessionAcquireResult.Status
+                                .COORDINATION_UNAVAILABLE
+                )
+        );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        ArgumentCaptor<UUID> requestIdCaptor =
+                ArgumentCaptor.forClass(UUID.class);
+
+        ArgumentCaptor<Long> attemptIdCaptor =
+                ArgumentCaptor.forClass(Long.class);
+
+        verify(
+                registry,
+                times(1)
+        ).completeTerminalRequest(
+                same(fixture.player()),
+                requestIdCaptor.capture(),
+                attemptIdCaptor.capture(),
+                eq(session),
+                eq(acknowledgement)
+        );
+
+        verify(
+                registry,
+                never()
+        ).claimAcquisitionTimeout(
+                any(Player.class),
+                any(UUID.class),
+                anyLong(),
+                any(AuthenticatedPlayerSession.class),
+                any(PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement.class)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                registry.beginTracked(
+                        fixture.player(),
+                        requestIdCaptor.getValue(),
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                acknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+
+    @Test
+    void successfulAcquisitionUsesAtomicBindingCompletion() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        PlayerSessionLeaseBindingRegistry registry =
+                spy(new PlayerSessionLeaseBindingRegistry());
+
+        PlayerSessionAcquisitionTimeoutScheduler scheduler =
+                (key, timeout) -> () -> {
+                };
+
+        PlayerAuthenticatedMessageHandler atomicBindingHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        registry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        scheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        atomicBindingHandler.handle(fixture.context());
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        acquisition.complete(
+                PlayerSessionAcquireResult.acquired(lease)
+        );
+
+        TerminalAcknowledgement successfulAcknowledgement =
+                new TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        TerminalAcknowledgement conflictAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        ArgumentCaptor<UUID> requestIdCaptor =
+                ArgumentCaptor.forClass(UUID.class);
+
+        ArgumentCaptor<Long> attemptIdCaptor =
+                ArgumentCaptor.forClass(Long.class);
+
+        verify(
+                registry,
+                times(1)
+        ).bind(
+                same(fixture.player()),
+                requestIdCaptor.capture(),
+                attemptIdCaptor.capture(),
+                eq(session),
+                eq(lease),
+                eq(successfulAcknowledgement),
+                eq(conflictAcknowledgement)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                registry.beginTracked(
+                        fixture.player(),
+                        requestIdCaptor.getValue(),
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                successfulAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        assertEquals(
+                lease,
+                registry.find(fixture.player()).orElseThrow()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+
+    @Test
+    void lateSuccessfulAcquisitionAfterTimeoutReleasesUnclaimedLease() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        timeoutHandler.handle(fixture.context());
+
+        timeoutScheduler.trigger();
+
+        verify(acknowledgementSender).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        when(coordinator.releaseIfOwned(lease))
+                .thenReturn(
+                        CompletableFuture.completedFuture(true)
+                );
+
+        acquisition.complete(
+                PlayerSessionAcquireResult.acquired(lease)
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).releaseIfOwned(lease);
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(fixture.player())
+                        .isEmpty()
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+
+    @Test
+    void lateAlreadyOwnedAcquisitionAfterTimeoutReleasesUnclaimedLease() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        timeoutHandler.handle(fixture.context());
+
+        timeoutScheduler.trigger();
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        when(coordinator.releaseIfOwned(lease))
+                .thenReturn(
+                        CompletableFuture.completedFuture(true)
+                );
+
+        acquisition.complete(
+                PlayerSessionAcquireResult.alreadyOwned(lease)
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).releaseIfOwned(lease);
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(fixture.player())
+                        .isEmpty()
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session already registered"
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+
+    @Test
+    void schedulingFailureFailsClosedAndReleasesLateSuccessfulLease() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        PlayerSessionAcquisitionTimeoutScheduler
+                failingScheduler =
+                (key, timeout) -> {
+                    throw new IllegalStateException(
+                            "scheduler unavailable"
+                    );
+                };
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        failingScheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        timeoutHandler.handle(fixture.context());
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        when(coordinator.releaseIfOwned(lease))
+                .thenReturn(
+                        CompletableFuture.completedFuture(true)
+                );
+
+        acquisition.complete(
+                PlayerSessionAcquireResult.acquired(lease)
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).releaseIfOwned(lease);
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(fixture.player())
+                        .isEmpty()
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+
+    @Test
+    void timeoutCancellationFailureDoesNotBlockSuccessfulAcquisition() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        PlayerSessionAcquisitionTimeoutScheduler scheduler =
+                (key, timeout) -> () -> {
+                    throw new IllegalStateException(
+                            "timeout cancellation failed"
+                    );
+                };
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        scheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        timeoutHandler.handle(fixture.context());
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        acquisition.complete(
+                PlayerSessionAcquireResult.acquired(lease)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        assertEquals(
+                lease,
+                leaseBindingRegistry
+                        .find(fixture.player())
+                        .orElseThrow()
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                never()
+        ).releaseIfOwned(lease);
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+
+    @Test
+    void acquisitionResultBeforeTimeoutMakesTimeoutInnocuous() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                acquisition =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(acquisition);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        ContextFixture fixture = authenticatedContext(
+                PLAYER_ID,
+                "HarriOcho",
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
+
+        timeoutHandler.handle(fixture.context());
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        acquisition.complete(
+                PlayerSessionAcquireResult.acquired(lease)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        assertEquals(
+                lease,
+                leaseBindingRegistry
+                        .find(fixture.player())
+                        .orElseThrow()
+        );
+
+        timeoutScheduler.trigger();
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                fixture.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                never()
+        ).releaseIfOwned(lease);
+
+        assertEquals(
+                lease,
+                leaseBindingRegistry
+                        .find(fixture.player())
+                        .orElseThrow()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
     }
 
     @Test
@@ -1208,6 +2324,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                         coordinatedRegistry,
                         PROXY_IDENTITY,
                         acknowledgementSender,
+                        noOpTimeoutScheduler(),
                         logger
                 );
 
@@ -1871,6 +2988,1255 @@ class PlayerAuthenticatedMessageHandlerTest {
                 any(PlayerSessionLeaseRequest.class)
         );
     }
+
+    @Test
+    void pendingReleaseTimeoutFailsClosedAndIgnoresLateReleaseCompletion() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        ContextFixture oldConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        ContextFixture newConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        UUID oldAcquisitionId =
+                UUID.fromString(
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        TerminalAcknowledgement successfulAcknowledgement =
+                new TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        TerminalAcknowledgement conflictAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                leaseBindingRegistry.beginTracked(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        oldBegin.attemptId()
+                )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                leaseBindingRegistry.bind(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        oldBegin.attemptId(),
+                        session,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertEquals(
+                oldLease,
+                leaseBindingRegistry
+                        .removeForDisconnect(
+                                oldConnection.player()
+                        ).orElseThrow()
+        );
+
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .alreadyOwned(oldLease)
+                )
+        );
+
+        UUID requestId =
+                newConnection
+                        .context()
+                        .envelope()
+                        .requestId();
+
+        int schedulesBefore =
+                timeoutScheduler.scheduledCount();
+
+        timeoutHandler.handle(
+                newConnection.context()
+        );
+
+        assertEquals(
+                schedulesBefore + 2,
+                timeoutScheduler.scheduledCount()
+        );
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                .ScheduledTimeout acquireTimeout =
+                timeoutScheduler.scheduled(schedulesBefore);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                .ScheduledTimeout pendingReleaseTimeout =
+                timeoutScheduler.scheduled(schedulesBefore + 1);
+
+        assertTrue(acquireTimeout.cancelled());
+        assertFalse(pendingReleaseTimeout.cancelled());
+        assertEquals(
+                acquireTimeout.key().playerId(),
+                pendingReleaseTimeout.key().playerId()
+        );
+        assertEquals(
+                acquireTimeout.key().requestId(),
+                pendingReleaseTimeout.key().requestId()
+        );
+        assertEquals(
+                acquireTimeout.key().attemptId(),
+                pendingReleaseTimeout.key().attemptId()
+        );
+        assertEquals(
+                PLAYER_ID,
+                pendingReleaseTimeout.key().playerId()
+        );
+        assertEquals(
+                requestId,
+                pendingReleaseTimeout.key().requestId()
+        );
+
+        verifyNoInteractions(acknowledgementSender);
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        pendingReleaseTimeout.trigger();
+
+        TerminalAcknowledgement failClosedAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                leaseBindingRegistry.beginTracked(
+                        newConnection.player(),
+                        requestId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                failClosedAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        timeoutHandler.handle(
+                newConnection.context()
+        );
+
+        verify(
+                acknowledgementSender,
+                times(2)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        int schedulesBeforeLateRelease =
+                timeoutScheduler.scheduledCount();
+
+        leaseBindingRegistry.completeRelease(
+                oldLease,
+                true
+        );
+
+        assertEquals(
+                schedulesBeforeLateRelease,
+                timeoutScheduler.scheduledCount()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        verify(
+                acknowledgementSender,
+                times(2)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replayAfterLateRelease =
+                leaseBindingRegistry.beginTracked(
+                        newConnection.player(),
+                        requestId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replayAfterLateRelease.decision()
+        );
+
+        assertEquals(
+                failClosedAcknowledgement,
+                replayAfterLateRelease
+                        .acknowledgement()
+                .orElseThrow()
+        );
+    }
+
+    @Test
+    void pendingReleaseWatchdogCancellationFailureDoesNotBlockRetry() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        timeoutScheduler.throwOnCancelIndex(1);
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        ContextFixture oldConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        ContextFixture newConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        UUID oldAcquisitionId =
+                UUID.fromString(
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        PlayerSessionLease newLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        2L
+                );
+
+        TerminalAcknowledgement successfulAcknowledgement =
+                new TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        TerminalAcknowledgement conflictAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                leaseBindingRegistry.beginTracked(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        oldBegin.attemptId()
+                )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                leaseBindingRegistry.bind(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        oldBegin.attemptId(),
+                        session,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertEquals(
+                oldLease,
+                leaseBindingRegistry
+                        .removeForDisconnect(
+                                oldConnection.player()
+                        ).orElseThrow()
+        );
+
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .alreadyOwned(oldLease)
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .acquired(newLease)
+                )
+        );
+
+        UUID requestId =
+                newConnection
+                        .context()
+                        .envelope()
+                        .requestId();
+
+        timeoutHandler.handle(
+                newConnection.context()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        assertEquals(
+                2,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                2,
+                timeoutScheduler.scheduledCount()
+        );
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                .ScheduledTimeout acquireTimeout =
+                timeoutScheduler.scheduled(0);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                .ScheduledTimeout pendingReleaseTimeout =
+                timeoutScheduler.scheduled(1);
+
+        assertTrue(acquireTimeout.cancelled());
+        assertFalse(pendingReleaseTimeout.cancelled());
+        assertEquals(
+                0,
+                pendingReleaseTimeout.cancelAttempts()
+        );
+        assertFalse(acquireTimeout == pendingReleaseTimeout);
+        assertEquals(
+                PLAYER_ID,
+                acquireTimeout.key().playerId()
+        );
+        assertEquals(
+                requestId,
+                acquireTimeout.key().requestId()
+        );
+        assertEquals(
+                PLAYER_ID,
+                pendingReleaseTimeout.key().playerId()
+        );
+        assertEquals(
+                requestId,
+                pendingReleaseTimeout.key().requestId()
+        );
+        assertEquals(
+                acquireTimeout.key().attemptId(),
+                pendingReleaseTimeout.key().attemptId()
+        );
+
+        verifyNoInteractions(acknowledgementSender);
+
+        leaseBindingRegistry.completeRelease(
+                oldLease,
+                true
+        );
+
+        verify(
+                coordinator,
+                times(2)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        assertEquals(
+                3,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                3,
+                timeoutScheduler.scheduledCount()
+        );
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                .ScheduledTimeout retryTimeout =
+                timeoutScheduler.scheduled(2);
+
+        assertEquals(
+                PLAYER_ID,
+                retryTimeout.key().playerId()
+        );
+        assertEquals(
+                requestId,
+                retryTimeout.key().requestId()
+        );
+        assertFalse(
+                acquireTimeout.key().attemptId()
+                        == retryTimeout.key().attemptId()
+        );
+        assertEquals(
+                acquireTimeout.key().attemptId(),
+                pendingReleaseTimeout.key().attemptId()
+        );
+        assertEquals(
+                1,
+                pendingReleaseTimeout.cancelAttempts()
+        );
+        assertTrue(retryTimeout.cancelled());
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                eq(newConnection.context()),
+                eq(PLAYER_ID),
+                eq(false),
+                anyString()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                leaseBindingRegistry.beginTracked(
+                        newConnection.player(),
+                        requestId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+        assertEquals(
+                successfulAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+        assertEquals(
+                newLease,
+                leaseBindingRegistry
+                        .find(newConnection.player())
+                        .orElseThrow()
+        );
+        assertTrue(
+                leaseBindingRegistry
+                        .find(oldConnection.player())
+                        .isEmpty()
+        );
+
+        assertFalse(pendingReleaseTimeout.cancelled());
+        pendingReleaseTimeout.trigger();
+
+        assertEquals(
+                3,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                3,
+                timeoutScheduler.scheduledCount()
+        );
+        verify(
+                coordinator,
+                times(2)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                eq(newConnection.context()),
+                eq(PLAYER_ID),
+                eq(false),
+                anyString()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replayAfterWatchdog =
+                leaseBindingRegistry.beginTracked(
+                        newConnection.player(),
+                        requestId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replayAfterWatchdog.decision()
+        );
+        assertEquals(
+                successfulAcknowledgement,
+                replayAfterWatchdog.acknowledgement().orElseThrow()
+        );
+        assertEquals(
+                newLease,
+                leaseBindingRegistry
+                        .find(newConnection.player())
+                        .orElseThrow()
+        );
+
+        assertTrue(acquireTimeout.cancelled());
+        assertEquals(
+                1,
+                acquireTimeout.cancelAttempts()
+        );
+        assertFalse(acquireTimeout.triggered());
+        assertFalse(pendingReleaseTimeout.cancelled());
+        assertEquals(
+                1,
+                pendingReleaseTimeout.cancelAttempts()
+        );
+        assertTrue(pendingReleaseTimeout.triggered());
+        assertTrue(retryTimeout.cancelled());
+        assertEquals(
+                1,
+                retryTimeout.cancelAttempts()
+        );
+        assertFalse(retryTimeout.triggered());
+    }
+
+    @Test
+    void pendingReleaseWatchdogSchedulingFailureFailsClosedImmediately() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        timeoutScheduler.throwOnScheduleIndex(1);
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        ContextFixture oldConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        ContextFixture newConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        UUID oldAcquisitionId =
+                UUID.fromString(
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        TerminalAcknowledgement successfulAcknowledgement =
+                new TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        TerminalAcknowledgement conflictAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                leaseBindingRegistry.beginTracked(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        oldBegin.attemptId()
+                )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                leaseBindingRegistry.bind(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        oldBegin.attemptId(),
+                        session,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertEquals(
+                oldLease,
+                leaseBindingRegistry
+                        .removeForDisconnect(
+                                oldConnection.player()
+                        ).orElseThrow()
+        );
+
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .alreadyOwned(oldLease)
+                )
+        );
+
+        UUID requestId =
+                newConnection
+                        .context()
+                        .envelope()
+                        .requestId();
+
+        assertEquals(
+                0,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                0,
+                timeoutScheduler.scheduledCount()
+        );
+
+        timeoutHandler.handle(
+                newConnection.context()
+        );
+
+        assertEquals(
+                2,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                1,
+                timeoutScheduler.scheduledCount()
+        );
+        assertTrue(
+                timeoutScheduler.scheduled(0).cancelled()
+        );
+
+        TerminalAcknowledgement failClosedAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        assertEquals(
+                2,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                1,
+                timeoutScheduler.scheduledCount()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                leaseBindingRegistry.beginTracked(
+                        newConnection.player(),
+                        requestId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                failClosedAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        timeoutHandler.handle(
+                newConnection.context()
+        );
+
+        verify(
+                acknowledgementSender,
+                times(2)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        assertEquals(
+                2,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                1,
+                timeoutScheduler.scheduledCount()
+        );
+
+        int scheduleAttemptsBeforeLateRelease =
+                timeoutScheduler.scheduleAttempts();
+        int scheduledCountBeforeLateRelease =
+                timeoutScheduler.scheduledCount();
+
+        leaseBindingRegistry.completeRelease(
+                oldLease,
+                true
+        );
+
+        assertEquals(
+                scheduleAttemptsBeforeLateRelease,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                scheduledCountBeforeLateRelease,
+                timeoutScheduler.scheduledCount()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        verify(
+                acknowledgementSender,
+                times(2)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replayAfterLateRelease =
+                leaseBindingRegistry.beginTracked(
+                        newConnection.player(),
+                        requestId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replayAfterLateRelease.decision()
+        );
+
+        assertEquals(
+                failClosedAcknowledgement,
+                replayAfterLateRelease
+                        .acknowledgement()
+                        .orElseThrow()
+        );
+    }
+
+    @Test
+    void pendingReleaseWatchdogNullScheduleFailsClosedImmediately() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        timeoutScheduler.nullOnScheduleIndex(1);
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        ContextFixture oldConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        ContextFixture newConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        UUID oldAcquisitionId =
+                UUID.fromString(
+                        "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+                );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        TerminalAcknowledgement successfulAcknowledgement =
+                new TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        TerminalAcknowledgement conflictAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                leaseBindingRegistry.beginTracked(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        oldBegin.attemptId()
+                )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                leaseBindingRegistry.bind(
+                        oldConnection.player(),
+                        oldAcquisitionId,
+                        oldBegin.attemptId(),
+                        session,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertEquals(
+                oldLease,
+                leaseBindingRegistry
+                        .removeForDisconnect(
+                                oldConnection.player()
+                        ).orElseThrow()
+        );
+
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .alreadyOwned(oldLease)
+                )
+        );
+
+        UUID requestId =
+                newConnection
+                        .context()
+                        .envelope()
+                        .requestId();
+
+        assertEquals(
+                0,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                0,
+                timeoutScheduler.scheduledCount()
+        );
+
+        timeoutHandler.handle(
+                newConnection.context()
+        );
+
+        assertEquals(
+                2,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                1,
+                timeoutScheduler.scheduledCount()
+        );
+        assertTrue(
+                timeoutScheduler.scheduled(0).cancelled()
+        );
+
+        TerminalAcknowledgement failClosedAcknowledgement =
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        assertEquals(
+                2,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                1,
+                timeoutScheduler.scheduledCount()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                leaseBindingRegistry.beginTracked(
+                        newConnection.player(),
+                        requestId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                failClosedAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        timeoutHandler.handle(
+                newConnection.context()
+        );
+
+        verify(
+                acknowledgementSender,
+                times(2)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        assertEquals(
+                2,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                1,
+                timeoutScheduler.scheduledCount()
+        );
+
+        int scheduleAttemptsBeforeLateRelease =
+                timeoutScheduler.scheduleAttempts();
+        int scheduledCountBeforeLateRelease =
+                timeoutScheduler.scheduledCount();
+
+        leaseBindingRegistry.completeRelease(
+                oldLease,
+                true
+        );
+
+        assertEquals(
+                scheduleAttemptsBeforeLateRelease,
+                timeoutScheduler.scheduleAttempts()
+        );
+        assertEquals(
+                scheduledCountBeforeLateRelease,
+                timeoutScheduler.scheduledCount()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        verify(
+                acknowledgementSender,
+                times(2)
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replayAfterLateRelease =
+                leaseBindingRegistry.beginTracked(
+                        newConnection.player(),
+                        requestId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replayAfterLateRelease.decision()
+        );
+
+        assertEquals(
+                failClosedAcknowledgement,
+                replayAfterLateRelease
+                        .acknowledgement()
+                        .orElseThrow()
+        );
+    }
     @Test
     void lateAuthenticationFromOldConnectionCannotReclaimLease() {
         PlayerSessionCoordinator coordinator =
@@ -2392,6 +4758,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                         leaseBindingRegistry,
                         PROXY_IDENTITY,
                         acknowledgementSender,
+                        noOpTimeoutScheduler(),
                         logger
                 )
         );
@@ -2403,6 +4770,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                         null,
                         PROXY_IDENTITY,
                         acknowledgementSender,
+                        noOpTimeoutScheduler(),
                         logger
                 )
         );
@@ -2414,6 +4782,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                         leaseBindingRegistry,
                         null,
                         acknowledgementSender,
+                        noOpTimeoutScheduler(),
                         logger
                 )
         );
@@ -2424,6 +4793,19 @@ class PlayerAuthenticatedMessageHandlerTest {
                         sessionCoordinator,
                         leaseBindingRegistry,
                         PROXY_IDENTITY,
+                        null,
+                        noOpTimeoutScheduler(),
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerAuthenticatedMessageHandler(
+                        sessionCoordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
                         null,
                         logger
                 )
@@ -2436,6 +4818,7 @@ class PlayerAuthenticatedMessageHandlerTest {
                         leaseBindingRegistry,
                         PROXY_IDENTITY,
                         acknowledgementSender,
+                        noOpTimeoutScheduler(),
                         null
                 )
         );
@@ -2449,8 +4832,15 @@ class PlayerAuthenticatedMessageHandlerTest {
                 leaseBindingRegistry,
                 PROXY_IDENTITY,
                 acknowledgementSender,
+                noOpTimeoutScheduler(),
                 logger
         );
+    }
+
+    private PlayerSessionAcquisitionTimeoutScheduler
+    noOpTimeoutScheduler() {
+        return (key, timeout) -> () -> {
+        };
     }
 
     private ContextFixture authenticatedContext(
@@ -2512,6 +4902,167 @@ class PlayerAuthenticatedMessageHandlerTest {
                 ),
                 carrier
         );
+    }
+
+    private static final class
+    ManualPlayerSessionAcquisitionTimeoutScheduler
+            implements PlayerSessionAcquisitionTimeoutScheduler {
+
+        private final List<ScheduledTimeout> scheduled =
+                new ArrayList<>();
+        private int scheduleAttempts;
+        private Integer throwOnScheduleIndex;
+        private Integer nullOnScheduleIndex;
+        private Integer throwOnCancelIndex;
+
+        @Override
+        public ScheduledAcquisitionTimeout schedule(
+                AcquisitionTimeoutKey key,
+                Runnable timeout
+        ) {
+            int scheduleIndex = scheduleAttempts;
+            scheduleAttempts++;
+
+            if (throwOnScheduleIndex != null
+                    && throwOnScheduleIndex == scheduleIndex) {
+                throw new IllegalStateException(
+                        "synthetic pending release scheduling failure"
+                );
+            }
+
+            if (nullOnScheduleIndex != null
+                    && nullOnScheduleIndex == scheduleIndex) {
+                return null;
+            }
+
+            ScheduledTimeout scheduledTimeout =
+                    new ScheduledTimeout(
+                            scheduleIndex,
+                            key,
+                            timeout
+                    );
+
+            scheduled.add(scheduledTimeout);
+
+            return scheduledTimeout::cancel;
+        }
+
+        private void throwOnScheduleIndex(int index) {
+            if (index < 0) {
+                throw new IllegalArgumentException(
+                        "index cannot be negative"
+                );
+            }
+
+            throwOnScheduleIndex = index;
+        }
+
+        private void nullOnScheduleIndex(int index) {
+            if (index < 0) {
+                throw new IllegalArgumentException(
+                        "index cannot be negative"
+                );
+            }
+
+            nullOnScheduleIndex = index;
+        }
+
+        private void throwOnCancelIndex(int index) {
+            if (index < 0) {
+                throw new IllegalArgumentException(
+                        "index cannot be negative"
+                );
+            }
+
+            throwOnCancelIndex = index;
+        }
+
+        private int scheduleAttempts() {
+            return scheduleAttempts;
+        }
+
+        private AcquisitionTimeoutKey lastKey() {
+            return scheduled
+                    .get(scheduled.size() - 1)
+                    .key();
+        }
+
+        private int scheduledCount() {
+            return scheduled.size();
+        }
+
+        private ScheduledTimeout scheduled(int index) {
+            return scheduled.get(index);
+        }
+
+        private void trigger() {
+            if (scheduled.isEmpty()) {
+                return;
+            }
+
+            scheduled
+                    .get(scheduled.size() - 1)
+                    .trigger();
+        }
+
+        private final class ScheduledTimeout {
+
+            private final int scheduleIndex;
+            private final AcquisitionTimeoutKey key;
+            private final Runnable timeout;
+            private boolean cancelled;
+            private boolean triggered;
+            private int cancelAttempts;
+
+            private ScheduledTimeout(
+                    int scheduleIndex,
+                    AcquisitionTimeoutKey key,
+                    Runnable timeout
+            ) {
+                this.scheduleIndex = scheduleIndex;
+                this.key = key;
+                this.timeout = timeout;
+            }
+
+            private AcquisitionTimeoutKey key() {
+                return key;
+            }
+
+            private boolean cancelled() {
+                return cancelled;
+            }
+
+            private boolean triggered() {
+                return triggered;
+            }
+
+            private int cancelAttempts() {
+                return cancelAttempts;
+            }
+
+            private void cancel() {
+                cancelAttempts++;
+
+                if (throwOnCancelIndex != null
+                        && throwOnCancelIndex == scheduleIndex) {
+                    throw new IllegalStateException(
+                            "synthetic pending release timeout "
+                                    + "cancellation failure"
+                    );
+                }
+
+                cancelled = true;
+            }
+
+            private void trigger() {
+                if (cancelled || triggered || timeout == null) {
+                    return;
+                }
+
+                triggered = true;
+                timeout.run();
+            }
+        }
     }
 
     private record ContextFixture(

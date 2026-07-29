@@ -235,6 +235,8 @@ class ProtocolPlayerTransferFlowTest {
                                         leaseBindingRegistry,
                                         PROXY_IDENTITY,
                                         authenticationAckSender,
+                                        (key, timeout) -> () -> {
+                                        },
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(

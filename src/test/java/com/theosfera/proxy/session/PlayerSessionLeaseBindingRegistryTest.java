@@ -6,6 +6,8 @@ import com.velocitypowered.api.proxy.Player;
 import org.junit.jupiter.api.Test;
 
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -61,15 +63,60 @@ class PlayerSessionLeaseBindingRegistryTest {
         Player player = player(PLAYER_ID);
         PlayerSessionLease lease = lease(OWNER, 1L);
 
-        registry.begin(player, ACQUISITION_1);
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
 
         assertEquals(
-                PlayerSessionLeaseBindingResult.BOUND,
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingResult bindingResult =
                 registry.bind(
                         player,
                         ACQUISITION_1,
-                        lease
-                )
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                bindingResult
         );
 
         assertEquals(
@@ -83,15 +130,77 @@ class PlayerSessionLeaseBindingRegistryTest {
         Player player = player(PLAYER_ID);
         PlayerSessionLease lease = lease(OWNER, 1L);
 
-        registry.begin(player, ACQUISITION_1);
-        registry.begin(player, ACQUISITION_2);
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_2,
+                        secondBegin.attemptId()
+                )
+        );
 
         assertEquals(
                 PlayerSessionLeaseBindingResult.BOUND,
                 registry.bind(
                         player,
                         ACQUISITION_2,
-                        lease
+                        secondBegin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
                 )
         );
 
@@ -100,7 +209,11 @@ class PlayerSessionLeaseBindingRegistryTest {
                 registry.bind(
                         player,
                         ACQUISITION_1,
-                        lease
+                        firstBegin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
         );
 
@@ -115,20 +228,87 @@ class PlayerSessionLeaseBindingRegistryTest {
         Player player = player(PLAYER_ID);
         PlayerSessionLease lease = lease(OWNER, 1L);
 
-        registry.begin(player, ACQUISITION_1);
-        registry.bind(
-                player,
-                ACQUISITION_1,
-                lease
+        AuthenticatedPlayerSession session = lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
         );
 
-        registry.begin(player, ACQUISITION_2);
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement timeoutAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
 
         PlayerSessionLeaseBindingRegistry.Cancellation
                 cancellation =
-                registry.cancel(
+                registry.claimAcquisitionTimeout(
                         player,
-                        ACQUISITION_2
+                        ACQUISITION_2,
+                        secondBegin.attemptId(),
+                        session,
+                        timeoutAcknowledgement
                 );
 
         assertTrue(cancellation.shouldRespond());
@@ -140,49 +320,170 @@ class PlayerSessionLeaseBindingRegistryTest {
                 lease,
                 registry.find(player).orElseThrow()
         );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                timeoutAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
     }
 
     @Test
     void rejectsBindingWithoutMatchingAcquisition() {
         Player player = player(PLAYER_ID);
+        PlayerSessionLease lease = lease(OWNER, 1L);
 
-        assertEquals(
-                PlayerSessionLeaseBindingResult.STALE,
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingResult result =
                 registry.bind(
                         player,
                         ACQUISITION_1,
-                        lease(OWNER, 1L)
-                )
+                        1L,
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                result
         );
+
+        assertTrue(registry.find(player).isEmpty());
     }
 
     @Test
     void replacesLeaseOnlyWithHigherFencingToken() {
         Player player = player(PLAYER_ID);
 
-        registry.begin(player, ACQUISITION_1);
-        registry.bind(
-                player,
-                ACQUISITION_1,
-                lease(OWNER, 1L)
+        PlayerSessionLease oldLease =
+                lease(OWNER, 1L);
+        PlayerSessionLease newerLease =
+                lease(OWNER, 2L);
+
+        AuthenticatedPlayerSession oldSession =
+                oldLease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        oldSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
         );
 
-        registry.begin(player, ACQUISITION_2);
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
 
-        PlayerSessionLease newer =
-                lease(OWNER, 2L);
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        oldSession,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        AuthenticatedPlayerSession newerSession =
+                newerLease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        newerSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_2,
+                        secondBegin.attemptId()
+                )
+        );
 
         assertEquals(
                 PlayerSessionLeaseBindingResult.REPLACED,
                 registry.bind(
                         player,
                         ACQUISITION_2,
-                        newer
+                        secondBegin.attemptId(),
+                        newerSession,
+                        newerLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
         );
 
         assertEquals(
-                newer,
+                newerLease,
                 registry.find(player).orElseThrow()
         );
     }
@@ -191,22 +492,104 @@ class PlayerSessionLeaseBindingRegistryTest {
     void rejectsEqualFencingTokenConflict() {
         Player player = player(PLAYER_ID);
 
-        registry.begin(player, ACQUISITION_1);
-        registry.bind(
-                player,
-                ACQUISITION_1,
-                lease(OWNER, 1L)
+        PlayerSessionLease existingLease =
+                lease(OWNER, 1L);
+        PlayerSessionLease conflictingLease =
+                lease(OTHER_OWNER, 1L);
+
+        AuthenticatedPlayerSession existingSession =
+                existingLease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        existingSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
         );
 
-        registry.begin(player, ACQUISITION_2);
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        existingSession,
+                        existingLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        AuthenticatedPlayerSession conflictingSession =
+                conflictingLease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        conflictingSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_2,
+                        secondBegin.attemptId()
+                )
+        );
 
         assertEquals(
                 PlayerSessionLeaseBindingResult.CONFLICT,
                 registry.bind(
                         player,
                         ACQUISITION_2,
-                        lease(OTHER_OWNER, 1L)
+                        secondBegin.attemptId(),
+                        conflictingSession,
+                        conflictingLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
+        );
+
+        assertEquals(
+                existingLease,
+                registry.find(player).orElseThrow()
         );
     }
 
@@ -215,14 +598,64 @@ class PlayerSessionLeaseBindingRegistryTest {
         Player oldConnection = player(PLAYER_ID);
         Player newConnection = player(PLAYER_ID);
 
-        registry.begin(
-                oldConnection,
-                ACQUISITION_1
+        PlayerSessionLease oldLease =
+                lease(OWNER, 1L);
+        PlayerSessionLease newLease =
+                lease(OWNER, 2L);
+
+        AuthenticatedPlayerSession oldSession =
+                oldLease.session();
+        AuthenticatedPlayerSession newSession =
+                newLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                registry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
         );
 
-        registry.begin(
-                newConnection,
-                ACQUISITION_2
+        PlayerSessionLeaseBindingRegistry.BeginResult newBegin =
+                registry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        newSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                newBegin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldBegin.attemptId()
+                )
         );
 
         assertEquals(
@@ -230,20 +663,37 @@ class PlayerSessionLeaseBindingRegistryTest {
                 registry.bind(
                         oldConnection,
                         ACQUISITION_1,
-                        lease(OWNER, 1L)
+                        oldBegin.attemptId(),
+                        oldSession,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
         );
 
-        PlayerSessionLease newLease =
-                lease(OWNER, 2L);
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        newConnection,
+                        ACQUISITION_2,
+                        newBegin.attemptId()
+                )
+        );
 
         assertEquals(
                 PlayerSessionLeaseBindingResult.BOUND,
                 registry.bind(
                         newConnection,
                         ACQUISITION_2,
-                        newLease
+                        newBegin.attemptId(),
+                        newSession,
+                        newLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
+        );
+
+        assertTrue(
+                registry.find(oldConnection).isEmpty()
         );
 
         assertEquals(
@@ -255,20 +705,66 @@ class PlayerSessionLeaseBindingRegistryTest {
     @Test
     void pendingDisconnectRejectsLateCallback() {
         Player player = player(PLAYER_ID);
+        PlayerSessionLease lease = lease(OWNER, 1L);
 
-        registry.begin(player, ACQUISITION_1);
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
 
         assertTrue(
                 registry.removeForDisconnect(player).isEmpty()
         );
 
-        assertEquals(
-                PlayerSessionLeaseBindingResult.DISCONNECTED,
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingResult result =
                 registry.bind(
                         player,
                         ACQUISITION_1,
-                        lease(OWNER, 1L)
-                )
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.DISCONNECTED,
+                result
         );
 
         assertTrue(registry.find(player).isEmpty());
@@ -279,11 +775,60 @@ class PlayerSessionLeaseBindingRegistryTest {
         Player player = player(PLAYER_ID);
         PlayerSessionLease lease = lease(OWNER, 1L);
 
-        registry.begin(player, ACQUISITION_1);
-        registry.bind(
-                player,
-                ACQUISITION_1,
-                lease
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingResult bindingResult =
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                bindingResult
         );
 
         assertEquals(
@@ -301,24 +846,73 @@ class PlayerSessionLeaseBindingRegistryTest {
         Player oldConnection = player(PLAYER_ID);
         Player newConnection = player(PLAYER_ID);
 
-        registry.begin(
-                newConnection,
-                ACQUISITION_2
-        );
-
         PlayerSessionLease newLease =
                 lease(OWNER, 2L);
 
-        registry.bind(
-                newConnection,
-                ACQUISITION_2,
-                newLease
+        AuthenticatedPlayerSession newSession =
+                newLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        newSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        newConnection,
+                        ACQUISITION_2,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingResult bindingResult =
+                registry.bind(
+                        newConnection,
+                        ACQUISITION_2,
+                        begin.attemptId(),
+                        newSession,
+                        newLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                bindingResult
         );
 
         assertTrue(
                 registry.removeForDisconnect(
                         oldConnection
                 ).isEmpty()
+        );
+
+        assertTrue(
+                registry.find(oldConnection).isEmpty()
         );
 
         assertEquals(
@@ -332,11 +926,60 @@ class PlayerSessionLeaseBindingRegistryTest {
         Player player = player(PLAYER_ID);
         PlayerSessionLease lease = lease(OWNER, 1L);
 
-        registry.begin(player, ACQUISITION_1);
-        registry.bind(
-                player,
-                ACQUISITION_1,
-                lease
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingResult bindingResult =
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                bindingResult
         );
 
         assertTrue(
@@ -363,9 +1006,44 @@ class PlayerSessionLeaseBindingRegistryTest {
         PlayerSessionLease sharedLease =
                 lease(OWNER, 1L);
 
-        registry.begin(
-                oldConnection,
-                ACQUISITION_1
+        AuthenticatedPlayerSession session =
+                sharedLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
         );
 
         assertEquals(
@@ -373,13 +1051,33 @@ class PlayerSessionLeaseBindingRegistryTest {
                 registry.bind(
                         oldConnection,
                         ACQUISITION_1,
-                        sharedLease
+                        firstBegin.attemptId(),
+                        session,
+                        sharedLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
         );
 
-        registry.begin(
-                newConnection,
-                ACQUISITION_2
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                registry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        newConnection,
+                        ACQUISITION_2,
+                        secondBegin.attemptId()
+                )
         );
 
         assertEquals(
@@ -387,13 +1085,33 @@ class PlayerSessionLeaseBindingRegistryTest {
                 registry.bind(
                         newConnection,
                         ACQUISITION_2,
-                        sharedLease
+                        secondBegin.attemptId(),
+                        session,
+                        sharedLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
         );
 
-        registry.begin(
-                oldConnection,
-                ACQUISITION_3
+        PlayerSessionLeaseBindingRegistry.BeginResult thirdBegin =
+                registry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_3,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                thirdBegin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_3,
+                        thirdBegin.attemptId()
+                )
         );
 
         assertEquals(
@@ -401,7 +1119,11 @@ class PlayerSessionLeaseBindingRegistryTest {
                 registry.bind(
                         oldConnection,
                         ACQUISITION_3,
-                        sharedLease
+                        thirdBegin.attemptId(),
+                        session,
+                        sharedLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
         );
 
@@ -422,27 +1144,87 @@ class PlayerSessionLeaseBindingRegistryTest {
         PlayerSessionLease oldLease =
                 lease(OWNER, 1L);
 
-        registry.begin(
-                oldConnection,
-                ACQUISITION_1
+        AuthenticatedPlayerSession session = oldLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
         );
 
-        registry.bind(
-                oldConnection,
-                ACQUISITION_1,
-                oldLease
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
         );
 
-        registry.begin(
-                newConnection,
-                ACQUISITION_2
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                registry.bind(
+                        oldConnection,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        session,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
         );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                registry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement timeoutAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
 
         PlayerSessionLeaseBindingRegistry.Cancellation
                 cancellation =
-                registry.cancel(
+                registry.claimAcquisitionTimeout(
                         newConnection,
-                        ACQUISITION_2
+                        ACQUISITION_2,
+                        secondBegin.attemptId(),
+                        session,
+                        timeoutAcknowledgement
                 );
 
         assertTrue(cancellation.shouldRespond());
@@ -469,20 +1251,69 @@ class PlayerSessionLeaseBindingRegistryTest {
         PlayerSessionLease oldLease =
                 lease(OWNER, 1L);
 
-        registry.begin(
-                oldConnection,
-                ACQUISITION_1
+        AuthenticatedPlayerSession newSession = oldLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_1,
+                        newSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
         );
 
-        registry.bind(
-                oldConnection,
-                ACQUISITION_1,
-                oldLease
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
         );
 
-        registry.begin(
-                newConnection,
-                ACQUISITION_2
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                registry.bind(
+                        oldConnection,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        newSession,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                registry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        newSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
         );
 
         assertTrue(
@@ -491,11 +1322,22 @@ class PlayerSessionLeaseBindingRegistryTest {
                 ).isEmpty()
         );
 
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement timeoutAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
         PlayerSessionLeaseBindingRegistry.Cancellation
                 cancellation =
-                registry.cancel(
+                registry.claimAcquisitionTimeout(
                         newConnection,
-                        ACQUISITION_2
+                        ACQUISITION_2,
+                        secondBegin.attemptId(),
+                        newSession,
+                        timeoutAcknowledgement
                 );
 
         assertTrue(cancellation.shouldRespond());
@@ -524,20 +1366,70 @@ class PlayerSessionLeaseBindingRegistryTest {
         PlayerSessionLease sharedLease =
                 lease(OWNER, 1L);
 
-        registry.begin(
-                oldConnection,
-                ACQUISITION_1
+        AuthenticatedPlayerSession session =
+                sharedLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
         );
 
-        registry.bind(
-                oldConnection,
-                ACQUISITION_1,
-                sharedLease
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
         );
 
-        registry.begin(
-                newConnection,
-                ACQUISITION_2
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                registry.bind(
+                        oldConnection,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        session,
+                        sharedLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                registry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
         );
 
         assertTrue(
@@ -546,12 +1438,24 @@ class PlayerSessionLeaseBindingRegistryTest {
                 ).isEmpty()
         );
 
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        newConnection,
+                        ACQUISITION_2,
+                        secondBegin.attemptId()
+                )
+        );
+
         assertEquals(
                 PlayerSessionLeaseBindingResult.REPLACED,
                 registry.bind(
                         newConnection,
                         ACQUISITION_2,
-                        sharedLease
+                        secondBegin.attemptId(),
+                        session,
+                        sharedLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
                 )
         );
 
@@ -574,9 +1478,44 @@ class PlayerSessionLeaseBindingRegistryTest {
         PlayerSessionLease newerLease =
                 lease(OWNER, 2L);
 
-        registry.begin(
-                player,
-                ACQUISITION_1
+        AuthenticatedPlayerSession session =
+                newerLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
         );
 
         assertTrue(
@@ -616,13 +1555,20 @@ class PlayerSessionLeaseBindingRegistryTest {
                 )
         );
 
-        assertEquals(
-                PlayerSessionLeaseBindingResult.STALE,
+        PlayerSessionLeaseBindingResult result =
                 registry.bind(
                         player,
                         ACQUISITION_1,
-                        newerLease
-                )
+                        begin.attemptId(),
+                        session,
+                        newerLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                result
         );
 
         assertTrue(registry.find(player).isEmpty());
@@ -728,9 +1674,44 @@ class PlayerSessionLeaseBindingRegistryTest {
                         1L
                 );
 
-        registry.begin(
-                player,
-                ACQUISITION_1
+        AuthenticatedPlayerSession session =
+                sameFloorLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
         );
 
         assertTrue(
@@ -773,13 +1754,20 @@ class PlayerSessionLeaseBindingRegistryTest {
                 ).isEmpty()
         );
 
-        assertEquals(
-                PlayerSessionLeaseBindingResult.STALE,
+        PlayerSessionLeaseBindingResult result =
                 registry.bind(
                         player,
                         ACQUISITION_1,
-                        sameFloorLease
-                )
+                        begin.attemptId(),
+                        session,
+                        sameFloorLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                result
         );
     }
 
@@ -824,79 +1812,251 @@ class PlayerSessionLeaseBindingRegistryTest {
                 )
         );
     }
+
     @Test
-    void clearRemovesAllState() {
+    void pendingReleaseTimeoutTerminalizesExactWaitAtomically() {
         Player player = player(PLAYER_ID);
-
-        registry.begin(player, ACQUISITION_1);
-        registry.clear();
-
-        assertEquals(
-                PlayerSessionLeaseBindingResult.STALE,
-                registry.bind(
-                        player,
-                        ACQUISITION_1,
-                        lease(OWNER, 1L)
-                )
-        );
-    }
-
-    @Test
-    void rejectsMismatchedPlayerIdentity() {
-        Player player = player(UUID.randomUUID());
-
-        registry.begin(player, ACQUISITION_1);
-
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> registry.bind(
-                        player,
-                        ACQUISITION_1,
-                        lease(OWNER, 1L)
-                )
-        );
-
-        assertThrows(
-                IllegalArgumentException.class,
-                () -> registry.removeIfMatches(
-                        player,
-                        lease(OWNER, 1L)
-                )
-        );
-    }
-
-    @Test
-    void keepsTerminalReplayPendingUntilAcknowledgementIsRecorded() {
-        Player player = player(PLAYER_ID);
-
+        PlayerSessionLease lease = lease(OWNER, 1L);
         AuthenticatedPlayerSession session =
-                new AuthenticatedPlayerSession(
-                        PLAYER_ID,
-                        "HarriOcho",
-                        1_750_000_000_000L
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
                 );
 
         assertEquals(
                 PlayerSessionLeaseBindingRegistry
                         .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        lease
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.RELEASE_PENDING,
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        CompletionStage<Boolean> expectedCompletion =
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).orElseThrow();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement timeoutAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                cancellation =
+                registry.claimPendingReleaseTimeout(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        expectedCompletion,
+                        timeoutAcknowledgement
+                );
+
+        assertTrue(cancellation.shouldRespond());
+        assertTrue(cancellation.leaseToRelease().isEmpty());
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
                 registry.beginTracked(
                         player,
                         ACQUISITION_1,
                         session
-                ).decision()
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                timeoutAcknowledgement,
+                replay.acknowledgement().orElseThrow()
         );
 
         PlayerSessionLeaseBindingRegistry.Cancellation
-                cancellation =
-                registry.cancel(
+                duplicateTimeout =
+                registry.claimPendingReleaseTimeout(
                         player,
-                        ACQUISITION_1
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        expectedCompletion,
+                        timeoutAcknowledgement
                 );
 
-        assertTrue(cancellation.shouldRespond());
+        assertFalse(duplicateTimeout.shouldRespond());
+        assertTrue(duplicateTimeout.leaseToRelease().isEmpty());
 
-        PlayerSessionLeaseBindingRegistry.BeginResult
-                beforeAcknowledgement =
+        registry.completeRelease(
+                lease,
+                true
+        );
+
+        assertTrue(
+                registry
+                        .claimReleaseCompletionAndBeginRetry(
+                                player,
+                                ACQUISITION_1,
+                                begin.attemptId(),
+                                expectedCompletion
+                        ).isEmpty()
+        );
+
+        assertFalse(
+                registry.claimReleaseCompletion(
+                        player,
+                        ACQUISITION_1,
+                        expectedCompletion
+                )
+        );
+    }
+
+    @Test
+    void pendingReleaseTimeoutRejectsDifferentCompletion() {
+        Player player = player(PLAYER_ID);
+        PlayerSessionLease lease = lease(OWNER, 1L);
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        lease
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.RELEASE_PENDING,
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        CompletionStage<Boolean> expectedCompletion =
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).orElseThrow();
+
+        CompletionStage<Boolean> differentCompletion =
+                new CompletableFuture<>();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement timeoutAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                wrongCompletion =
+                registry.claimPendingReleaseTimeout(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        differentCompletion,
+                        timeoutAcknowledgement
+                );
+
+        assertFalse(wrongCompletion.shouldRespond());
+        assertTrue(wrongCompletion.leaseToRelease().isEmpty());
+
+        PlayerSessionLeaseBindingRegistry.BeginResult pendingReplay =
                 registry.beginTracked(
                         player,
                         ACQUISITION_1,
@@ -906,33 +2066,24 @@ class PlayerSessionLeaseBindingRegistryTest {
         assertEquals(
                 PlayerSessionLeaseBindingRegistry
                         .BeginDecision.PENDING_REPLAY,
-                beforeAcknowledgement.decision()
+                pendingReplay.decision()
         );
 
-        assertTrue(
-                beforeAcknowledgement
-                        .acknowledgement()
-                        .isEmpty()
-        );
-
-        PlayerSessionLeaseBindingRegistry
-                .TerminalAcknowledgement acknowledgement =
-                new PlayerSessionLeaseBindingRegistry
-                        .TerminalAcknowledgement(
-                        false,
-                        "Player session coordination unavailable"
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                correctCompletion =
+                registry.claimPendingReleaseTimeout(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        expectedCompletion,
+                        timeoutAcknowledgement
                 );
 
-        assertTrue(
-                registry.recordTerminalAcknowledgement(
-                        ACQUISITION_1,
-                        session,
-                        acknowledgement
-                )
-        );
+        assertTrue(correctCompletion.shouldRespond());
+        assertTrue(correctCompletion.leaseToRelease().isEmpty());
 
-        PlayerSessionLeaseBindingRegistry.BeginResult
-                completedReplay =
+        PlayerSessionLeaseBindingRegistry.BeginResult completedReplay =
                 registry.beginTracked(
                         player,
                         ACQUISITION_1,
@@ -946,12 +2097,1563 @@ class PlayerSessionLeaseBindingRegistryTest {
         );
 
         assertEquals(
-                acknowledgement,
-                completedReplay
-                        .acknowledgement()
-                        .orElseThrow()
+                timeoutAcknowledgement,
+                completedReplay.acknowledgement().orElseThrow()
         );
     }
+
+    @Test
+    void clearRemovesAllState() {
+        Player player = player(PLAYER_ID);
+        PlayerSessionLease lease = lease(OWNER, 1L);
+
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        registry.clear();
+
+        PlayerSessionLeaseBindingResult result =
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                result
+        );
+
+        assertTrue(registry.find(player).isEmpty());
+    }
+
+    @Test
+    void rejectsMismatchedPlayerIdentity() {
+        Player player = player(UUID.randomUUID());
+        PlayerSessionLease incompatibleLease =
+                lease(OWNER, 1L);
+
+        AuthenticatedPlayerSession expectedSession =
+                new AuthenticatedPlayerSession(
+                        player.getUniqueId(),
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        expectedSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        expectedSession,
+                        incompatibleLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> registry.removeIfMatches(
+                        player,
+                        lease(OWNER, 1L)
+                )
+        );
+    }
+
+    @Test
+    void timeoutStoresTerminalAcknowledgementAtomically() {
+        AtomicLong monotonicTime =
+                new AtomicLong(5_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        1,
+                        60_000L
+                );
+
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation cancellation =
+                boundedRegistry.claimAcquisitionTimeout(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        acknowledgement
+                );
+
+        assertTrue(cancellation.shouldRespond());
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                acknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        assertFalse(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+    }
+
+    @Test
+    void bindStoresSuccessfulTerminalAcknowledgementAtomically() {
+        AtomicLong monotonicTime =
+                new AtomicLong(6_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        2,
+                        60_000L
+                );
+
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        OWNER,
+                        1L
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingResult bindingResult =
+                boundedRegistry.bind(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                bindingResult
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                successfulAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        assertEquals(
+                lease,
+                boundedRegistry.find(player).orElseThrow()
+        );
+
+        assertFalse(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+    }
+
+    @Test
+    void atomicBindDisconnectedReleasesTrackedCapacityImmediately() {
+        AtomicLong monotonicTime =
+                new AtomicLong(7_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        1,
+                        60_000L
+                );
+
+        Player firstPlayer = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession firstSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                boundedRegistry.beginTracked(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
+
+        assertTrue(
+                boundedRegistry
+                        .removeForDisconnect(firstPlayer)
+                        .isEmpty()
+        );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        firstSession,
+                        OWNER,
+                        1L
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingResult result =
+                boundedRegistry.bind(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        firstSession,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.DISCONNECTED,
+                result
+        );
+
+        assertTrue(
+                boundedRegistry.find(firstPlayer).isEmpty()
+        );
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                boundedRegistry.beginTracked(
+                        secondPlayer,
+                        ACQUISITION_2,
+                        secondSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
+        );
+    }
+
+    @Test
+    void atomicBindStaleReleasesTrackedCapacityImmediately() {
+        AtomicLong monotonicTime =
+                new AtomicLong(8_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        1,
+                        60_000L
+                );
+
+        Player firstPlayer = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession firstSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult initialBegin =
+                boundedRegistry.beginTracked(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                initialBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        initialBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLease currentLease =
+                new PlayerSessionLease(
+                        firstSession,
+                        OWNER,
+                        2L
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                boundedRegistry.bind(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        initialBegin.attemptId(),
+                        firstSession,
+                        currentLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        monotonicTime.addAndGet(60_000L);
+
+        PlayerSessionLeaseBindingRegistry.BeginResult staleBegin =
+                boundedRegistry.beginTracked(
+                        firstPlayer,
+                        ACQUISITION_2,
+                        firstSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                staleBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        firstPlayer,
+                        ACQUISITION_2,
+                        staleBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLease staleLease =
+                new PlayerSessionLease(
+                        firstSession,
+                        OWNER,
+                        1L
+                );
+
+        PlayerSessionLeaseBindingResult staleResult =
+                boundedRegistry.bind(
+                        firstPlayer,
+                        ACQUISITION_2,
+                        staleBegin.attemptId(),
+                        firstSession,
+                        staleLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                staleResult
+        );
+
+        assertEquals(
+                currentLease,
+                boundedRegistry.find(firstPlayer).orElseThrow()
+        );
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
+
+        UUID thirdAcquisitionId =
+                UUID.fromString(
+                        "77777777-7777-7777-7777-777777777777"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult nextBegin =
+                boundedRegistry.beginTracked(
+                        secondPlayer,
+                        thirdAcquisitionId,
+                        secondSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                nextBegin.decision()
+        );
+    }
+
+    @Test
+    void atomicBindOlderGenerationReleasesTrackedCapacityImmediately() {
+        AtomicLong monotonicTime =
+                new AtomicLong(9_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        2,
+                        60_000L
+                );
+
+        Player oldConnection = player(PLAYER_ID);
+        Player newConnection = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                boundedRegistry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult newBegin =
+                boundedRegistry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                newBegin.decision()
+        );
+
+        PlayerSessionLeaseBindingResult staleResult =
+                boundedRegistry.bind(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldBegin.attemptId(),
+                        session,
+                        new PlayerSessionLease(
+                                session,
+                                OWNER,
+                                1L
+                        ),
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                staleResult
+        );
+
+        PlayerSessionLease newLease =
+                new PlayerSessionLease(
+                        session,
+                        OWNER,
+                        2L
+                );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        newConnection,
+                        ACQUISITION_2,
+                        newBegin.attemptId()
+                )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                boundedRegistry.bind(
+                        newConnection,
+                        ACQUISITION_2,
+                        newBegin.attemptId(),
+                        session,
+                        newLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertTrue(
+                boundedRegistry.find(oldConnection).isEmpty()
+        );
+
+        monotonicTime.addAndGet(60_000L);
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstCapacityCheck =
+                boundedRegistry.beginTracked(
+                        secondPlayer,
+                        UUID.fromString(
+                                "77777777-7777-7777-7777-777777777777"
+                        ),
+                        secondSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstCapacityCheck.decision()
+        );
+
+        UUID thirdPlayerId =
+                UUID.fromString(
+                        "88888888-8888-8888-8888-888888888888"
+                );
+
+        Player thirdPlayer = player(thirdPlayerId);
+
+        AuthenticatedPlayerSession thirdSession =
+                new AuthenticatedPlayerSession(
+                        thirdPlayerId,
+                        "ThirdPlayer",
+                        1_750_000_000_002L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondCapacityCheck =
+                boundedRegistry.beginTracked(
+                        thirdPlayer,
+                        UUID.fromString(
+                                "99999999-9999-9999-9999-999999999999"
+                        ),
+                        thirdSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondCapacityCheck.decision()
+        );
+    }
+
+    @Test
+    void atomicBindOlderGenerationAgainstNewerBoundReleasesTrackedCapacityImmediately() {
+        AtomicLong monotonicTime =
+                new AtomicLong(10_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        2,
+                        60_000L
+                );
+
+        Player oldConnection = player(PLAYER_ID);
+        Player newConnection = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                boundedRegistry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult newBegin =
+                boundedRegistry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                newBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        newConnection,
+                        ACQUISITION_2,
+                        newBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLease newLease =
+                new PlayerSessionLease(
+                        session,
+                        OWNER,
+                        2L
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                boundedRegistry.bind(
+                        newConnection,
+                        ACQUISITION_2,
+                        newBegin.attemptId(),
+                        session,
+                        newLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertEquals(
+                newLease,
+                boundedRegistry.find(newConnection).orElseThrow()
+        );
+
+        PlayerSessionLeaseBindingResult staleResult =
+                boundedRegistry.bind(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldBegin.attemptId(),
+                        session,
+                        new PlayerSessionLease(
+                                session,
+                                OWNER,
+                                1L
+                        ),
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                staleResult
+        );
+
+        assertEquals(
+                newLease,
+                boundedRegistry.find(newConnection).orElseThrow()
+        );
+
+        monotonicTime.addAndGet(60_000L);
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstCapacityCheck =
+                boundedRegistry.beginTracked(
+                        secondPlayer,
+                        UUID.fromString(
+                                "77777777-7777-7777-7777-777777777777"
+                        ),
+                        secondSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstCapacityCheck.decision()
+        );
+
+        UUID thirdPlayerId =
+                UUID.fromString(
+                        "88888888-8888-8888-8888-888888888888"
+                );
+
+        Player thirdPlayer = player(thirdPlayerId);
+
+        AuthenticatedPlayerSession thirdSession =
+                new AuthenticatedPlayerSession(
+                        thirdPlayerId,
+                        "ThirdPlayer",
+                        1_750_000_000_002L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondCapacityCheck =
+                boundedRegistry.beginTracked(
+                        thirdPlayer,
+                        UUID.fromString(
+                                "99999999-9999-9999-9999-999999999999"
+                        ),
+                        thirdSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondCapacityCheck.decision()
+        );
+
+    }
+
+    @Test
+    void atomicBindDisconnectedOldConnectionWithSameActiveLeaseReleasesTrackedCapacityImmediately() {
+        AtomicLong monotonicTime =
+                new AtomicLong(11_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        2,
+                        60_000L
+                );
+
+        Player oldConnection = player(PLAYER_ID);
+        Player newConnection = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                boundedRegistry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult newBegin =
+                boundedRegistry.beginTracked(
+                        newConnection,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                newBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        newConnection,
+                        ACQUISITION_2,
+                        newBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLease sharedLease =
+                new PlayerSessionLease(
+                        session,
+                        OWNER,
+                        1L
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                boundedRegistry.bind(
+                        newConnection,
+                        ACQUISITION_2,
+                        newBegin.attemptId(),
+                        session,
+                        sharedLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        assertTrue(
+                boundedRegistry
+                        .removeForDisconnect(oldConnection)
+                        .isEmpty()
+        );
+
+        PlayerSessionLeaseBindingResult staleResult =
+                boundedRegistry.bind(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldBegin.attemptId(),
+                        session,
+                        sharedLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                staleResult
+        );
+
+        assertEquals(
+                sharedLease,
+                boundedRegistry.find(newConnection).orElseThrow()
+        );
+
+        assertTrue(
+                boundedRegistry.find(oldConnection).isEmpty()
+        );
+
+        assertFalse(
+                boundedRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_1,
+                        oldBegin.attemptId()
+                )
+        );
+
+        monotonicTime.addAndGet(60_000L);
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstCapacityCheck =
+                boundedRegistry.beginTracked(
+                        secondPlayer,
+                        UUID.fromString(
+                                "77777777-7777-7777-7777-777777777777"
+                        ),
+                        secondSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstCapacityCheck.decision()
+        );
+
+        UUID thirdPlayerId =
+                UUID.fromString(
+                        "88888888-8888-8888-8888-888888888888"
+                );
+
+        Player thirdPlayer = player(thirdPlayerId);
+
+        AuthenticatedPlayerSession thirdSession =
+                new AuthenticatedPlayerSession(
+                        thirdPlayerId,
+                        "ThirdPlayer",
+                        1_750_000_000_002L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondCapacityCheck =
+                boundedRegistry.beginTracked(
+                        thirdPlayer,
+                        UUID.fromString(
+                                "99999999-9999-9999-9999-999999999999"
+                        ),
+                        thirdSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondCapacityCheck.decision()
+        );
+    }
+
+    @Test
+    void atomicBindBelowPendingReleaseMinimumReleasesTrackedCapacityImmediately() {
+        AtomicLong monotonicTime =
+                new AtomicLong(12_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        1,
+                        60_000L
+                );
+
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLease consumedLease =
+                new PlayerSessionLease(
+                        session,
+                        OWNER,
+                        1L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
+        );
+
+        assertEquals(
+                1L,
+                firstBegin.attemptId()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        consumedLease
+                )
+        );
+
+        var consumedCompletion =
+                boundedRegistry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).orElseThrow();
+
+        boundedRegistry.completeRelease(
+                consumedLease,
+                true
+        );
+
+        long retryAttemptId =
+                boundedRegistry
+                        .claimReleaseCompletionAndBeginRetry(
+                                player,
+                                ACQUISITION_1,
+                                firstBegin.attemptId(),
+                                consumedCompletion
+                        ).orElseThrow();
+
+        assertEquals(
+                2L,
+                retryAttemptId
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        retryAttemptId
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLease staleLease =
+                new PlayerSessionLease(
+                        session,
+                        OWNER,
+                        1L
+                );
+
+        PlayerSessionLeaseBindingResult staleResult =
+                boundedRegistry.bind(
+                        player,
+                        ACQUISITION_1,
+                        retryAttemptId,
+                        session,
+                        staleLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                staleResult
+        );
+
+        assertTrue(
+                boundedRegistry.find(player).isEmpty()
+        );
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult capacityCheck =
+                boundedRegistry.beginTracked(
+                        secondPlayer,
+                        ACQUISITION_2,
+                        secondSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                capacityCheck.decision()
+        );
+    }
+
+    @Test
+    void terminalCompletionStoresAcknowledgementAtomicallyAfterResultClaim() {
+        AtomicLong monotonicTime =
+                new AtomicLong(6_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        2,
+                        60_000L
+                );
+
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation completion =
+                boundedRegistry.completeTerminalRequest(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        session,
+                        acknowledgement
+                );
+
+        assertTrue(completion.shouldRespond());
+
+        assertFalse(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                acknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation staleCompletion =
+                boundedRegistry.completeTerminalRequest(
+                        player,
+                        ACQUISITION_1,
+                        begin.attemptId() + 1,
+                        session,
+                        acknowledgement
+                );
+
+        assertFalse(staleCompletion.shouldRespond());
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replayAfterStale =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replayAfterStale.decision()
+        );
+
+        assertEquals(
+                acknowledgement,
+                replayAfterStale.acknowledgement().orElseThrow()
+        );
+    }
+
+    @Test
+    void staleTimeoutCannotCancelRetryAttempt() {
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLease lease = lease(OWNER, 1L);
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(lease)
+        );
+
+        var releaseCompletion =
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).orElseThrow();
+
+        registry.completeRelease(
+                lease,
+                true
+        );
+
+        long retryAttemptId =
+                registry.claimReleaseCompletionAndBeginRetry(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        releaseCompletion
+                ).orElseThrow();
+
+        assertTrue(
+                retryAttemptId != firstBegin.attemptId()
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement timeoutAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                staleTimeout =
+                registry.claimAcquisitionTimeout(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        session,
+                        timeoutAcknowledgement
+                );
+
+        assertFalse(staleTimeout.shouldRespond());
+
+        assertTrue(
+                staleTimeout.leaseToRelease().isEmpty()
+        );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        retryAttemptId
+                )
+        );
+    }
+
     @Test
     void failsClosedInsteadOfEvictingUnexpiredTerminalRequests() {
         AtomicLong currentTimeMillis =
@@ -973,15 +3675,27 @@ class PlayerSessionLeaseBindingRegistryTest {
                         1_750_000_000_000L
                 );
 
-        assertEquals(
-                PlayerSessionLeaseBindingRegistry
-                        .BeginDecision.PROCEED,
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
                 boundedRegistry.beginTracked(
                         player,
                         ACQUISITION_1,
                         session
-                ).decision()
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
         );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
+
         PlayerSessionLeaseBindingRegistry
                 .TerminalAcknowledgement terminalAcknowledgement =
                 new PlayerSessionLeaseBindingRegistry
@@ -990,62 +3704,109 @@ class PlayerSessionLeaseBindingRegistryTest {
                         "Player session coordination unavailable"
                 );
 
-        boundedRegistry.cancel(
-                player,
-                ACQUISITION_1
-        );
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                firstCompletion =
+                boundedRegistry.completeTerminalRequest(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        session,
+                        terminalAcknowledgement
+                );
 
-        assertTrue(
-                boundedRegistry
-                        .recordTerminalAcknowledgement(
-                                ACQUISITION_1,
-                                session,
-                                terminalAcknowledgement
-                        )
-        );
+        assertTrue(firstCompletion.shouldRespond());
 
-        assertEquals(
-                PlayerSessionLeaseBindingRegistry
-                        .BeginDecision.PROCEED,
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
                 boundedRegistry.beginTracked(
                         player,
                         ACQUISITION_2,
                         session
-                ).decision()
-        );
+                );
 
-        boundedRegistry.cancel(
-                player,
-                ACQUISITION_2
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
         );
 
         assertTrue(
-                boundedRegistry
-                        .recordTerminalAcknowledgement(
-                                ACQUISITION_2,
-                                session,
-                                terminalAcknowledgement
-                        )
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_2,
+                        secondBegin.attemptId()
+                )
         );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                secondCompletion =
+                boundedRegistry.completeTerminalRequest(
+                        player,
+                        ACQUISITION_2,
+                        secondBegin.attemptId(),
+                        session,
+                        terminalAcknowledgement
+                );
+
+        assertTrue(secondCompletion.shouldRespond());
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
 
         assertEquals(
                 PlayerSessionLeaseBindingRegistry
                         .BeginDecision.CAPACITY_EXHAUSTED,
                 boundedRegistry.beginTracked(
-                        player,
+                        secondPlayer,
                         ACQUISITION_3,
-                        session
+                        secondSession
                 ).decision()
         );
 
-        assertEquals(
-                PlayerSessionLeaseBindingRegistry
-                        .BeginDecision.COMPLETED_REPLAY,
+        PlayerSessionLeaseBindingRegistry.BeginResult firstReplay =
                 boundedRegistry.beginTracked(
                         player,
                         ACQUISITION_1,
                         session
-                ).decision()
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                firstReplay.decision()
+        );
+
+        assertEquals(
+                terminalAcknowledgement,
+                firstReplay.acknowledgement().orElseThrow()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondReplay =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_2,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                secondReplay.decision()
+        );
+
+        assertEquals(
+                terminalAcknowledgement,
+                secondReplay.acknowledgement().orElseThrow()
         );
 
         AuthenticatedPlayerSession conflictingSession =
@@ -1087,15 +3848,27 @@ class PlayerSessionLeaseBindingRegistryTest {
                         1_750_000_000_000L
                 );
 
-        assertEquals(
-                PlayerSessionLeaseBindingRegistry
-                        .BeginDecision.PROCEED,
+        PlayerSessionLeaseBindingRegistry.BeginResult beginResult =
                 boundedRegistry.beginTracked(
                         player,
                         ACQUISITION_1,
                         session
-                ).decision()
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                beginResult.decision()
         );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        beginResult.attemptId()
+                )
+        );
+
         PlayerSessionLeaseBindingRegistry
                 .TerminalAcknowledgement terminalAcknowledgement =
                 new PlayerSessionLeaseBindingRegistry
@@ -1104,39 +3877,58 @@ class PlayerSessionLeaseBindingRegistryTest {
                         "Player session coordination unavailable"
                 );
 
-        boundedRegistry.cancel(
-                player,
-                ACQUISITION_1
-        );
+        PlayerSessionLeaseBindingRegistry.Cancellation completion =
+                boundedRegistry.completeTerminalRequest(
+                        player,
+                        ACQUISITION_1,
+                        beginResult.attemptId(),
+                        session,
+                        terminalAcknowledgement
+                );
 
-        assertTrue(
-                boundedRegistry
-                        .recordTerminalAcknowledgement(
-                                ACQUISITION_1,
-                                session,
-                                terminalAcknowledgement
-                        )
-        );
+        assertTrue(completion.shouldRespond());
 
         currentTimeMillis.addAndGet(59_999L);
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                terminalAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
 
         assertEquals(
                 PlayerSessionLeaseBindingRegistry
                         .BeginDecision.CAPACITY_EXHAUSTED,
                 boundedRegistry.beginTracked(
-                        player,
+                        secondPlayer,
                         ACQUISITION_2,
-                        session
-                ).decision()
-        );
-
-        assertEquals(
-                PlayerSessionLeaseBindingRegistry
-                        .BeginDecision.COMPLETED_REPLAY,
-                boundedRegistry.beginTracked(
-                        player,
-                        ACQUISITION_1,
-                        session
+                        secondSession
                 ).decision()
         );
 
@@ -1146,16 +3938,330 @@ class PlayerSessionLeaseBindingRegistryTest {
                 PlayerSessionLeaseBindingRegistry
                         .BeginDecision.PROCEED,
                 boundedRegistry.beginTracked(
-                        player,
+                        secondPlayer,
                         ACQUISITION_2,
-                        session
+                        secondSession
                 ).decision()
         );
     }
+
+    @Test
+    void atomicTerminalAcknowledgementSurvivesIntermediatePurgeAndExpiresFromCompletion() {
+        AtomicLong monotonicTime =
+                new AtomicLong(3_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        2,
+                        60_000L
+                );
+
+        Player firstPlayer = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession firstSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        firstSession,
+                        OWNER,
+                        1L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                boundedRegistry.beginTracked(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                boundedRegistry.bind(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        firstSession,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        monotonicTime.addAndGet(59_999L);
+
+        UUID secondPlayerId =
+                UUID.fromString(
+                        "66666666-6666-6666-6666-666666666666"
+                );
+
+        Player secondPlayer = player(secondPlayerId);
+
+        AuthenticatedPlayerSession secondSession =
+                new AuthenticatedPlayerSession(
+                        secondPlayerId,
+                        "SecondPlayer",
+                        1_750_000_000_001L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult unrelatedBegin =
+                boundedRegistry.beginTracked(
+                        secondPlayer,
+                        ACQUISITION_2,
+                        secondSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                unrelatedBegin.decision()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                boundedRegistry.beginTracked(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                successfulAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        monotonicTime.addAndGet(1L);
+
+        PlayerSessionLeaseBindingRegistry.BeginResult afterExpiration =
+                boundedRegistry.beginTracked(
+                        firstPlayer,
+                        ACQUISITION_1,
+                        firstSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                afterExpiration.decision()
+        );
+    }
+
+    @Test
+    void rejectsLateAcknowledgementFromReplacedAttempt() {
+        AtomicLong monotonicTime =
+                new AtomicLong(4_000_000L);
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        monotonicTime::get,
+                        1,
+                        60_000L
+                );
+
+        Player player = player(PLAYER_ID);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstBegin =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                firstBegin.decision()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement firstAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "First attempt terminal"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                firstCompletion =
+                boundedRegistry.completeTerminalRequest(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        session,
+                        firstAcknowledgement
+                );
+
+        assertTrue(firstCompletion.shouldRespond());
+
+        monotonicTime.addAndGet(60_000L);
+
+        PlayerSessionLeaseBindingRegistry.BeginResult secondBegin =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                secondBegin.decision()
+        );
+
+        assertTrue(
+                secondBegin.attemptId()
+                        > firstBegin.attemptId()
+        );
+
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        secondBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                staleCompletion =
+                boundedRegistry.completeTerminalRequest(
+                        player,
+                        ACQUISITION_1,
+                        firstBegin.attemptId(),
+                        session,
+                        new PlayerSessionLeaseBindingRegistry
+                                .TerminalAcknowledgement(
+                                false,
+                                "Late first attempt"
+                        )
+                );
+
+        assertFalse(staleCompletion.shouldRespond());
+
+        assertTrue(
+                staleCompletion.leaseToRelease().isEmpty()
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement secondAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Second attempt terminal"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                secondCompletion =
+                boundedRegistry.completeTerminalRequest(
+                        player,
+                        ACQUISITION_1,
+                        secondBegin.attemptId(),
+                        session,
+                        secondAcknowledgement
+                );
+
+        assertTrue(secondCompletion.shouldRespond());
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                boundedRegistry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+
+        assertEquals(
+                secondAcknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+
+        assertFalse(
+                replay.acknowledgement()
+                        .orElseThrow()
+                        .equals(
+                                new PlayerSessionLeaseBindingRegistry
+                                        .TerminalAcknowledgement(
+                                        false,
+                                        "Late first attempt"
+                                )
+                        )
+        );
+    }
+
     @Test
     void rejectsNullArguments() {
         Player player = player(PLAYER_ID);
         PlayerSessionLease lease = lease(OWNER, 1L);
+        AuthenticatedPlayerSession session =
+                lease.session();
+        CompletionStage<Boolean> completion =
+                new CompletableFuture<>();
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
 
         assertThrows(
                 NullPointerException.class,
@@ -1172,42 +4278,96 @@ class PlayerSessionLeaseBindingRegistryTest {
 
         assertThrows(
                 NullPointerException.class,
-                () -> registry.bind(
-                        null,
-                        ACQUISITION_1,
-                        lease
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> registry.bind(
-                        player,
-                        null,
-                        lease
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> registry.bind(
-                        player,
-                        ACQUISITION_1,
-                        null
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> registry.cancel(
-                        player,
-                        null
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
                 () -> registry.removeForDisconnect(null)
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> registry.claimPendingReleaseTimeout(
+                        null,
+                        ACQUISITION_1,
+                        1L,
+                        session,
+                        completion,
+                        acknowledgement
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> registry.claimPendingReleaseTimeout(
+                        player,
+                        null,
+                        1L,
+                        session,
+                        completion,
+                        acknowledgement
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> registry.claimPendingReleaseTimeout(
+                        player,
+                        ACQUISITION_1,
+                        1L,
+                        null,
+                        completion,
+                        acknowledgement
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> registry.claimPendingReleaseTimeout(
+                        player,
+                        ACQUISITION_1,
+                        1L,
+                        session,
+                        null,
+                        acknowledgement
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> registry.claimPendingReleaseTimeout(
+                        player,
+                        ACQUISITION_1,
+                        1L,
+                        session,
+                        completion,
+                        null
+                )
+        );
+    }
+
+    @Test
+    void rejectsInvalidPendingReleaseTimeoutAttemptId() {
+        Player player = player(PLAYER_ID);
+        PlayerSessionLease lease = lease(OWNER, 1L);
+        AuthenticatedPlayerSession session =
+                lease.session();
+        CompletionStage<Boolean> completion =
+                new CompletableFuture<>();
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> registry.claimPendingReleaseTimeout(
+                        player,
+                        ACQUISITION_1,
+                        0L,
+                        session,
+                        completion,
+                        acknowledgement
+                )
         );
     }
 

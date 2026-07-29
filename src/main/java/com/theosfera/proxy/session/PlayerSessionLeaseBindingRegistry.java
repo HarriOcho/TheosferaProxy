@@ -191,10 +191,6 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         if (terminal != null) {
             if (terminal.session().equals(nonNullSession)) {
-                if (terminal.acknowledgement().isEmpty()) {
-                    return BeginResult.pendingReplay();
-                }
-
                 return BeginResult.completedReplay(
                         terminal.acknowledgement()
                 );
@@ -251,7 +247,8 @@ public final class PlayerSessionLeaseBindingRegistry {
                 nonNullAcquisitionId,
                 new ActiveRequest(
                         nonNullPlayer,
-                        nonNullSession
+                        nonNullSession,
+                        attemptId
                 )
         );
 
@@ -260,7 +257,11 @@ public final class PlayerSessionLeaseBindingRegistry {
     public synchronized PlayerSessionLeaseBindingResult bind(
             Player player,
             UUID acquisitionId,
-            PlayerSessionLease lease
+            long expectedAttemptId,
+            AuthenticatedPlayerSession expectedSession,
+            PlayerSessionLease lease,
+            TerminalAcknowledgement successfulAcknowledgement,
+            TerminalAcknowledgement conflictAcknowledgement
     ) {
         Player nonNullPlayer = requirePlayer(player);
 
@@ -270,18 +271,93 @@ public final class PlayerSessionLeaseBindingRegistry {
                         "acquisitionId cannot be null"
                 );
 
+        if (expectedAttemptId <= 0) {
+            throw new IllegalArgumentException(
+                    "expectedAttemptId must be greater than zero"
+            );
+        }
+
+        AuthenticatedPlayerSession nonNullExpectedSession =
+                Objects.requireNonNull(
+                        expectedSession,
+                        "expectedSession cannot be null"
+                );
+
         PlayerSessionLease nonNullLease =
                 Objects.requireNonNull(
                         lease,
                         "lease cannot be null"
                 );
 
+        TerminalAcknowledgement
+                nonNullSuccessfulAcknowledgement =
+                Objects.requireNonNull(
+                        successfulAcknowledgement,
+                        "successfulAcknowledgement cannot be null"
+                );
+
+        TerminalAcknowledgement
+                nonNullConflictAcknowledgement =
+                Objects.requireNonNull(
+                        conflictAcknowledgement,
+                        "conflictAcknowledgement cannot be null"
+                );
+
         UUID playerId = nonNullPlayer.getUniqueId();
+
+        if (!playerId.equals(
+                nonNullExpectedSession.playerId()
+        )) {
+            throw new IllegalArgumentException(
+                    "player identity must match expected session"
+            );
+        }
 
         requireMatchingIdentity(
                 playerId,
                 nonNullLease
         );
+
+        if (!nonNullLease.session()
+                .equals(nonNullExpectedSession)) {
+            throw new IllegalArgumentException(
+                    "lease session must match expected session"
+            );
+        }
+
+        return bind(
+                nonNullPlayer,
+                nonNullAcquisitionId,
+                nonNullLease,
+                nonNullSuccessfulAcknowledgement,
+                nonNullConflictAcknowledgement,
+                expectedAttemptId,
+                nonNullExpectedSession
+        );
+    }
+
+    private PlayerSessionLeaseBindingResult bind(
+            Player nonNullPlayer,
+            UUID nonNullAcquisitionId,
+            PlayerSessionLease nonNullLease,
+            TerminalAcknowledgement successfulAcknowledgement,
+            TerminalAcknowledgement conflictAcknowledgement,
+            long expectedAttemptId,
+            AuthenticatedPlayerSession expectedSession
+    ) {
+        TerminalAcknowledgement nonNullSuccessfulAcknowledgement =
+                Objects.requireNonNull(
+                        successfulAcknowledgement,
+                        "successfulAcknowledgement cannot be null"
+                );
+
+        TerminalAcknowledgement nonNullConflictAcknowledgement =
+                Objects.requireNonNull(
+                        conflictAcknowledgement,
+                        "conflictAcknowledgement cannot be null"
+                );
+
+        UUID playerId = nonNullPlayer.getUniqueId();
 
         PlayerState existing = states.get(playerId);
 
@@ -295,6 +371,22 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         if (acquisition == null
                 || acquisition.player() != nonNullPlayer) {
+            return PlayerSessionLeaseBindingResult.STALE;
+        }
+
+        ActiveRequest activeRequest =
+                activeRequests.get(
+                        nonNullAcquisitionId
+                );
+
+        if (acquisition.attemptId() != expectedAttemptId
+                || !acquisition.acquisitionResultClaimed()
+                || activeRequest == null
+                || activeRequest.player() != nonNullPlayer
+                || activeRequest.attemptId()
+                != expectedAttemptId
+                || !activeRequest.session()
+                .equals(expectedSession)) {
             return PlayerSessionLeaseBindingResult.STALE;
         }
 
@@ -371,8 +463,6 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         remaining.remove(nonNullAcquisitionId);
 
-        completeActiveRequest(nonNullAcquisitionId);
-
         if (releaseMatchesLeaseOwner
                 && nonNullLease.fencingToken()
                 <= acquisition
@@ -383,6 +473,13 @@ public final class PlayerSessionLeaseBindingRegistry {
                             existing.boundLease(),
                             remaining
                     )
+            );
+
+            discardActiveRequestWithoutReplay(
+                    nonNullAcquisitionId,
+                    nonNullPlayer,
+                    expectedAttemptId,
+                    expectedSession
             );
 
             return PlayerSessionLeaseBindingResult.STALE;
@@ -409,6 +506,13 @@ public final class PlayerSessionLeaseBindingRegistry {
                             )
                     );
 
+                    discardActiveRequestWithoutReplay(
+                            nonNullAcquisitionId,
+                            nonNullPlayer,
+                            expectedAttemptId,
+                            expectedSession
+                    );
+
                     return PlayerSessionLeaseBindingResult.STALE;
                 }
             }
@@ -425,6 +529,13 @@ public final class PlayerSessionLeaseBindingRegistry {
                             remainingBound,
                             remaining
                     )
+            );
+
+            discardActiveRequestWithoutReplay(
+                    nonNullAcquisitionId,
+                    nonNullPlayer,
+                    expectedAttemptId,
+                    expectedSession
             );
 
             return PlayerSessionLeaseBindingResult.DISCONNECTED;
@@ -444,6 +555,13 @@ public final class PlayerSessionLeaseBindingRegistry {
                             existing.boundLease(),
                             remaining
                     )
+            );
+
+            discardActiveRequestWithoutReplay(
+                    nonNullAcquisitionId,
+                    nonNullPlayer,
+                    expectedAttemptId,
+                    expectedSession
             );
 
             return PlayerSessionLeaseBindingResult.STALE;
@@ -468,24 +586,16 @@ public final class PlayerSessionLeaseBindingRegistry {
                     )
             );
 
+            completeSuccessfulBinding(
+                    nonNullAcquisitionId,
+                    nonNullSuccessfulAcknowledgement
+            );
+
             return PlayerSessionLeaseBindingResult.BOUND;
         }
 
         BoundLease bound =
                 currentBound.orElseThrow();
-
-        if (bound.generation()
-                > acquisition.generation()) {
-            updateState(
-                    playerId,
-                    new PlayerState(
-                            currentBound,
-                            remaining
-                    )
-            );
-
-            return PlayerSessionLeaseBindingResult.STALE;
-        }
 
         if (bound.lease().equals(nonNullLease)) {
             boolean sameConnection =
@@ -507,9 +617,19 @@ public final class PlayerSessionLeaseBindingRegistry {
             );
 
             if (sameConnection) {
+                completeSuccessfulBinding(
+                        nonNullAcquisitionId,
+                        nonNullSuccessfulAcknowledgement
+                );
+
                 return PlayerSessionLeaseBindingResult
                         .ALREADY_BOUND;
             }
+
+            completeSuccessfulBinding(
+                    nonNullAcquisitionId,
+                    nonNullSuccessfulAcknowledgement
+            );
 
             return PlayerSessionLeaseBindingResult.REPLACED;
         }
@@ -536,6 +656,11 @@ public final class PlayerSessionLeaseBindingRegistry {
                     )
             );
 
+            completeSuccessfulBinding(
+                    nonNullAcquisitionId,
+                    nonNullSuccessfulAcknowledgement
+            );
+
             return PlayerSessionLeaseBindingResult.REPLACED;
         }
 
@@ -548,8 +673,20 @@ public final class PlayerSessionLeaseBindingRegistry {
         );
 
         if (incomingToken < existingToken) {
+            discardActiveRequestWithoutReplay(
+                    nonNullAcquisitionId,
+                    nonNullPlayer,
+                    expectedAttemptId,
+                    expectedSession
+            );
+
             return PlayerSessionLeaseBindingResult.STALE;
         }
+
+        completeActiveRequest(
+                nonNullAcquisitionId,
+                nonNullConflictAcknowledgement
+        );
 
         return PlayerSessionLeaseBindingResult.CONFLICT;
     }
@@ -700,18 +837,16 @@ public final class PlayerSessionLeaseBindingRegistry {
         return Optional.of(bound.lease());
     }
 
-    public synchronized Cancellation cancel(
-            Player player,
-            UUID acquisitionId
+    private Cancellation cancel(
+            Player nonNullPlayer,
+            UUID nonNullAcquisitionId,
+            TerminalAcknowledgement acknowledgement
     ) {
-        Player nonNullPlayer = requirePlayer(player);
-
-        UUID nonNullAcquisitionId =
+        TerminalAcknowledgement nonNullAcknowledgement =
                 Objects.requireNonNull(
-                        acquisitionId,
-                        "acquisitionId cannot be null"
+                        acknowledgement,
+                        "acknowledgement cannot be null"
                 );
-
 
         UUID playerId = nonNullPlayer.getUniqueId();
 
@@ -748,7 +883,10 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         remaining.remove(nonNullAcquisitionId);
 
-        completeActiveRequest(nonNullAcquisitionId);
+        completeActiveRequest(
+                nonNullAcquisitionId,
+                nonNullAcknowledgement
+        );
 
         Optional<PlayerSessionLease> leaseToRelease =
                 Optional.empty();
@@ -881,6 +1019,234 @@ public final class PlayerSessionLeaseBindingRegistry {
         );
 
         return true;
+    }
+
+    public synchronized Cancellation claimAcquisitionTimeout(
+            Player player,
+            UUID acquisitionId,
+            long expectedAttemptId,
+            AuthenticatedPlayerSession expectedSession,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        Player nonNullPlayer = requirePlayer(player);
+
+        UUID nonNullAcquisitionId =
+                Objects.requireNonNull(
+                        acquisitionId,
+                        "acquisitionId cannot be null"
+                );
+
+        if (expectedAttemptId <= 0) {
+            throw new IllegalArgumentException(
+                    "expectedAttemptId must be greater than zero"
+            );
+        }
+
+        AuthenticatedPlayerSession nonNullExpectedSession =
+                Objects.requireNonNull(
+                        expectedSession,
+                        "expectedSession cannot be null"
+                );
+
+        TerminalAcknowledgement nonNullAcknowledgement =
+                Objects.requireNonNull(
+                        acknowledgement,
+                        "acknowledgement cannot be null"
+                );
+
+        UUID playerId =
+                nonNullPlayer.getUniqueId();
+
+        PlayerState state = states.get(playerId);
+
+        if (state == null) {
+            return Cancellation.inactive();
+        }
+
+        PendingAcquisition acquisition =
+                state.pendingAcquisitions()
+                        .get(nonNullAcquisitionId);
+
+        ActiveRequest activeRequest =
+                activeRequests.get(
+                        nonNullAcquisitionId
+                );
+
+        if (acquisition == null
+                || acquisition.player() != nonNullPlayer
+                || acquisition.attemptId() != expectedAttemptId
+                || acquisition.acquisitionResultClaimed()
+                || activeRequest == null
+                || activeRequest.player() != nonNullPlayer
+                || activeRequest.attemptId()
+                != expectedAttemptId
+                || !activeRequest.session()
+                .equals(nonNullExpectedSession)) {
+            return Cancellation.inactive();
+        }
+
+        return cancel(
+                nonNullPlayer,
+                nonNullAcquisitionId,
+                nonNullAcknowledgement
+        );
+    }
+
+    public synchronized Cancellation completeTerminalRequest(
+            Player player,
+            UUID acquisitionId,
+            long expectedAttemptId,
+            AuthenticatedPlayerSession expectedSession,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        Player nonNullPlayer = requirePlayer(player);
+
+        UUID nonNullAcquisitionId =
+                Objects.requireNonNull(
+                        acquisitionId,
+                        "acquisitionId cannot be null"
+                );
+
+        if (expectedAttemptId <= 0) {
+            throw new IllegalArgumentException(
+                    "expectedAttemptId must be greater than zero"
+            );
+        }
+
+        AuthenticatedPlayerSession nonNullExpectedSession =
+                Objects.requireNonNull(
+                        expectedSession,
+                        "expectedSession cannot be null"
+                );
+
+        TerminalAcknowledgement nonNullAcknowledgement =
+                Objects.requireNonNull(
+                        acknowledgement,
+                        "acknowledgement cannot be null"
+                );
+
+        UUID playerId =
+                nonNullPlayer.getUniqueId();
+
+        PlayerState state = states.get(playerId);
+
+        if (state == null) {
+            return Cancellation.inactive();
+        }
+
+        PendingAcquisition acquisition =
+                state.pendingAcquisitions()
+                        .get(nonNullAcquisitionId);
+
+        ActiveRequest activeRequest =
+                activeRequests.get(
+                        nonNullAcquisitionId
+                );
+
+        if (acquisition == null
+                || acquisition.player() != nonNullPlayer
+                || acquisition.attemptId() != expectedAttemptId
+                || !acquisition.acquisitionResultClaimed()
+                || activeRequest == null
+                || activeRequest.player() != nonNullPlayer
+                || activeRequest.attemptId()
+                != expectedAttemptId
+                || !activeRequest.session()
+                .equals(nonNullExpectedSession)) {
+            return Cancellation.inactive();
+        }
+
+        return cancel(
+                nonNullPlayer,
+                nonNullAcquisitionId,
+                nonNullAcknowledgement
+        );
+    }
+
+    public synchronized Cancellation claimPendingReleaseTimeout(
+            Player player,
+            UUID acquisitionId,
+            long expectedAttemptId,
+            AuthenticatedPlayerSession expectedSession,
+            CompletionStage<Boolean> expectedCompletion,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        Player nonNullPlayer = requirePlayer(player);
+
+        UUID nonNullAcquisitionId =
+                Objects.requireNonNull(
+                        acquisitionId,
+                        "acquisitionId cannot be null"
+                );
+
+        if (expectedAttemptId <= 0) {
+            throw new IllegalArgumentException(
+                    "expectedAttemptId must be greater than zero"
+            );
+        }
+
+        AuthenticatedPlayerSession nonNullExpectedSession =
+                Objects.requireNonNull(
+                        expectedSession,
+                        "expectedSession cannot be null"
+                );
+
+        CompletionStage<Boolean> nonNullExpectedCompletion =
+                Objects.requireNonNull(
+                        expectedCompletion,
+                        "expectedCompletion cannot be null"
+                );
+
+        TerminalAcknowledgement nonNullAcknowledgement =
+                Objects.requireNonNull(
+                        acknowledgement,
+                        "acknowledgement cannot be null"
+                );
+
+        UUID playerId =
+                nonNullPlayer.getUniqueId();
+
+        PlayerState state = states.get(playerId);
+
+        if (state == null) {
+            return Cancellation.inactive();
+        }
+
+        PendingAcquisition acquisition =
+                state.pendingAcquisitions()
+                        .get(nonNullAcquisitionId);
+
+        ActiveRequest activeRequest =
+                activeRequests.get(
+                        nonNullAcquisitionId
+                );
+
+        PendingRelease pendingRelease =
+                acquisition == null
+                        ? null
+                        : acquisition.pendingRelease();
+
+        if (acquisition == null
+                || acquisition.player() != nonNullPlayer
+                || acquisition.attemptId() != expectedAttemptId
+                || !acquisition.acquisitionResultClaimed()
+                || pendingRelease == null
+                || pendingRelease.completion()
+                != nonNullExpectedCompletion
+                || activeRequest == null
+                || activeRequest.player() != nonNullPlayer
+                || activeRequest.attemptId()
+                != expectedAttemptId
+                || !activeRequest.session()
+                .equals(nonNullExpectedSession)) {
+            return Cancellation.inactive();
+        }
+
+        return cancel(
+                nonNullPlayer,
+                nonNullAcquisitionId,
+                nonNullAcknowledgement
+        );
     }
     public synchronized Optional<CompletionStage<Boolean>>
     awaitPendingRelease(
@@ -1038,6 +1404,11 @@ public final class PlayerSessionLeaseBindingRegistry {
                 state.pendingAcquisitions()
                         .get(nonNullAcquisitionId);
 
+        ActiveRequest activeRequest =
+                activeRequests.get(
+                        nonNullAcquisitionId
+                );
+
         PendingRelease pendingRelease =
                 acquisition == null
                         ? null
@@ -1049,7 +1420,11 @@ public final class PlayerSessionLeaseBindingRegistry {
                 || !acquisition.acquisitionResultClaimed()
                 || pendingRelease == null
                 || pendingRelease.completion()
-                != nonNullExpected) {
+                != nonNullExpected
+                || activeRequest == null
+                || activeRequest.player() != nonNullPlayer
+                || activeRequest.attemptId()
+                != expectedAttemptId) {
             return OptionalLong.empty();
         }
 
@@ -1070,6 +1445,15 @@ public final class PlayerSessionLeaseBindingRegistry {
                 new PlayerState(
                         state.boundLease(),
                         pending
+                )
+        );
+
+        activeRequests.put(
+                nonNullAcquisitionId,
+                new ActiveRequest(
+                        activeRequest.player(),
+                        activeRequest.session(),
+                        retryAttemptId
                 )
         );
 
@@ -1379,62 +1763,43 @@ public final class PlayerSessionLeaseBindingRegistry {
                 List.copyOf(connections)
         );
     }
-    public synchronized boolean
-    recordTerminalAcknowledgement(
+    private void completeSuccessfulBinding(
             UUID acquisitionId,
-            AuthenticatedPlayerSession session,
             TerminalAcknowledgement acknowledgement
     ) {
-        UUID nonNullAcquisitionId =
-                Objects.requireNonNull(
-                        acquisitionId,
-                        "acquisitionId cannot be null"
-                );
-
-        AuthenticatedPlayerSession nonNullSession =
-                Objects.requireNonNull(
-                        session,
-                        "session cannot be null"
-                );
-
-        TerminalAcknowledgement
-                nonNullAcknowledgement =
-                Objects.requireNonNull(
-                        acknowledgement,
-                        "acknowledgement cannot be null"
-                );
-
-        purgeExpiredTerminalRequests();
-
-        TerminalRequest terminal =
-                terminalRequests.get(
-                        nonNullAcquisitionId
-                );
-
-        if (terminal == null
-                || !terminal.session()
-                .equals(nonNullSession)) {
-            return false;
-        }
-
-        if (terminal.acknowledgement().isPresent()
-                && !terminal.acknowledgement()
-                .orElseThrow()
-                .equals(nonNullAcknowledgement)) {
-            return false;
-        }
-
-        rememberTerminal(
-                nonNullAcquisitionId,
-                terminal.withAcknowledgement(
-                        nonNullAcknowledgement
-                )
+        completeActiveRequest(
+                acquisitionId,
+                acknowledgement
         );
-
-        return true;
     }
+
+    private void discardActiveRequestWithoutReplay(
+            UUID acquisitionId,
+            Player expectedPlayer,
+            long expectedAttemptId,
+            AuthenticatedPlayerSession expectedSession
+    ) {
+        ActiveRequest activeRequest =
+                activeRequests.get(acquisitionId);
+
+        if (activeRequest == null
+                || activeRequest.player() != expectedPlayer
+                || activeRequest.attemptId()
+                != expectedAttemptId
+                || !activeRequest.session()
+                .equals(expectedSession)) {
+            return;
+        }
+
+        activeRequests.remove(
+                acquisitionId,
+                activeRequest
+        );
+    }
+
     private void completeActiveRequest(
-            UUID acquisitionId
+            UUID acquisitionId,
+            TerminalAcknowledgement acknowledgement
     ) {
         ActiveRequest active =
                 activeRequests.remove(acquisitionId);
@@ -1443,13 +1808,20 @@ public final class PlayerSessionLeaseBindingRegistry {
             return;
         }
 
+        TerminalAcknowledgement nonNullAcknowledgement =
+                Objects.requireNonNull(
+                        acknowledgement,
+                        "acknowledgement cannot be null"
+                );
+
         purgeExpiredTerminalRequests();
 
         rememberTerminal(
                 acquisitionId,
                 new TerminalRequest(
                         active.session(),
-                        Optional.empty(),
+                        active.attemptId(),
+                        nonNullAcknowledgement,
                         terminalExpirationMillis()
                 )
         );
@@ -1639,14 +2011,18 @@ public final class PlayerSessionLeaseBindingRegistry {
         }
 
         private static BeginResult completedReplay(
-                Optional<TerminalAcknowledgement>
-                        acknowledgement
+                TerminalAcknowledgement acknowledgement
         ) {
             return new BeginResult(
                     BeginDecision.COMPLETED_REPLAY,
                     0L,
                     Optional.empty(),
-                    acknowledgement
+                    Optional.of(
+                            Objects.requireNonNull(
+                                    acknowledgement,
+                                    "acknowledgement cannot be null"
+                            )
+                    )
             );
         }
 
@@ -1686,7 +2062,8 @@ public final class PlayerSessionLeaseBindingRegistry {
 
     private record ActiveRequest(
             Player player,
-            AuthenticatedPlayerSession session
+            AuthenticatedPlayerSession session,
+            long attemptId
     ) {
 
         private ActiveRequest {
@@ -1699,12 +2076,19 @@ public final class PlayerSessionLeaseBindingRegistry {
                     session,
                     "session cannot be null"
             );
+
+            if (attemptId <= 0) {
+                throw new IllegalArgumentException(
+                        "attemptId must be greater than zero"
+                );
+            }
         }
     }
 
     private record TerminalRequest(
             AuthenticatedPlayerSession session,
-            Optional<TerminalAcknowledgement> acknowledgement,
+            long attemptId,
+            TerminalAcknowledgement acknowledgement,
             long expiresAtMillis
     ) {
 
@@ -1714,26 +2098,18 @@ public final class PlayerSessionLeaseBindingRegistry {
                     "session cannot be null"
             );
 
-            acknowledgement = Objects.requireNonNull(
+            if (attemptId <= 0) {
+                throw new IllegalArgumentException(
+                        "attemptId must be greater than zero"
+                );
+            }
+
+            Objects.requireNonNull(
                     acknowledgement,
                     "acknowledgement cannot be null"
             );
         }
 
-        private TerminalRequest withAcknowledgement(
-                TerminalAcknowledgement acknowledgement
-        ) {
-            return new TerminalRequest(
-                    session,
-                    Optional.of(
-                            Objects.requireNonNull(
-                                    acknowledgement,
-                                    "acknowledgement cannot be null"
-                            )
-                    ),
-                    expiresAtMillis
-            );
-        }
     }
 
     public record Cancellation(

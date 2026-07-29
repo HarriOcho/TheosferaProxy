@@ -242,15 +242,60 @@ class PlayerDisconnectListenerTest {
         PlayerSessionLease newLease =
                 lease(2L);
 
-        leaseBindingRegistry.begin(
-                newConnection,
-                ACQUISITION_ID
+        AuthenticatedPlayerSession session =
+                newLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                leaseBindingRegistry.beginTracked(
+                        newConnection,
+                        ACQUISITION_ID,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
         );
 
-        leaseBindingRegistry.bind(
-                newConnection,
-                ACQUISITION_ID,
-                newLease
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        newConnection,
+                        ACQUISITION_ID,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingResult bindingResult =
+                leaseBindingRegistry.bind(
+                        newConnection,
+                        ACQUISITION_ID,
+                        begin.attemptId(),
+                        session,
+                        newLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                bindingResult
         );
 
         listenerWith(coordinator).onDisconnect(
@@ -282,15 +327,60 @@ class PlayerDisconnectListenerTest {
 
         PlayerSessionLease lease = lease(1L);
 
-        leaseBindingRegistry.begin(
-                player,
-                ACQUISITION_ID
+        AuthenticatedPlayerSession session =
+                lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                leaseBindingRegistry.beginTracked(
+                        player,
+                        ACQUISITION_ID,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
         );
 
-        leaseBindingRegistry.bind(
-                player,
-                ACQUISITION_ID,
-                lease
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_ID,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingResult bindingResult =
+                leaseBindingRegistry.bind(
+                        player,
+                        ACQUISITION_ID,
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                bindingResult
         );
 
         when(coordinator.releaseIfOwned(lease))
@@ -421,15 +511,59 @@ class PlayerDisconnectListenerTest {
         PlayerSessionLease lease =
                 result.lease().orElseThrow();
 
-        leaseBindingRegistry.begin(
-                exactPlayer,
-                ACQUISITION_ID
+        session = lease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                leaseBindingRegistry.beginTracked(
+                        exactPlayer,
+                        ACQUISITION_ID,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
         );
 
-        leaseBindingRegistry.bind(
-                exactPlayer,
-                ACQUISITION_ID,
-                lease
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        exactPlayer,
+                        ACQUISITION_ID,
+                        begin.attemptId()
+                )
+        );
+
+        PlayerSessionLeaseBindingResult bindingResult =
+                leaseBindingRegistry.bind(
+                        exactPlayer,
+                        ACQUISITION_ID,
+                        begin.attemptId(),
+                        session,
+                        lease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                bindingResult
         );
 
         return lease;
