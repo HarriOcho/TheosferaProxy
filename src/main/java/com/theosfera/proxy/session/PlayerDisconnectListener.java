@@ -1,6 +1,5 @@
 package com.theosfera.proxy.session;
 
-import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.PlayerSessionLease;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
@@ -13,13 +12,12 @@ import org.slf4j.Logger;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletionStage;
 
 public final class PlayerDisconnectListener {
 
-    private final PlayerSessionCoordinator sessionCoordinator;
     private final PlayerSessionLeaseBindingRegistry
             leaseBindingRegistry;
+    private final PlayerSessionReleaseService releaseService;
     private final PlayerServerPresenceRegistry
             presenceRegistry;
     private final PendingPlayerTransferRegistry
@@ -29,37 +27,32 @@ public final class PlayerDisconnectListener {
     private final Logger logger;
 
     public PlayerDisconnectListener(
-            PlayerSessionCoordinator sessionCoordinator,
             PlayerSessionLeaseBindingRegistry
                     leaseBindingRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
+            PlayerSessionReleaseService releaseService,
             Logger logger
     ) {
         this(
-                sessionCoordinator,
                 leaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
                 new BackendCapacityReservationRegistry(),
+                releaseService,
                 logger
         );
     }
 
     public PlayerDisconnectListener(
-            PlayerSessionCoordinator sessionCoordinator,
             PlayerSessionLeaseBindingRegistry
                     leaseBindingRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
             BackendCapacityReservationRegistry capacityRegistry,
+            PlayerSessionReleaseService releaseService,
             Logger logger
     ) {
-        this.sessionCoordinator = Objects.requireNonNull(
-                sessionCoordinator,
-                "sessionCoordinator cannot be null"
-        );
-
         this.leaseBindingRegistry =
                 Objects.requireNonNull(
                         leaseBindingRegistry,
@@ -84,6 +77,11 @@ public final class PlayerDisconnectListener {
         this.logger = Objects.requireNonNull(
                 logger,
                 "logger cannot be null"
+        );
+
+        this.releaseService = Objects.requireNonNull(
+                releaseService,
+                "releaseService cannot be null"
         );
     }
 
@@ -142,87 +140,40 @@ public final class PlayerDisconnectListener {
             UUID playerId,
             boolean localStateRemoved
     ) {
-        boolean releaseReserved =
-                leaseBindingRegistry
-                        .reserveReleaseIfUnbound(lease);
+        releaseService.releaseIfUnbound(
+                lease,
+                new PlayerSessionReleaseService.ReleaseCallbacks() {
+                    @Override
+                    public void onNotReserved(
+                            PlayerSessionLease ignored
+                    ) {
+                        if (localStateRemoved) {
+                            logStateRemoval(playerId);
+                        }
+                    }
 
-        if (!releaseReserved) {
-            if (localStateRemoved) {
-                logStateRemoval(playerId);
-            }
-
-            return;
-        }
-
-        CompletionStage<Boolean> releaseStage;
-
-        try {
-            releaseStage = Objects.requireNonNull(
-                    sessionCoordinator.releaseIfOwned(lease),
-                    "sessionCoordinator.releaseIfOwned "
-                            + "returned null"
-            );
-        } catch (RuntimeException exception) {
-            leaseBindingRegistry.failReleaseBeforeExternalAttachment(
-                    lease,
-                    exception
-            );
-
-            logger.error(
-                    "No se pudo iniciar la liberación del lease "
-                            + "de sesión para {}.",
-                    playerId,
-                    exception
-            );
-
-            if (localStateRemoved) {
-                logStateRemoval(playerId);
-            }
-
-            return;
-        }
-
-        boolean releaseAttached =
-                leaseBindingRegistry.attachReleaseCompletion(
-                        lease,
-                        releaseStage
-                );
-
-        if (!releaseAttached) {
-            IllegalStateException exception =
-                    new IllegalStateException(
-                            "Release completion stage could not be "
-                                    + "attached to the tracked lease"
-                    );
-
-            leaseBindingRegistry.failReleaseBeforeExternalAttachment(
-                    lease,
-                    exception
-            );
-
-            logger.error(
-                    "No se pudo asociar la liberaciÃ³n del lease "
-                            + "de sesiÃ³n para {}.",
-                    playerId,
-                    exception
-            );
-
-            if (localStateRemoved) {
-                logStateRemoval(playerId);
-            }
-
-            return;
-        }
-
-        releaseStage.whenComplete(
-                (released, failure) -> {
-                    if (failure != null) {
-                        leaseBindingRegistry.failRelease(
-                                lease,
-                                releaseStage,
+                    @Override
+                    public void onStartFailure(
+                            PlayerSessionLease ignored,
+                            RuntimeException failure
+                    ) {
+                        logger.error(
+                                "No se pudo iniciar la liberación "
+                                        + "del lease de sesión para {}.",
+                                playerId,
                                 failure
                         );
 
+                        if (localStateRemoved) {
+                            logStateRemoval(playerId);
+                        }
+                    }
+
+                    @Override
+                    public void onFailure(
+                            PlayerSessionLease ignored,
+                            Throwable failure
+                    ) {
                         logger.error(
                                 "No se pudo liberar el lease "
                                         + "de sesión para {}.",
@@ -233,31 +184,25 @@ public final class PlayerDisconnectListener {
                         if (localStateRemoved) {
                             logStateRemoval(playerId);
                         }
-
-                        return;
                     }
 
-                    boolean releaseSucceeded =
-                            Boolean.TRUE.equals(released);
+                    @Override
+                    public void onComplete(
+                            PlayerSessionLease ignored,
+                            boolean released
+                    ) {
+                        if (!released) {
+                            logger.debug(
+                                    "El lease de sesión para {} "
+                                            + "ya no coincidía con la "
+                                            + "propiedad vigente.",
+                                    playerId
+                            );
+                        }
 
-                    leaseBindingRegistry.completeRelease(
-                            lease,
-                            releaseStage,
-                            releaseSucceeded
-                    );
-
-                    if (!releaseSucceeded) {
-                        logger.debug(
-                                "El lease de sesión para {} "
-                                        + "ya no coincidía con la "
-                                        + "propiedad vigente.",
-                                playerId
-                        );
-                    }
-
-                    if (localStateRemoved
-                            || Boolean.TRUE.equals(released)) {
-                        logStateRemoval(playerId);
+                        if (localStateRemoved || released) {
+                            logStateRemoval(playerId);
+                        }
                     }
                 }
         );
@@ -270,4 +215,5 @@ public final class PlayerDisconnectListener {
                 playerId
         );
     }
+
 }

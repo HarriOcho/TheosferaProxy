@@ -1091,6 +1091,42 @@ public final class PlayerSessionLeaseBindingRegistry {
         return true;
     }
 
+    public synchronized boolean claimReleaseTimeout(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> expectedExternalCompletion
+    ) {
+        PlayerSessionLease nonNullLease =
+                Objects.requireNonNull(
+                        lease,
+                        "lease cannot be null"
+                );
+
+        CompletionStage<Boolean> nonNullExpected =
+                Objects.requireNonNull(
+                        expectedExternalCompletion,
+                        "expectedExternalCompletion cannot be null"
+                );
+
+        TrackedRelease trackedRelease =
+                pendingReleases.get(nonNullLease);
+
+        if (trackedRelease == null
+                || !trackedRelease.lease().equals(nonNullLease)
+                || trackedRelease.externalCompletion()
+                != nonNullExpected) {
+            return false;
+        }
+
+        pendingReleases.remove(nonNullLease);
+        quarantineRelease(
+                nonNullLease,
+                trackedRelease.completion(),
+                trackedRelease.externalCompletion()
+        );
+
+        return true;
+    }
+
     public synchronized boolean claimAcquisitionResult(
             Player player,
             UUID acquisitionId,
@@ -1989,9 +2025,6 @@ public final class PlayerSessionLeaseBindingRegistry {
             PlayerSessionLease lease,
             CompletionStage<Boolean> completion
     ) {
-        UUID playerId =
-                lease.session().playerId();
-
         TrackedRelease trackedRelease =
                 pendingReleases.get(lease);
 
@@ -2001,6 +2034,21 @@ public final class PlayerSessionLeaseBindingRegistry {
         }
 
         pendingReleases.remove(lease);
+
+        quarantineRelease(
+                lease,
+                trackedRelease.completion(),
+                trackedRelease.externalCompletion()
+        );
+    }
+
+    private void quarantineRelease(
+            PlayerSessionLease lease,
+            CompletableFuture<Boolean> completion,
+            CompletionStage<Boolean> externalCompletion
+    ) {
+        UUID playerId =
+                lease.session().playerId();
 
         ReleaseQuarantine existing =
                 releaseQuarantines.get(playerId);
@@ -2012,8 +2060,8 @@ public final class PlayerSessionLeaseBindingRegistry {
                     playerId,
                     new ReleaseQuarantine(
                             lease,
-                            trackedRelease.completion(),
-                            trackedRelease.externalCompletion(),
+                            completion,
+                            externalCompletion,
                             lease.fencingToken()
                     )
             );

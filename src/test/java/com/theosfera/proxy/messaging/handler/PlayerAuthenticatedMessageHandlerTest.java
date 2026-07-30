@@ -20,6 +20,8 @@ import com.theosfera.proxy.session.PlayerSessionAcquisitionTimeoutScheduler;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry.TerminalAcknowledgement;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingResult;
+import com.theosfera.proxy.session.PlayerSessionReleaseService;
+import com.theosfera.proxy.session.PlayerSessionReleaseTimeoutScheduler;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.proxy.Player;
@@ -30,7 +32,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
+import java.lang.reflect.Constructor;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -229,12 +233,15 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         PlayerDisconnectListener disconnectListener =
                 new PlayerDisconnectListener(
-                        coordinator,
                         trackedRegistry,
                         new PlayerServerPresenceRegistry(
                                 sessionRegistry
                         ),
                         new PendingPlayerTransferRegistry(),
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -623,6 +630,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -723,6 +734,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         scheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -826,6 +841,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         scheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -952,6 +971,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         scheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -1079,6 +1102,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         scheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -1206,6 +1233,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -1304,6 +1335,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -1419,6 +1454,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         failingScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -1521,6 +1560,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         scheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -1616,6 +1659,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -2526,6 +2573,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         noOpTimeoutScheduler(),
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -3206,6 +3257,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -3498,6 +3553,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -3869,17 +3928,24 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
         PlayerDisconnectListener disconnectListener =
                 new PlayerDisconnectListener(
-                        coordinator,
                         leaseBindingRegistry,
                         new PlayerServerPresenceRegistry(
                                 sessionRegistry
                         ),
                         new PendingPlayerTransferRegistry(),
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -4165,6 +4231,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                releaseCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -4175,17 +4245,24 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                reconnectCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
         PlayerDisconnectListener disconnectListener =
                 new PlayerDisconnectListener(
-                        releaseCoordinator,
                         leaseBindingRegistry,
                         new PlayerServerPresenceRegistry(
                                 sessionRegistry
                         ),
                         new PendingPlayerTransferRegistry(),
+                        releaseService(
+                                releaseCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -4471,6 +4548,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -4764,6 +4845,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         timeoutScheduler,
+                        releaseService(
+                                coordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 );
 
@@ -5367,6 +5452,217 @@ class PlayerAuthenticatedMessageHandlerTest {
     }
 
     @Test
+    void handlerHungReleaseSchedulesOwnedWatchdog() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        CompletableFuture<PlayerSessionAcquireResult> newFuture =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.acquired(
+                                oldLease
+                        )
+                ),
+                newFuture
+        );
+
+        CompletableFuture<Boolean> hungRelease =
+                new CompletableFuture<>();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(hungRelease);
+
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+
+        PlayerSessionReleaseService releaseService =
+                releaseService(
+                        coordinator,
+                        releaseTimeoutScheduler
+                );
+
+        PlayerAuthenticatedMessageHandler asyncHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        noOpTimeoutScheduler(),
+                        releaseService,
+                        logger
+                );
+
+        ContextFixture oldConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        ContextFixture newConnection =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        asyncHandler.handle(oldConnection.context());
+        asyncHandler.handle(newConnection.context());
+
+        assertTrue(
+                leaseBindingRegistry
+                        .removeForDisconnect(
+                                oldConnection.player()
+                        )
+                        .isEmpty()
+        );
+
+        newFuture.complete(
+                PlayerSessionAcquireResult.withoutLease(
+                        PlayerSessionAcquireResult.Status.CONFLICT
+                )
+        );
+
+        verify(coordinator).releaseIfOwned(oldLease);
+        assertEquals(
+                1,
+                releaseTimeoutScheduler.scheduledCount()
+        );
+
+        PlayerSessionReleaseTimeoutScheduler.ReleaseTimeoutKey key =
+                releaseTimeoutScheduler.scheduled(0).key();
+
+        assertEquals(PLAYER_ID, key.playerId());
+        assertEquals(oldLease, key.lease());
+        assertEquals(oldLease.fencingToken(), key.fencingToken());
+        assertTrue(key.externalCompletion() == hungRelease);
+
+        releaseTimeoutScheduler.scheduled(0).fire();
+
+        ContextFixture lateProbe =
+                authenticatedContext(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT + 1L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult lateBegin =
+                leaseBindingRegistry.beginTracked(
+                        lateProbe.player(),
+                        lateProbe.context()
+                                .envelope()
+                                .requestId(),
+                        new AuthenticatedPlayerSession(
+                                PLAYER_ID,
+                                "HarriOcho",
+                                AUTHENTICATED_AT + 1L
+                        )
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                lateBegin.decision()
+        );
+        assertTrue(
+                leaseBindingRegistry.awaitPendingRelease(
+                        lateProbe.player(),
+                        lateProbe.context()
+                                .envelope()
+                                .requestId(),
+                        PROXY_IDENTITY
+                ).isEmpty()
+        );
+        assertFalse(hungRelease.isDone());
+        assertFalse(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+
+        leaseBindingRegistry.completeRelease(
+                oldLease,
+                new CompletableFuture<>(),
+                true
+        );
+
+        assertFalse(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+
+        PlayerSessionLease newerLease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        oldLease.fencingToken() + 1L
+                );
+
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        newerLease
+                )
+        );
+
+        verify(acknowledgementSender).send(
+                newConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player session conflict"
+        );
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                newConnection.context(),
+                PLAYER_ID,
+                true,
+                "Player session already registered"
+        );
+        verify(
+                coordinator,
+                times(2)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+    }
+
+    @Test
     void releasesDeferredOldLeaseWhenNewCoordinationFails() {
         PlayerSessionCoordinator coordinator =
                 mock(PlayerSessionCoordinator.class);
@@ -5567,6 +5863,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         noOpTimeoutScheduler(),
+                        releaseService(
+                                sessionCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 )
         );
@@ -5579,6 +5879,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         noOpTimeoutScheduler(),
+                        releaseService(
+                                sessionCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 )
         );
@@ -5591,6 +5895,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         null,
                         acknowledgementSender,
                         noOpTimeoutScheduler(),
+                        releaseService(
+                                sessionCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 )
         );
@@ -5603,6 +5911,10 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         null,
                         noOpTimeoutScheduler(),
+                        releaseService(
+                                sessionCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         logger
                 )
         );
@@ -5614,6 +5926,23 @@ class PlayerAuthenticatedMessageHandlerTest {
                         leaseBindingRegistry,
                         PROXY_IDENTITY,
                         acknowledgementSender,
+                        null,
+                        releaseService(
+                                sessionCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerAuthenticatedMessageHandler(
+                        sessionCoordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        noOpTimeoutScheduler(),
                         null,
                         logger
                 )
@@ -5627,8 +5956,22 @@ class PlayerAuthenticatedMessageHandlerTest {
                         PROXY_IDENTITY,
                         acknowledgementSender,
                         noOpTimeoutScheduler(),
+                        releaseService(
+                                sessionCoordinator,
+                                explicitNoOpReleaseTimeoutScheduler()
+                        ),
                         null
                 )
+        );
+    }
+
+    @Test
+    void publicConstructorsRequireReleaseService() {
+        assertPublicConstructorsRequireReleaseService(
+                PlayerAuthenticatedMessageHandler.class
+        );
+        assertPublicConstructorsRequireReleaseService(
+                PlayerDisconnectListener.class
         );
     }
 
@@ -5641,12 +5984,51 @@ class PlayerAuthenticatedMessageHandlerTest {
                 PROXY_IDENTITY,
                 acknowledgementSender,
                 noOpTimeoutScheduler(),
+                releaseService(
+                        coordinator,
+                        explicitNoOpReleaseTimeoutScheduler()
+                ),
                 logger
         );
     }
 
+    private PlayerSessionReleaseService releaseService(
+            PlayerSessionCoordinator coordinator,
+            PlayerSessionReleaseTimeoutScheduler releaseTimeoutScheduler
+    ) {
+        return new PlayerSessionReleaseService(
+                coordinator,
+                leaseBindingRegistry,
+                releaseTimeoutScheduler,
+                logger
+        );
+    }
+
+    private void assertPublicConstructorsRequireReleaseService(
+            Class<?> type
+    ) {
+        for (Constructor<?> constructor
+                : type.getConstructors()) {
+            assertTrue(
+                    Arrays.asList(
+                            constructor.getParameterTypes()
+                    ).contains(PlayerSessionReleaseService.class),
+                    type.getSimpleName()
+                            + " public constructor omits "
+                            + "PlayerSessionReleaseService: "
+                            + constructor
+            );
+        }
+    }
+
     private PlayerSessionAcquisitionTimeoutScheduler
     noOpTimeoutScheduler() {
+        return (key, timeout) -> () -> {
+        };
+    }
+
+    private PlayerSessionReleaseTimeoutScheduler
+    explicitNoOpReleaseTimeoutScheduler() {
         return (key, timeout) -> () -> {
         };
     }
@@ -5912,6 +6294,62 @@ class PlayerAuthenticatedMessageHandlerTest {
 
                 triggered = true;
                 timeout.run();
+            }
+        }
+    }
+
+    private static final class ManualPlayerSessionReleaseTimeoutScheduler
+            implements PlayerSessionReleaseTimeoutScheduler {
+
+        private final List<ScheduledTimeout> scheduled =
+                new ArrayList<>();
+
+        @Override
+        public ScheduledReleaseTimeout schedule(
+                ReleaseTimeoutKey key,
+                Runnable timeout
+        ) {
+            ScheduledTimeout scheduledTimeout =
+                    new ScheduledTimeout(
+                            key,
+                            timeout
+                    );
+            scheduled.add(scheduledTimeout);
+            return scheduledTimeout;
+        }
+
+        private int scheduledCount() {
+            return scheduled.size();
+        }
+
+        private ScheduledTimeout scheduled(int index) {
+            return scheduled.get(index);
+        }
+
+        private static final class ScheduledTimeout
+                implements ScheduledReleaseTimeout {
+
+            private final ReleaseTimeoutKey key;
+            private final Runnable timeout;
+
+            private ScheduledTimeout(
+                    ReleaseTimeoutKey key,
+                    Runnable timeout
+            ) {
+                this.key = key;
+                this.timeout = timeout;
+            }
+
+            private ReleaseTimeoutKey key() {
+                return key;
+            }
+
+            private void fire() {
+                timeout.run();
+            }
+
+            @Override
+            public void cancel() {
             }
         }
     }

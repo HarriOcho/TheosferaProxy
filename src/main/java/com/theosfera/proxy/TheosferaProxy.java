@@ -39,7 +39,9 @@ import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
+import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionAcquisitionTimeoutScheduler;
+import com.theosfera.proxy.session.velocity.VelocityPlayerSessionReleaseTimeoutScheduler;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
@@ -86,6 +88,9 @@ public final class TheosferaProxy {
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final PendingPlayerFailoverRegistry failoverRegistry;
     private final PlayerDisconnectListener playerDisconnectListener;
+    private final PlayerSessionReleaseService releaseService;
+    private final VelocityPlayerSessionReleaseTimeoutScheduler
+            releaseTimeoutScheduler;
     private final BackendHealthRegistry healthRegistry;
     private final PendingBackendPingRegistry pendingPingRegistry;
 
@@ -162,13 +167,27 @@ public final class TheosferaProxy {
                         Duration.ofSeconds(10)
                 );
 
+        this.releaseTimeoutScheduler =
+                new VelocityPlayerSessionReleaseTimeoutScheduler(
+                        proxyServer,
+                        this
+                );
+
+        this.releaseService =
+                new PlayerSessionReleaseService(
+                        sessionCoordinator,
+                        sessionLeaseBindingRegistry,
+                        releaseTimeoutScheduler,
+                        logger
+                );
+
         this.playerDisconnectListener =
                 new PlayerDisconnectListener(
-                        sessionCoordinator,
                         sessionLeaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
                         capacityRegistry,
+                        releaseService,
                         logger
                 );
     }
@@ -423,6 +442,7 @@ public final class TheosferaProxy {
                                         proxyInstanceIdentity,
                                         authenticationAckSender,
                                         acquisitionTimeoutScheduler,
+                                        releaseService,
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(

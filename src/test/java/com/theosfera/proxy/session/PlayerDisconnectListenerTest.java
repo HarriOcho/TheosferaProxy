@@ -15,6 +15,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -88,10 +90,13 @@ class PlayerDisconnectListenerTest {
         player = player(PLAYER_ID);
 
         listener = new PlayerDisconnectListener(
-                sessionCoordinator,
                 leaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
+                releaseService(
+                        sessionCoordinator,
+                        new ManualPlayerSessionReleaseTimeoutScheduler()
+                ),
                 logger
         );
     }
@@ -592,6 +597,272 @@ class PlayerDisconnectListenerTest {
     }
 
     @Test
+    void disconnectHungReleaseTimesOutWithoutAnyReconnect() {
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+        CompletableFuture<Boolean> hungRelease =
+                new CompletableFuture<>();
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(hungRelease);
+
+        listenerWith(
+                coordinator,
+                releaseTimeoutScheduler
+        ).onDisconnect(disconnectEvent(oldConnection));
+
+        verify(coordinator).releaseIfOwned(oldLease);
+        assertEquals(1, releaseTimeoutScheduler.scheduledCount());
+
+        releaseTimeoutScheduler.scheduled(0).fire();
+
+        assertFalse(
+                leaseBindingRegistry
+                        .awaitPendingRelease(
+                                oldConnection,
+                                ACQUISITION_ID,
+                                PROXY_IDENTITY
+                        )
+                        .isPresent()
+        );
+        assertFalse(hungRelease.isDone());
+        assertFalse(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+    }
+
+    @Test
+    void disconnectHungReleaseDoesNotRequireReconnectForTimeout() {
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+        CompletableFuture<Boolean> hungRelease =
+                new CompletableFuture<>();
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(hungRelease);
+
+        listenerWith(
+                coordinator,
+                releaseTimeoutScheduler
+        ).onDisconnect(disconnectEvent(oldConnection));
+
+        releaseTimeoutScheduler.scheduled(0).fire();
+
+        assertFalse(hungRelease.isDone());
+        assertFalse(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+    }
+
+    @Test
+    void releaseCompletionBeforeOwnedTimeoutCancelsWatchdog() {
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+        CompletableFuture<Boolean> releaseStage =
+                new CompletableFuture<>();
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(releaseStage);
+
+        listenerWith(
+                coordinator,
+                releaseTimeoutScheduler
+        ).onDisconnect(disconnectEvent(oldConnection));
+
+        ManualPlayerSessionReleaseTimeoutScheduler.ScheduledTimeout
+                timeout = releaseTimeoutScheduler.scheduled(0);
+
+        releaseStage.complete(true);
+        timeout.fire();
+
+        assertTrue(timeout.cancelled());
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+    }
+
+    @Test
+    void lateExactReleaseCompletionReconcilesOwnedTimeoutQuarantine() {
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+        CompletableFuture<Boolean> releaseStage =
+                new CompletableFuture<>();
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(releaseStage);
+
+        listenerWith(
+                coordinator,
+                releaseTimeoutScheduler
+        ).onDisconnect(disconnectEvent(oldConnection));
+
+        releaseTimeoutScheduler.scheduled(0).fire();
+        releaseStage.complete(true);
+
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+    }
+
+    @Test
+    void differentStageCannotReconcileOwnedTimeoutQuarantine() {
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+        CompletableFuture<Boolean> releaseStage =
+                new CompletableFuture<>();
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(releaseStage);
+
+        listenerWith(
+                coordinator,
+                releaseTimeoutScheduler
+        ).onDisconnect(disconnectEvent(oldConnection));
+
+        releaseTimeoutScheduler.scheduled(0).fire();
+        leaseBindingRegistry.completeRelease(
+                oldLease,
+                new CompletableFuture<>(),
+                true
+        );
+
+        assertFalse(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+    }
+
+    @Test
+    void releaseTimeoutScheduleThrowFailsClosed() {
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+        CompletableFuture<Boolean> releaseStage =
+                new CompletableFuture<>();
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+        releaseTimeoutScheduler.throwOnSchedule();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(releaseStage);
+
+        listenerWith(
+                coordinator,
+                releaseTimeoutScheduler
+        ).onDisconnect(disconnectEvent(oldConnection));
+
+        assertFalse(releaseStage.isDone());
+        assertFalse(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+    }
+
+    @Test
+    void releaseTimeoutScheduleNullFailsClosed() {
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+        CompletableFuture<Boolean> releaseStage =
+                new CompletableFuture<>();
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+        releaseTimeoutScheduler.nullOnSchedule();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(releaseStage);
+
+        listenerWith(
+                coordinator,
+                releaseTimeoutScheduler
+        ).onDisconnect(disconnectEvent(oldConnection));
+
+        assertFalse(releaseStage.isDone());
+        assertFalse(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+    }
+
+    @Test
+    void releaseTimeoutCancelThrowDoesNotBlockCompletion() {
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+        CompletableFuture<Boolean> releaseStage =
+                new CompletableFuture<>();
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+        ManualPlayerSessionReleaseTimeoutScheduler
+                releaseTimeoutScheduler =
+                new ManualPlayerSessionReleaseTimeoutScheduler();
+        releaseTimeoutScheduler.throwOnCancel();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(releaseStage);
+
+        listenerWith(
+                coordinator,
+                releaseTimeoutScheduler
+        ).onDisconnect(disconnectEvent(oldConnection));
+
+        releaseStage.complete(true);
+
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        oldLease
+                )
+        );
+    }
+
+    @Test
     void completedDisconnectReleaseStageCompletesAfterAttachment() {
         PlayerSessionCoordinator coordinator =
                 mock(PlayerSessionCoordinator.class);
@@ -721,9 +992,12 @@ class PlayerDisconnectListenerTest {
                 NullPointerException.class,
                 () -> new PlayerDisconnectListener(
                         null,
-                        leaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
+                        releaseService(
+                                sessionCoordinator,
+                                new ManualPlayerSessionReleaseTimeoutScheduler()
+                        ),
                         logger
                 )
         );
@@ -731,31 +1005,9 @@ class PlayerDisconnectListenerTest {
         assertThrows(
                 NullPointerException.class,
                 () -> new PlayerDisconnectListener(
-                        sessionCoordinator,
-                        null,
-                        presenceRegistry,
-                        transferRegistry,
-                        logger
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> new PlayerDisconnectListener(
-                        sessionCoordinator,
-                        leaseBindingRegistry,
-                        null,
-                        transferRegistry,
-                        logger
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> new PlayerDisconnectListener(
-                        sessionCoordinator,
                         leaseBindingRegistry,
                         presenceRegistry,
+                        transferRegistry,
                         null,
                         logger
                 )
@@ -764,10 +1016,41 @@ class PlayerDisconnectListenerTest {
         assertThrows(
                 NullPointerException.class,
                 () -> new PlayerDisconnectListener(
-                        sessionCoordinator,
+                        leaseBindingRegistry,
+                        null,
+                        transferRegistry,
+                        releaseService(
+                                sessionCoordinator,
+                                new ManualPlayerSessionReleaseTimeoutScheduler()
+                        ),
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerDisconnectListener(
+                        leaseBindingRegistry,
+                        presenceRegistry,
+                        null,
+                        releaseService(
+                                sessionCoordinator,
+                                new ManualPlayerSessionReleaseTimeoutScheduler()
+                        ),
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerDisconnectListener(
                         leaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
+                        releaseService(
+                                sessionCoordinator,
+                                new ManualPlayerSessionReleaseTimeoutScheduler()
+                        ),
                         null
                 )
         );
@@ -775,11 +1058,14 @@ class PlayerDisconnectListenerTest {
         assertThrows(
                 NullPointerException.class,
                 () -> new PlayerDisconnectListener(
-                        sessionCoordinator,
                         leaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
-                        null,
+                        (BackendCapacityReservationRegistry) null,
+                        releaseService(
+                                sessionCoordinator,
+                                new ManualPlayerSessionReleaseTimeoutScheduler()
+                        ),
                         logger
                 )
         );
@@ -1043,10 +1329,41 @@ class PlayerDisconnectListenerTest {
             PlayerSessionCoordinator coordinator
     ) {
         return new PlayerDisconnectListener(
-                coordinator,
                 leaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
+                releaseService(
+                        coordinator,
+                        new ManualPlayerSessionReleaseTimeoutScheduler()
+                ),
+                logger
+        );
+    }
+
+    private PlayerDisconnectListener listenerWith(
+            PlayerSessionCoordinator coordinator,
+            PlayerSessionReleaseTimeoutScheduler releaseTimeoutScheduler
+    ) {
+        return new PlayerDisconnectListener(
+                leaseBindingRegistry,
+                presenceRegistry,
+                transferRegistry,
+                releaseService(
+                        coordinator,
+                        releaseTimeoutScheduler
+                ),
+                logger
+        );
+    }
+
+    private PlayerSessionReleaseService releaseService(
+            PlayerSessionCoordinator coordinator,
+            PlayerSessionReleaseTimeoutScheduler releaseTimeoutScheduler
+    ) {
+        return new PlayerSessionReleaseService(
+                coordinator,
+                leaseBindingRegistry,
+                releaseTimeoutScheduler,
                 logger
         );
     }
@@ -1073,5 +1390,98 @@ class PlayerDisconnectListenerTest {
                 .thenReturn(exactPlayer);
 
         return event;
+    }
+
+    private static final class ManualPlayerSessionReleaseTimeoutScheduler
+            implements PlayerSessionReleaseTimeoutScheduler {
+
+        private final List<ScheduledTimeout> scheduled =
+                new ArrayList<>();
+        private boolean throwOnSchedule;
+        private boolean nullOnSchedule;
+        private boolean throwOnCancel;
+
+        @Override
+        public ScheduledReleaseTimeout schedule(
+                ReleaseTimeoutKey key,
+                Runnable timeout
+        ) {
+            if (throwOnSchedule) {
+                throw new IllegalStateException("schedule failed");
+            }
+
+            if (nullOnSchedule) {
+                return null;
+            }
+
+            ScheduledTimeout scheduledTimeout =
+                    new ScheduledTimeout(
+                            key,
+                            timeout,
+                            throwOnCancel
+                    );
+            scheduled.add(scheduledTimeout);
+            return scheduledTimeout;
+        }
+
+        void throwOnSchedule() {
+            throwOnSchedule = true;
+        }
+
+        void nullOnSchedule() {
+            nullOnSchedule = true;
+        }
+
+        void throwOnCancel() {
+            throwOnCancel = true;
+        }
+
+        int scheduledCount() {
+            return scheduled.size();
+        }
+
+        ScheduledTimeout scheduled(int index) {
+            return scheduled.get(index);
+        }
+
+        private static final class ScheduledTimeout
+                implements ScheduledReleaseTimeout {
+
+            private final ReleaseTimeoutKey key;
+            private final Runnable timeout;
+            private final boolean throwOnCancel;
+            private boolean cancelled;
+
+            private ScheduledTimeout(
+                    ReleaseTimeoutKey key,
+                    Runnable timeout,
+                    boolean throwOnCancel
+            ) {
+                this.key = key;
+                this.timeout = timeout;
+                this.throwOnCancel = throwOnCancel;
+            }
+
+            void fire() {
+                if (!cancelled) {
+                    timeout.run();
+                }
+            }
+
+            boolean cancelled() {
+                return cancelled;
+            }
+
+            @Override
+            public void cancel() {
+                if (throwOnCancel) {
+                    throw new IllegalStateException(
+                            "cancel failed"
+                    );
+                }
+
+                cancelled = true;
+            }
+        }
     }
 }

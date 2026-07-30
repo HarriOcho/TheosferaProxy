@@ -27,6 +27,7 @@ import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
+import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
@@ -220,6 +221,15 @@ class ProtocolPlayerTransferFlowTest {
                         logger
                 );
 
+        PlayerSessionReleaseService releaseService =
+                new PlayerSessionReleaseService(
+                        sessionCoordinator,
+                        leaseBindingRegistry,
+                        (key, timeout) -> () -> {
+                        },
+                        logger
+                );
+
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
@@ -237,6 +247,7 @@ class ProtocolPlayerTransferFlowTest {
                                         authenticationAckSender,
                                         (key, timeout) -> () -> {
                                         },
+                                        releaseService,
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(

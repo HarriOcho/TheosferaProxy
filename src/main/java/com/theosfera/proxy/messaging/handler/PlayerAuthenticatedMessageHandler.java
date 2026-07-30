@@ -17,6 +17,7 @@ import com.theosfera.proxy.session.PlayerSessionAcquisitionTimeoutScheduler.Sche
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry.TerminalAcknowledgement;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingResult;
+import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.velocitypowered.api.proxy.Player;
 import org.slf4j.Logger;
 
@@ -37,6 +38,7 @@ public final class PlayerAuthenticatedMessageHandler
             acknowledgementSender;
     private final PlayerSessionAcquisitionTimeoutScheduler
             acquisitionTimeoutScheduler;
+    private final PlayerSessionReleaseService releaseService;
     private final Logger logger;
 
     public PlayerAuthenticatedMessageHandler(
@@ -47,6 +49,7 @@ public final class PlayerAuthenticatedMessageHandler
             PlayerAuthenticationAckSender acknowledgementSender,
             PlayerSessionAcquisitionTimeoutScheduler
                     acquisitionTimeoutScheduler,
+            PlayerSessionReleaseService releaseService,
             Logger logger
     ) {
         this.sessionCoordinator = Objects.requireNonNull(
@@ -80,6 +83,11 @@ public final class PlayerAuthenticatedMessageHandler
         this.logger = Objects.requireNonNull(
                 logger,
                 "logger cannot be null"
+        );
+
+        this.releaseService = Objects.requireNonNull(
+                releaseService,
+                "releaseService cannot be null"
         );
     }
 
@@ -1103,86 +1111,56 @@ public final class PlayerAuthenticatedMessageHandler
             PlayerSessionLease lease,
             PlayerSessionLeaseBindingResult bindingResult
     ) {
-        boolean releaseReserved =
-                leaseBindingRegistry
-                        .reserveReleaseIfUnbound(lease);
+        releaseUnboundLeaseWithOwnedTimeout(
+                lease,
+                bindingResult
+        );
+    }
 
-        if (!releaseReserved) {
-            logger.debug(
-                    "No se liberó el lease de {} porque está "
-                            + "protegido por un binding activo "
-                            + "o ya tiene una liberación pendiente "
-                            + "({}, token {}).",
-                    lease.session().playerId(),
-                    bindingResult,
-                    lease.fencingToken()
-            );
-            return;
-        }
+    private void releaseUnboundLeaseWithOwnedTimeout(
+            PlayerSessionLease lease,
+            PlayerSessionLeaseBindingResult bindingResult
+    ) {
+        releaseService.releaseIfUnbound(
+                lease,
+                new PlayerSessionReleaseService.ReleaseCallbacks() {
+                    @Override
+                    public void onNotReserved(
+                            PlayerSessionLease ignored
+                    ) {
+                        logger.debug(
+                                "No se liberó el lease de {} porque "
+                                        + "está protegido por un "
+                                        + "binding activo o ya tiene "
+                                        + "una liberación pendiente "
+                                        + "({}, token {}).",
+                                lease.session().playerId(),
+                                bindingResult,
+                                lease.fencingToken()
+                        );
+                    }
 
-        CompletionStage<Boolean> releaseStage;
-
-        try {
-            releaseStage = Objects.requireNonNull(
-                    sessionCoordinator.releaseIfOwned(lease),
-                    "sessionCoordinator.releaseIfOwned "
-                            + "returned null"
-            );
-        } catch (RuntimeException exception) {
-            leaseBindingRegistry.failReleaseBeforeExternalAttachment(
-                    lease,
-                    exception
-            );
-
-            logger.error(
-                    "No se pudo iniciar la liberación del lease "
-                            + "no vinculado de {} ({}, token {}).",
-                    lease.session().playerId(),
-                    bindingResult,
-                    lease.fencingToken(),
-                    exception
-            );
-            return;
-        }
-
-        boolean releaseAttached =
-                leaseBindingRegistry.attachReleaseCompletion(
-                        lease,
-                        releaseStage
-                );
-
-        if (!releaseAttached) {
-            IllegalStateException exception =
-                    new IllegalStateException(
-                            "Release completion stage could not be "
-                                    + "attached to the tracked lease"
-                    );
-
-            leaseBindingRegistry.failReleaseBeforeExternalAttachment(
-                    lease,
-                    exception
-            );
-
-            logger.error(
-                    "No se pudo asociar la liberaciÃ³n del lease "
-                            + "no vinculado de {} ({}, token {}).",
-                    lease.session().playerId(),
-                    bindingResult,
-                    lease.fencingToken(),
-                    exception
-            );
-            return;
-        }
-
-        releaseStage.whenComplete(
-                (released, failure) -> {
-                    if (failure != null) {
-                        leaseBindingRegistry.failRelease(
-                                lease,
-                                releaseStage,
+                    @Override
+                    public void onStartFailure(
+                            PlayerSessionLease ignored,
+                            RuntimeException failure
+                    ) {
+                        logger.error(
+                                "No se pudo iniciar la liberación "
+                                        + "del lease no vinculado de "
+                                        + "{} ({}, token {}).",
+                                lease.session().playerId(),
+                                bindingResult,
+                                lease.fencingToken(),
                                 failure
                         );
+                    }
 
+                    @Override
+                    public void onFailure(
+                            PlayerSessionLease ignored,
+                            Throwable failure
+                    ) {
                         logger.error(
                                 "Falló la liberación del lease "
                                         + "no vinculado de {} "
@@ -1192,28 +1170,24 @@ public final class PlayerAuthenticatedMessageHandler
                                 lease.fencingToken(),
                                 failure
                         );
-                        return;
                     }
 
-                    boolean releaseSucceeded =
-                            Boolean.TRUE.equals(released);
-
-                    leaseBindingRegistry.completeRelease(
-                            lease,
-                            releaseStage,
-                            releaseSucceeded
-                    );
-
-                    if (!releaseSucceeded) {
-                        logger.debug(
-                                "El lease no vinculado de {} "
-                                        + "ya no era propiedad exacta "
-                                        + "de esta operación "
-                                        + "({}, token {}).",
-                                lease.session().playerId(),
-                                bindingResult,
-                                lease.fencingToken()
-                        );
+                    @Override
+                    public void onComplete(
+                            PlayerSessionLease ignored,
+                            boolean released
+                    ) {
+                        if (!released) {
+                            logger.debug(
+                                    "El lease no vinculado de {} "
+                                            + "ya no era propiedad "
+                                            + "exacta de esta operación "
+                                            + "({}, token {}).",
+                                    lease.session().playerId(),
+                                    bindingResult,
+                                    lease.fencingToken()
+                            );
+                        }
                     }
                 }
         );
@@ -1258,4 +1232,5 @@ public final class PlayerAuthenticatedMessageHandler
 
         return payload;
     }
+
 }

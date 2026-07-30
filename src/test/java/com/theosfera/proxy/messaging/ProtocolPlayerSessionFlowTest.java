@@ -25,6 +25,7 @@ import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
+import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
@@ -123,6 +124,15 @@ class ProtocolPlayerSessionFlowTest {
                         logger
                 );
 
+        PlayerSessionReleaseService releaseService =
+                new PlayerSessionReleaseService(
+                        sessionCoordinator,
+                        leaseBindingRegistry,
+                        (key, timeout) -> () -> {
+                        },
+                        logger
+                );
+
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
@@ -140,6 +150,7 @@ class ProtocolPlayerSessionFlowTest {
                                         acknowledgementSender,
                                         (key, timeout) -> () -> {
                                         },
+                                        releaseService,
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(
@@ -158,10 +169,10 @@ class ProtocolPlayerSessionFlowTest {
 
         PlayerDisconnectListener disconnectListener =
                 new PlayerDisconnectListener(
-                        sessionCoordinator,
                         leaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
+                        releaseService,
                         logger
                 );
 
