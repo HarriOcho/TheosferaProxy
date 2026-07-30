@@ -163,7 +163,7 @@ public final class PlayerDisconnectListener {
                             + "returned null"
             );
         } catch (RuntimeException exception) {
-            leaseBindingRegistry.failRelease(
+            leaseBindingRegistry.failReleaseBeforeExternalAttachment(
                     lease,
                     exception
             );
@@ -182,11 +182,44 @@ public final class PlayerDisconnectListener {
             return;
         }
 
+        boolean releaseAttached =
+                leaseBindingRegistry.attachReleaseCompletion(
+                        lease,
+                        releaseStage
+                );
+
+        if (!releaseAttached) {
+            IllegalStateException exception =
+                    new IllegalStateException(
+                            "Release completion stage could not be "
+                                    + "attached to the tracked lease"
+                    );
+
+            leaseBindingRegistry.failReleaseBeforeExternalAttachment(
+                    lease,
+                    exception
+            );
+
+            logger.error(
+                    "No se pudo asociar la liberaciÃ³n del lease "
+                            + "de sesiÃ³n para {}.",
+                    playerId,
+                    exception
+            );
+
+            if (localStateRemoved) {
+                logStateRemoval(playerId);
+            }
+
+            return;
+        }
+
         releaseStage.whenComplete(
                 (released, failure) -> {
                     if (failure != null) {
                         leaseBindingRegistry.failRelease(
                                 lease,
+                                releaseStage,
                                 failure
                         );
 
@@ -209,6 +242,7 @@ public final class PlayerDisconnectListener {
 
                     leaseBindingRegistry.completeRelease(
                             lease,
+                            releaseStage,
                             releaseSucceeded
                     );
 

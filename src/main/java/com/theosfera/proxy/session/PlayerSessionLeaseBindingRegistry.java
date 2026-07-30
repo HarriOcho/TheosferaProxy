@@ -32,8 +32,12 @@ public final class PlayerSessionLeaseBindingRegistry {
             generationsByPlayerId =
             new HashMap<>();
 
-    private final Map<PlayerSessionLease, CompletableFuture<Boolean>>
+    private final Map<PlayerSessionLease, TrackedRelease>
             pendingReleases =
+            new HashMap<>();
+
+    private final Map<UUID, ReleaseQuarantine>
+            releaseQuarantines =
             new HashMap<>();
 
     private final Map<UUID, ActiveRequest> activeRequests =
@@ -191,6 +195,16 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         if (terminal != null) {
             if (terminal.session().equals(nonNullSession)) {
+                if (terminal.acknowledgement().successful()
+                        && !hasLiveSuccessfulReplayBinding(
+                                nonNullPlayer,
+                                terminal
+                        )) {
+                    return BeginResult.conflict(
+                            Optional.empty()
+                    );
+                }
+
                 return BeginResult.completedReplay(
                         terminal.acknowledgement()
                 );
@@ -395,14 +409,14 @@ public final class PlayerSessionLeaseBindingRegistry {
                         existing.pendingAcquisitions()
                 );
 
-        CompletableFuture<Boolean> pendingRelease =
+        TrackedRelease pendingRelease =
                 pendingReleases.get(nonNullLease);
 
         if (pendingRelease != null) {
             PendingAcquisition waiting =
                     acquisition.waitingForRelease(
                             nonNullLease,
-                            pendingRelease
+                            pendingRelease.completion()
                     );
 
             PendingRelease waitingRelease =
@@ -463,10 +477,15 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         remaining.remove(nonNullAcquisitionId);
 
+        long fencingFloor =
+                fencingFloorFor(playerId);
+
         if (releaseMatchesLeaseOwner
                 && nonNullLease.fencingToken()
-                <= acquisition
-                .minimumFencingTokenExclusive()) {
+                <= Math.max(
+                acquisition.minimumFencingTokenExclusive(),
+                fencingFloor
+        )) {
             updateState(
                     playerId,
                     new PlayerState(
@@ -588,7 +607,14 @@ public final class PlayerSessionLeaseBindingRegistry {
 
             completeSuccessfulBinding(
                     nonNullAcquisitionId,
+                    nonNullPlayer,
+                    nonNullLease,
                     nonNullSuccessfulAcknowledgement
+            );
+
+            clearReleaseQuarantineIfSuperseded(
+                    playerId,
+                    nonNullLease
             );
 
             return PlayerSessionLeaseBindingResult.BOUND;
@@ -619,7 +645,14 @@ public final class PlayerSessionLeaseBindingRegistry {
             if (sameConnection) {
                 completeSuccessfulBinding(
                         nonNullAcquisitionId,
+                        nonNullPlayer,
+                        nonNullLease,
                         nonNullSuccessfulAcknowledgement
+                );
+
+                clearReleaseQuarantineIfSuperseded(
+                        playerId,
+                        nonNullLease
                 );
 
                 return PlayerSessionLeaseBindingResult
@@ -628,7 +661,14 @@ public final class PlayerSessionLeaseBindingRegistry {
 
             completeSuccessfulBinding(
                     nonNullAcquisitionId,
+                    nonNullPlayer,
+                    nonNullLease,
                     nonNullSuccessfulAcknowledgement
+            );
+
+            clearReleaseQuarantineIfSuperseded(
+                    playerId,
+                    nonNullLease
             );
 
             return PlayerSessionLeaseBindingResult.REPLACED;
@@ -658,7 +698,14 @@ public final class PlayerSessionLeaseBindingRegistry {
 
             completeSuccessfulBinding(
                     nonNullAcquisitionId,
+                    nonNullPlayer,
+                    nonNullLease,
                     nonNullSuccessfulAcknowledgement
+            );
+
+            clearReleaseQuarantineIfSuperseded(
+                    playerId,
+                    nonNullLease
             );
 
             return PlayerSessionLeaseBindingResult.REPLACED;
@@ -936,6 +983,11 @@ public final class PlayerSessionLeaseBindingRegistry {
         UUID playerId =
                 nonNullLease.session().playerId();
 
+        if (nonNullLease.fencingToken()
+                <= fencingFloorFor(playerId)) {
+            return false;
+        }
+
         PlayerState state = states.get(playerId);
 
         if (state != null
@@ -953,15 +1005,87 @@ public final class PlayerSessionLeaseBindingRegistry {
             }
         }
 
-        if (pendingReleases.containsKey(
-                nonNullLease
-        )) {
+        if (pendingReleases.containsKey(nonNullLease)) {
             return false;
         }
 
         pendingReleases.put(
                 nonNullLease,
-                new CompletableFuture<>()
+                TrackedRelease.awaitable(
+                        nonNullLease,
+                        new CompletableFuture<>(),
+                        null
+                )
+        );
+
+        return true;
+    }
+
+    public synchronized boolean attachReleaseCompletion(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> externalCompletion
+    ) {
+        PlayerSessionLease nonNullLease =
+                Objects.requireNonNull(
+                        lease,
+                        "lease cannot be null"
+                );
+
+        CompletionStage<Boolean> nonNullExternal =
+                Objects.requireNonNull(
+                        externalCompletion,
+                        "externalCompletion cannot be null"
+                );
+
+        TrackedRelease trackedRelease =
+                pendingReleases.get(nonNullLease);
+
+        if (trackedRelease != null) {
+            CompletionStage<Boolean> existingExternal =
+                    trackedRelease.externalCompletion();
+
+            if (existingExternal == nonNullExternal) {
+                return true;
+            }
+
+            if (existingExternal != null) {
+                return false;
+            }
+
+            pendingReleases.put(
+                    nonNullLease,
+                    trackedRelease.withExternalCompletion(
+                            nonNullExternal
+                    )
+            );
+
+            return true;
+        }
+
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.get(
+                        nonNullLease.session().playerId()
+                );
+
+        if (quarantine == null
+                || !quarantine.lease().equals(nonNullLease)) {
+            return false;
+        }
+
+        CompletionStage<Boolean> existingExternal =
+                quarantine.externalCompletion();
+
+        if (existingExternal == nonNullExternal) {
+            return true;
+        }
+
+        if (existingExternal != null) {
+            return false;
+        }
+
+        releaseQuarantines.put(
+                nonNullLease.session().playerId(),
+                quarantine.withExternalCompletion(nonNullExternal)
         );
 
         return true;
@@ -1231,6 +1355,10 @@ public final class PlayerSessionLeaseBindingRegistry {
                 || acquisition.attemptId() != expectedAttemptId
                 || !acquisition.acquisitionResultClaimed()
                 || pendingRelease == null
+                || !pendingRelease.lease()
+                .session()
+                .playerId()
+                .equals(playerId)
                 || pendingRelease.completion()
                 != nonNullExpectedCompletion
                 || activeRequest == null
@@ -1242,11 +1370,45 @@ public final class PlayerSessionLeaseBindingRegistry {
             return Cancellation.inactive();
         }
 
-        return cancel(
+        PlayerSessionLease releaseLease =
+                pendingRelease.lease();
+
+        TrackedRelease trackedRelease =
+                pendingReleases.get(releaseLease);
+
+        boolean releaseAwaitable =
+                trackedRelease != null
+                        && trackedRelease.completion()
+                        == nonNullExpectedCompletion
+                        && trackedRelease.lease()
+                        .equals(releaseLease);
+
+        boolean releaseQuarantined =
+                isExactQuarantine(
+                        playerId,
+                        releaseLease,
+                        nonNullExpectedCompletion
+                );
+
+        if (!releaseAwaitable && !releaseQuarantined) {
+            return Cancellation.inactive();
+        }
+
+        Cancellation cancellation =
+                cancel(
                 nonNullPlayer,
                 nonNullAcquisitionId,
                 nonNullAcknowledgement
         );
+
+        if (releaseAwaitable) {
+            quarantineRelease(
+                    releaseLease,
+                    nonNullExpectedCompletion
+            );
+        }
+
+        return cancellation;
     }
     public synchronized Optional<CompletionStage<Boolean>>
     awaitPendingRelease(
@@ -1291,6 +1453,13 @@ public final class PlayerSessionLeaseBindingRegistry {
                 acquisition.pendingRelease();
 
         if (existingRelease != null) {
+            if (isQuarantined(
+                    playerId,
+                    existingRelease.completion()
+            )) {
+                return Optional.empty();
+            }
+
             if (!existingRelease
                     .lease()
                     .owner()
@@ -1306,11 +1475,12 @@ public final class PlayerSessionLeaseBindingRegistry {
         PlayerSessionLease pendingLease = null;
         CompletableFuture<Boolean> completion = null;
 
-        for (Map.Entry<PlayerSessionLease,
-                CompletableFuture<Boolean>> entry
+        for (Map.Entry<PlayerSessionLease, TrackedRelease> entry
                 : pendingReleases.entrySet()) {
             PlayerSessionLease candidate =
                     entry.getKey();
+            TrackedRelease trackedRelease =
+                    entry.getValue();
 
             if (!playerId.equals(
                     candidate.session().playerId()
@@ -1325,8 +1495,10 @@ public final class PlayerSessionLeaseBindingRegistry {
             }
 
             if (candidate.fencingToken()
-                    <= acquisition
-                    .minimumFencingTokenExclusive()) {
+                    <= Math.max(
+                    acquisition.minimumFencingTokenExclusive(),
+                    fencingFloorFor(playerId)
+            )) {
                 continue;
             }
 
@@ -1334,7 +1506,7 @@ public final class PlayerSessionLeaseBindingRegistry {
                     || candidate.fencingToken()
                     > pendingLease.fencingToken()) {
                 pendingLease = candidate;
-                completion = entry.getValue();
+                completion = trackedRelease.completion();
             }
         }
 
@@ -1537,18 +1709,72 @@ public final class PlayerSessionLeaseBindingRegistry {
                 );
 
         CompletableFuture<Boolean> completion;
-
         synchronized (this) {
-            completion =
+            TrackedRelease trackedRelease =
                     pendingReleases.remove(
                             nonNullLease
                     );
+
+            completion =
+                    trackedRelease == null
+                            ? null
+                            : trackedRelease.completion();
 
             if (completion != null) {
                 attachReleaseCompletionToPendingAcquisitions(
                         nonNullLease,
                         completion
                 );
+            }
+        }
+
+        if (completion != null) {
+            completion.complete(released);
+        }
+    }
+
+    public void completeRelease(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> expectedCompletion,
+            boolean released
+    ) {
+        PlayerSessionLease nonNullLease =
+                Objects.requireNonNull(
+                        lease,
+                        "lease cannot be null"
+                );
+
+        CompletionStage<Boolean> nonNullExpected =
+                Objects.requireNonNull(
+                        expectedCompletion,
+                        "expectedCompletion cannot be null"
+                );
+
+        CompletableFuture<Boolean> completion;
+
+        synchronized (this) {
+            TrackedRelease trackedRelease =
+                    pendingReleases.get(nonNullLease);
+
+            if (trackedRelease != null) {
+                if (trackedRelease.externalCompletion()
+                        != nonNullExpected) {
+                    return;
+                }
+
+                pendingReleases.remove(nonNullLease);
+                completion = trackedRelease.completion();
+
+                attachReleaseCompletionToPendingAcquisitions(
+                        nonNullLease,
+                        completion
+                );
+            } else {
+                completion =
+                        removeReleaseQuarantine(
+                                nonNullLease,
+                                nonNullExpected
+                        );
             }
         }
 
@@ -1574,18 +1800,137 @@ public final class PlayerSessionLeaseBindingRegistry {
                 );
 
         CompletableFuture<Boolean> completion;
-
         synchronized (this) {
-            completion =
+            TrackedRelease trackedRelease =
                     pendingReleases.remove(
                             nonNullLease
                     );
+
+            completion =
+                    trackedRelease == null
+                            ? null
+                            : trackedRelease.completion();
 
             if (completion != null) {
                 attachReleaseCompletionToPendingAcquisitions(
                         nonNullLease,
                         completion
                 );
+            }
+        }
+
+        if (completion != null) {
+            completion.completeExceptionally(
+                    nonNullFailure
+            );
+        }
+    }
+
+    public boolean failReleaseBeforeExternalAttachment(
+            PlayerSessionLease lease,
+            Throwable failure
+    ) {
+        PlayerSessionLease nonNullLease =
+                Objects.requireNonNull(
+                        lease,
+                        "lease cannot be null"
+                );
+
+        Throwable nonNullFailure =
+                Objects.requireNonNull(
+                        failure,
+                        "failure cannot be null"
+                );
+
+        CompletableFuture<Boolean> completion;
+
+        synchronized (this) {
+            TrackedRelease trackedRelease =
+                    pendingReleases.get(nonNullLease);
+
+            if (trackedRelease != null) {
+                if (trackedRelease.externalCompletion() != null) {
+                    return false;
+                }
+
+                pendingReleases.remove(nonNullLease);
+                completion = trackedRelease.completion();
+
+                attachReleaseCompletionToPendingAcquisitions(
+                        nonNullLease,
+                        completion
+                );
+            } else {
+                ReleaseQuarantine quarantine =
+                        releaseQuarantines.get(
+                                nonNullLease.session().playerId()
+                        );
+
+                if (quarantine == null
+                        || !quarantine.lease().equals(nonNullLease)
+                        || quarantine.externalCompletion() != null) {
+                    return false;
+                }
+
+                releaseQuarantines.remove(
+                        nonNullLease.session().playerId()
+                );
+                completion = quarantine.completion();
+            }
+        }
+
+        completion.completeExceptionally(nonNullFailure);
+        return true;
+    }
+
+    public void failRelease(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> expectedCompletion,
+            Throwable failure
+    ) {
+        PlayerSessionLease nonNullLease =
+                Objects.requireNonNull(
+                        lease,
+                        "lease cannot be null"
+                );
+
+        CompletionStage<Boolean> nonNullExpected =
+                Objects.requireNonNull(
+                        expectedCompletion,
+                        "expectedCompletion cannot be null"
+                );
+
+        Throwable nonNullFailure =
+                Objects.requireNonNull(
+                        failure,
+                        "failure cannot be null"
+                );
+
+        CompletableFuture<Boolean> completion;
+
+        synchronized (this) {
+            TrackedRelease trackedRelease =
+                    pendingReleases.get(nonNullLease);
+
+            if (trackedRelease != null) {
+                if (trackedRelease.externalCompletion()
+                        != nonNullExpected) {
+                    return;
+                }
+
+                pendingReleases.remove(nonNullLease);
+                completion = trackedRelease.completion();
+
+                attachReleaseCompletionToPendingAcquisitions(
+                        nonNullLease,
+                        completion
+                );
+            } else {
+                completion =
+                        removeReleaseQuarantine(
+                                nonNullLease,
+                                nonNullExpected
+                        );
             }
         }
 
@@ -1635,8 +1980,116 @@ public final class PlayerSessionLeaseBindingRegistry {
         states.clear();
         generationsByPlayerId.clear();
         pendingReleases.clear();
+        releaseQuarantines.clear();
         activeRequests.clear();
         terminalRequests.clear();
+    }
+
+    private void quarantineRelease(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> completion
+    ) {
+        UUID playerId =
+                lease.session().playerId();
+
+        TrackedRelease trackedRelease =
+                pendingReleases.get(lease);
+
+        if (trackedRelease == null
+                || trackedRelease.completion() != completion) {
+            return;
+        }
+
+        pendingReleases.remove(lease);
+
+        ReleaseQuarantine existing =
+                releaseQuarantines.get(playerId);
+
+        if (existing == null
+                || lease.fencingToken()
+                >= existing.fencingFloor()) {
+            releaseQuarantines.put(
+                    playerId,
+                    new ReleaseQuarantine(
+                            lease,
+                            trackedRelease.completion(),
+                            trackedRelease.externalCompletion(),
+                            lease.fencingToken()
+                    )
+            );
+        }
+    }
+
+    private boolean isQuarantined(
+            UUID playerId,
+            CompletionStage<Boolean> completion
+    ) {
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.get(playerId);
+
+        return quarantine != null
+                && quarantine.completion() == completion;
+    }
+
+    private boolean isExactQuarantine(
+            UUID playerId,
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> completion
+    ) {
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.get(playerId);
+
+        return quarantine != null
+                && quarantine.lease().equals(lease)
+                && quarantine.completion() == completion;
+    }
+
+    private CompletableFuture<Boolean> removeReleaseQuarantine(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> completion
+    ) {
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.get(
+                        lease.session().playerId()
+                );
+
+        if (quarantine == null
+                || !quarantine.lease().equals(lease)
+                || quarantine.externalCompletion() != completion) {
+            return null;
+        }
+
+        releaseQuarantines.remove(
+                lease.session().playerId()
+        );
+
+        return quarantine.completion();
+    }
+
+    private long fencingFloorFor(UUID playerId) {
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.get(playerId);
+
+        return quarantine == null
+                ? 0L
+                : quarantine.fencingFloor();
+    }
+
+    private void clearReleaseQuarantineIfSuperseded(
+            UUID playerId,
+            PlayerSessionLease lease
+    ) {
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.get(playerId);
+
+        if (quarantine == null) {
+            return;
+        }
+
+        if (lease.fencingToken()
+                > quarantine.fencingFloor()) {
+            releaseQuarantines.remove(playerId);
+        }
     }
 
     private Map<UUID, PendingAcquisition> markDisconnected(
@@ -1765,10 +2218,16 @@ public final class PlayerSessionLeaseBindingRegistry {
     }
     private void completeSuccessfulBinding(
             UUID acquisitionId,
+            Player player,
+            PlayerSessionLease lease,
             TerminalAcknowledgement acknowledgement
     ) {
         completeActiveRequest(
                 acquisitionId,
+                new SuccessfulReplayBinding(
+                        player,
+                        lease
+                ),
                 acknowledgement
         );
     }
@@ -1801,6 +2260,18 @@ public final class PlayerSessionLeaseBindingRegistry {
             UUID acquisitionId,
             TerminalAcknowledgement acknowledgement
     ) {
+        completeActiveRequest(
+                acquisitionId,
+                null,
+                acknowledgement
+        );
+    }
+
+    private void completeActiveRequest(
+            UUID acquisitionId,
+            SuccessfulReplayBinding successfulReplayBinding,
+            TerminalAcknowledgement acknowledgement
+    ) {
         ActiveRequest active =
                 activeRequests.remove(acquisitionId);
 
@@ -1822,9 +2293,50 @@ public final class PlayerSessionLeaseBindingRegistry {
                         active.session(),
                         active.attemptId(),
                         nonNullAcknowledgement,
+                        Optional.ofNullable(
+                                successfulReplayBinding
+                        ),
                         terminalExpirationMillis()
                 )
         );
+    }
+
+    private boolean hasLiveSuccessfulReplayBinding(
+            Player player,
+            TerminalRequest terminal
+    ) {
+        SuccessfulReplayBinding replayBinding =
+                terminal
+                        .successfulReplayBinding()
+                        .orElse(null);
+
+        if (replayBinding == null
+                || replayBinding.player() != player) {
+            return false;
+        }
+
+        PlayerSessionLease lease =
+                replayBinding.lease();
+
+        if (!lease.session()
+                .equals(terminal.session())) {
+            return false;
+        }
+
+        PlayerState state =
+                states.get(player.getUniqueId());
+
+        if (state == null
+                || state.boundLease().isEmpty()) {
+            return false;
+        }
+
+        BoundLease bound =
+                state.boundLease().orElseThrow();
+
+        return bound.player() == player
+                && !bound.disconnected()
+                && bound.lease().equals(lease);
     }
 
     private void rememberTerminal(
@@ -2089,6 +2601,8 @@ public final class PlayerSessionLeaseBindingRegistry {
             AuthenticatedPlayerSession session,
             long attemptId,
             TerminalAcknowledgement acknowledgement,
+            Optional<SuccessfulReplayBinding>
+                    successfulReplayBinding,
             long expiresAtMillis
     ) {
 
@@ -2108,8 +2622,48 @@ public final class PlayerSessionLeaseBindingRegistry {
                     acknowledgement,
                     "acknowledgement cannot be null"
             );
+
+            successfulReplayBinding =
+                    Objects.requireNonNull(
+                            successfulReplayBinding,
+                            "successfulReplayBinding cannot be null"
+                    );
+
+            if (!acknowledgement.successful()
+                    && successfulReplayBinding.isPresent()) {
+                throw new IllegalArgumentException(
+                        "failed terminal requests cannot carry "
+                                + "successful replay binding"
+                );
+            }
+
+            if (acknowledgement.successful()
+                    && successfulReplayBinding.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "successful terminal requests require "
+                                + "successful replay binding"
+                );
+            }
         }
 
+    }
+
+    private record SuccessfulReplayBinding(
+            Player player,
+            PlayerSessionLease lease
+    ) {
+
+        private SuccessfulReplayBinding {
+            Objects.requireNonNull(
+                    player,
+                    "player cannot be null"
+            );
+
+            Objects.requireNonNull(
+                    lease,
+                    "lease cannot be null"
+            );
+        }
     }
 
     public record Cancellation(
@@ -2230,6 +2784,93 @@ public final class PlayerSessionLeaseBindingRegistry {
                     "completion cannot be null"
             );
         }
+    }
+
+    private record TrackedRelease(
+            PlayerSessionLease lease,
+            CompletableFuture<Boolean> completion,
+            CompletionStage<Boolean> externalCompletion
+    ) {
+
+        private TrackedRelease {
+            Objects.requireNonNull(
+                    lease,
+                    "lease cannot be null"
+            );
+
+            Objects.requireNonNull(
+                    completion,
+                    "completion cannot be null"
+            );
+
+        }
+
+        private static TrackedRelease awaitable(
+                PlayerSessionLease lease,
+                CompletableFuture<Boolean> completion,
+                CompletionStage<Boolean> externalCompletion
+        ) {
+            return new TrackedRelease(
+                    lease,
+                    completion,
+                    externalCompletion
+            );
+        }
+
+        private TrackedRelease withExternalCompletion(
+                CompletionStage<Boolean> newExternalCompletion
+        ) {
+            return new TrackedRelease(
+                    lease,
+                    completion,
+                    Objects.requireNonNull(
+                            newExternalCompletion,
+                            "newExternalCompletion cannot be null"
+                    )
+            );
+        }
+    }
+
+    private record ReleaseQuarantine(
+            PlayerSessionLease lease,
+            CompletableFuture<Boolean> completion,
+            CompletionStage<Boolean> externalCompletion,
+            long fencingFloor
+    ) {
+
+        private ReleaseQuarantine {
+            Objects.requireNonNull(
+                    lease,
+                    "lease cannot be null"
+            );
+
+            completion =
+                    Objects.requireNonNull(
+                            completion,
+                            "completion cannot be null"
+                    );
+
+            if (fencingFloor <= 0) {
+                throw new IllegalArgumentException(
+                        "fencingFloor must be greater than zero"
+                );
+            }
+        }
+
+        private ReleaseQuarantine withExternalCompletion(
+                CompletionStage<Boolean> newExternalCompletion
+        ) {
+            return new ReleaseQuarantine(
+                    lease,
+                    completion,
+                    Objects.requireNonNull(
+                            newExternalCompletion,
+                            "newExternalCompletion cannot be null"
+                    ),
+                    fencingFloor
+            );
+        }
+
     }
 
     private record PendingAcquisition(

@@ -14,10 +14,14 @@ import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
+import com.theosfera.proxy.session.PlayerDisconnectListener;
+import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionAcquisitionTimeoutScheduler;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry.TerminalAcknowledgement;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingResult;
+import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
 import com.velocitypowered.api.proxy.server.ServerInfo;
@@ -209,6 +213,203 @@ class PlayerAuthenticatedMessageHandlerTest {
                 "Player session already registered"
         );
     }
+
+    @Test
+    void completedSuccessReplayAfterDisconnectDoesNotAuthenticateNewConnectionWithoutBinding() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        PlayerSessionLeaseBindingRegistry trackedRegistry =
+                spy(new PlayerSessionLeaseBindingRegistry());
+
+        leaseBindingRegistry = trackedRegistry;
+
+        PlayerAuthenticatedMessageHandler replayHandler =
+                handlerWith(coordinator);
+
+        PlayerDisconnectListener disconnectListener =
+                new PlayerDisconnectListener(
+                        coordinator,
+                        trackedRegistry,
+                        new PlayerServerPresenceRegistry(
+                                sessionRegistry
+                        ),
+                        new PendingPlayerTransferRegistry(),
+                        logger
+                );
+
+        AuthenticatedPlayerSession session =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease lease =
+                new PlayerSessionLease(
+                        session,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        ProtocolEnvelope<PlayerAuthenticatedPayload> envelope =
+                ProtocolEnvelope.create(
+                        ProtocolMessageType
+                                .PLAYER_AUTHENTICATED,
+                        new PlayerAuthenticatedPayload(
+                                session.playerId(),
+                                session.playerName(),
+                                session.authenticatedAt()
+                        )
+                );
+
+        ContextFixture oldConnection =
+                createContext(
+                        "auth-1",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        envelope
+                );
+
+        ContextFixture newConnection =
+                createContext(
+                        "auth-1",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        envelope
+                );
+
+        AtomicReference<
+                PlayerSessionLeaseBindingRegistry.BeginDecision>
+                replayDecision =
+                new AtomicReference<>();
+
+        doAnswer(invocation -> {
+            PlayerSessionLeaseBindingRegistry.BeginResult result =
+                    (PlayerSessionLeaseBindingRegistry
+                            .BeginResult)
+                            invocation.callRealMethod();
+
+            if (invocation.getArgument(0)
+                    == newConnection.player()) {
+                replayDecision.set(result.decision());
+            }
+
+            return result;
+        }).when(trackedRegistry)
+                .beginTracked(
+                        any(Player.class),
+                        any(UUID.class),
+                        any(AuthenticatedPlayerSession.class)
+                );
+
+        List<TerminalAcknowledgement> newConnectionAcks =
+                new ArrayList<>();
+
+        doAnswer(invocation -> {
+            if (invocation.getArgument(0)
+                    == newConnection.context()) {
+                newConnectionAcks.add(
+                        new TerminalAcknowledgement(
+                                invocation.getArgument(2),
+                                invocation.getArgument(3)
+                        )
+                );
+            }
+
+            return null;
+        }).when(acknowledgementSender)
+                .send(
+                        any(ProtocolMessageContext.class),
+                        any(UUID.class),
+                        anyBoolean(),
+                        anyString()
+                );
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult.acquired(
+                                lease
+                        )
+                )
+        );
+
+        when(coordinator.releaseIfOwned(lease))
+                .thenReturn(
+                        CompletableFuture.completedFuture(true)
+                );
+
+        replayHandler.handle(oldConnection.context());
+
+        verify(acknowledgementSender).send(
+                oldConnection.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+
+        assertEquals(
+                lease,
+                trackedRegistry
+                        .find(oldConnection.player())
+                        .orElseThrow()
+        );
+
+        disconnectListener.onDisconnect(
+                disconnectEvent(oldConnection.player())
+        );
+
+        assertTrue(
+                trackedRegistry
+                        .find(oldConnection.player())
+                        .isEmpty()
+        );
+
+        verify(coordinator).releaseIfOwned(lease);
+
+        replayHandler.handle(newConnection.context());
+
+        assertTrue(
+                trackedRegistry
+                        .find(newConnection.player())
+                        .isEmpty()
+        );
+
+        verify(
+                coordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        boolean positiveAckWithoutBinding =
+                newConnectionAcks
+                        .stream()
+                        .anyMatch(
+                                TerminalAcknowledgement
+                                        ::successful
+                        );
+
+        boolean completedReplayWithoutLiveBinding =
+                replayDecision.get()
+                        == PlayerSessionLeaseBindingRegistry
+                        .BeginDecision
+                        .COMPLETED_REPLAY
+                        && trackedRegistry
+                        .find(newConnection.player())
+                        .isEmpty();
+
+        assertFalse(
+                completedReplayWithoutLiveBinding
+                        && positiveAckWithoutBinding,
+                "newConnection must not receive a positive "
+                        + "completed replay without an exact "
+                        + "live binding"
+        );
+    }
+
     @Test
     void rejectsConflictingRequestIdReuseWithoutCancellingOriginalRequest() {
         PlayerSessionCoordinator coordinator =
@@ -3653,6 +3854,606 @@ class PlayerAuthenticatedMessageHandlerTest {
     }
 
     @Test
+    void pendingReleaseWatchdogTimeoutDoesNotReuseHungReleaseForLaterAuthentication() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        PlayerAuthenticatedMessageHandler timeoutHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        PlayerDisconnectListener disconnectListener =
+                new PlayerDisconnectListener(
+                        coordinator,
+                        leaseBindingRegistry,
+                        new PlayerServerPresenceRegistry(
+                                sessionRegistry
+                        ),
+                        new PendingPlayerTransferRegistry(),
+                        logger
+                );
+
+        AuthenticatedPlayerSession oldSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        oldSession,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        CompletableFuture<Boolean> hungRelease =
+                new CompletableFuture<>();
+
+        when(coordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .acquired(oldLease)
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .withoutLease(
+                                        PlayerSessionAcquireResult
+                                                .Status.CONFLICT
+                                )
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .withoutLease(
+                                        PlayerSessionAcquireResult
+                                                .Status.CONFLICT
+                                )
+                )
+        );
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(hungRelease);
+
+        UUID oldRequestId =
+                UUID.fromString(
+                        "bbbbbbbb-0000-0000-0000-000000000001"
+                );
+
+        ContextFixture oldConnection =
+                createContext(
+                        "auth-1",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        authenticatedEnvelope(
+                                oldRequestId,
+                                PLAYER_ID,
+                                "HarriOcho",
+                                AUTHENTICATED_AT
+                        )
+                );
+
+        timeoutHandler.handle(oldConnection.context());
+
+        assertEquals(
+                oldLease,
+                leaseBindingRegistry
+                        .find(oldConnection.player())
+                        .orElseThrow()
+        );
+
+        disconnectListener.onDisconnect(
+                disconnectEvent(oldConnection.player())
+        );
+
+        verify(coordinator).releaseIfOwned(oldLease);
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(oldConnection.player())
+                        .isEmpty()
+        );
+
+        UUID firstRequestId =
+                UUID.fromString(
+                        "bbbbbbbb-0000-0000-0000-000000000002"
+                );
+
+        ContextFixture firstReconnect =
+                createContext(
+                        "auth-1",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        authenticatedEnvelope(
+                                firstRequestId,
+                                PLAYER_ID,
+                                "HarriOcho",
+                                AUTHENTICATED_AT + 1
+                        )
+                );
+
+        AuthenticatedPlayerSession firstSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT + 1
+                );
+
+        timeoutHandler.handle(firstReconnect.context());
+
+        CompletionStage<Boolean> firstPendingRelease =
+                leaseBindingRegistry.awaitPendingRelease(
+                        firstReconnect.player(),
+                        firstRequestId,
+                        PROXY_IDENTITY
+                ).orElseThrow();
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                eq(firstReconnect.context()),
+                eq(PLAYER_ID),
+                anyBoolean(),
+                anyString()
+        );
+
+        timeoutScheduler.trigger();
+
+        verify(acknowledgementSender).send(
+                firstReconnect.context(),
+                PLAYER_ID,
+                false,
+                "Player session coordination unavailable"
+        );
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(firstReconnect.player())
+                        .isEmpty()
+        );
+        assertTrue(
+                leaseBindingRegistry.awaitPendingRelease(
+                        firstReconnect.player(),
+                        firstRequestId,
+                        PROXY_IDENTITY
+                ).isEmpty()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult firstReplay =
+                leaseBindingRegistry.beginTracked(
+                        firstReconnect.player(),
+                        firstRequestId,
+                        firstSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                firstReplay.decision()
+        );
+        assertEquals(
+                new TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                ),
+                firstReplay.acknowledgement().orElseThrow()
+        );
+        assertFalse(
+                hungRelease.isDone()
+        );
+        assertFalse(
+                firstPendingRelease
+                        .toCompletableFuture()
+                        .isDone()
+        );
+
+        UUID secondRequestId =
+                UUID.fromString(
+                        "bbbbbbbb-0000-0000-0000-000000000003"
+                );
+
+        ContextFixture secondReconnect =
+                createContext(
+                        "auth-1",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        authenticatedEnvelope(
+                                secondRequestId,
+                                PLAYER_ID,
+                                "HarriOcho",
+                                AUTHENTICATED_AT + 2
+                        )
+                );
+
+        assertFalse(
+                firstRequestId.equals(secondRequestId)
+        );
+
+        int scheduledBeforeSecondReconnect =
+                timeoutScheduler.scheduledCount();
+
+        timeoutHandler.handle(secondReconnect.context());
+
+        assertEquals(
+                scheduledBeforeSecondReconnect + 1,
+                timeoutScheduler.scheduledCount()
+        );
+        assertTrue(
+                timeoutScheduler
+                        .scheduled(
+                                timeoutScheduler.scheduledCount() - 1
+                        )
+                        .cancelled()
+        );
+
+        CompletionStage<Boolean> secondPendingRelease =
+                leaseBindingRegistry.awaitPendingRelease(
+                        secondReconnect.player(),
+                        secondRequestId,
+                        PROXY_IDENTITY
+                ).orElse(null);
+
+        assertFalse(
+                firstPendingRelease == secondPendingRelease,
+                "secondReconnect must not wait on the same "
+                        + "pending release CompletionStage after "
+                        + "the watchdog has terminalized "
+                        + "firstReconnect"
+        );
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(secondReconnect.player())
+                        .isEmpty()
+        );
+
+        verify(acknowledgementSender).send(
+                secondReconnect.context(),
+                PLAYER_ID,
+                false,
+                "Player session conflict"
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                secondReconnect.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                secondReconnect.context(),
+                PLAYER_ID,
+                true,
+                "Player session already registered"
+        );
+    }
+
+    @Test
+    void externalReleaseCompletionBeforeWatchdogCompletesPendingReleaseAndStartsSingleRetry() {
+        PlayerSessionCoordinator releaseCoordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        PlayerSessionCoordinator reconnectCoordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                timeoutScheduler =
+                new ManualPlayerSessionAcquisitionTimeoutScheduler();
+
+        PlayerAuthenticatedMessageHandler oldHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        releaseCoordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        PlayerAuthenticatedMessageHandler reconnectHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        reconnectCoordinator,
+                        leaseBindingRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        timeoutScheduler,
+                        logger
+                );
+
+        PlayerDisconnectListener disconnectListener =
+                new PlayerDisconnectListener(
+                        releaseCoordinator,
+                        leaseBindingRegistry,
+                        new PlayerServerPresenceRegistry(
+                                sessionRegistry
+                        ),
+                        new PendingPlayerTransferRegistry(),
+                        logger
+                );
+
+        AuthenticatedPlayerSession oldSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        UUID oldRequestId =
+                UUID.fromString(
+                        "bbbbbbbb-0000-0000-0000-000000000010"
+                );
+
+        ContextFixture oldConnection =
+                createContext(
+                        "auth-1",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        authenticatedEnvelope(
+                                oldRequestId,
+                                PLAYER_ID,
+                                "HarriOcho",
+                                AUTHENTICATED_AT
+                        )
+                );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        oldSession,
+                        PROXY_IDENTITY,
+                        1L
+                );
+
+        CompletableFuture<PlayerSessionAcquireResult>
+                oldAcquisitionStage =
+                new CompletableFuture<>();
+
+        when(releaseCoordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(oldAcquisitionStage);
+
+        CompletableFuture<Boolean> externalReleaseStage =
+                new CompletableFuture<>();
+
+        when(releaseCoordinator.releaseIfOwned(oldLease))
+                .thenReturn(externalReleaseStage);
+
+        oldHandler.handle(oldConnection.context());
+
+        disconnectListener.onDisconnect(
+                disconnectEvent(oldConnection.player())
+        );
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(oldConnection.player())
+                        .isEmpty()
+        );
+
+        oldAcquisitionStage.complete(
+                PlayerSessionAcquireResult.acquired(oldLease)
+        );
+
+        verify(releaseCoordinator).releaseIfOwned(oldLease);
+        assertFalse(externalReleaseStage.isDone());
+
+        UUID reconnectRequestId =
+                UUID.fromString(
+                        "bbbbbbbb-0000-0000-0000-000000000011"
+                );
+
+        long reconnectAuthenticatedAt =
+                AUTHENTICATED_AT + 1L;
+
+        ContextFixture reconnect =
+                createContext(
+                        "auth-1",
+                        PLAYER_ID,
+                        "HarriOcho",
+                        authenticatedEnvelope(
+                                reconnectRequestId,
+                                PLAYER_ID,
+                                "HarriOcho",
+                                reconnectAuthenticatedAt
+                        )
+                );
+
+        AuthenticatedPlayerSession reconnectSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        reconnectAuthenticatedAt
+                );
+
+        PlayerSessionLease retryLease =
+                new PlayerSessionLease(
+                        reconnectSession,
+                        PROXY_IDENTITY,
+                        2L
+                );
+
+        when(reconnectCoordinator.acquire(
+                any(PlayerSessionLeaseRequest.class)
+        )).thenReturn(
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .withoutLease(
+                                        PlayerSessionAcquireResult
+                                                .Status.CONFLICT
+                                )
+                ),
+                CompletableFuture.completedFuture(
+                        PlayerSessionAcquireResult
+                                .acquired(retryLease)
+                )
+        );
+
+        int scheduledBeforeReconnect =
+                timeoutScheduler.scheduledCount();
+
+        reconnectHandler.handle(reconnect.context());
+
+        verify(
+                reconnectCoordinator,
+                times(1)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+
+        CompletionStage<Boolean> internalPendingRelease =
+                leaseBindingRegistry.awaitPendingRelease(
+                        reconnect.player(),
+                        reconnectRequestId,
+                        PROXY_IDENTITY
+                ).orElseThrow();
+
+        assertFalse(
+                internalPendingRelease == externalReleaseStage
+        );
+        assertFalse(
+                internalPendingRelease
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertFalse(externalReleaseStage.isDone());
+
+        assertEquals(
+                scheduledBeforeReconnect + 2,
+                timeoutScheduler.scheduledCount()
+        );
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                .ScheduledTimeout firstAcquireTimeout =
+                timeoutScheduler.scheduled(
+                        scheduledBeforeReconnect
+                );
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                .ScheduledTimeout pendingReleaseTimeout =
+                timeoutScheduler.scheduled(
+                        scheduledBeforeReconnect + 1
+                );
+
+        assertTrue(firstAcquireTimeout.cancelled());
+        assertFalse(pendingReleaseTimeout.cancelled());
+        assertFalse(pendingReleaseTimeout.triggered());
+        assertEquals(
+                firstAcquireTimeout.key().attemptId(),
+                pendingReleaseTimeout.key().attemptId()
+        );
+
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                eq(reconnect.context()),
+                eq(PLAYER_ID),
+                anyBoolean(),
+                anyString()
+        );
+
+        externalReleaseStage.complete(true);
+
+        assertTrue(
+                internalPendingRelease
+                        .toCompletableFuture()
+                        .isDone(),
+                "external release completion must complete the "
+                        + "canonical pending release"
+        );
+
+        verify(
+                reconnectCoordinator,
+                times(2)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        assertEquals(
+                scheduledBeforeReconnect + 3,
+                timeoutScheduler.scheduledCount()
+        );
+
+        ManualPlayerSessionAcquisitionTimeoutScheduler
+                .ScheduledTimeout retryAcquireTimeout =
+                timeoutScheduler.scheduled(
+                        scheduledBeforeReconnect + 2
+                );
+
+        assertFalse(
+                retryAcquireTimeout.key().attemptId()
+                        == pendingReleaseTimeout.key().attemptId()
+        );
+        assertTrue(retryAcquireTimeout.cancelled());
+        assertFalse(retryAcquireTimeout.triggered());
+        assertEquals(
+                1,
+                pendingReleaseTimeout.cancelAttempts()
+        );
+        assertFalse(pendingReleaseTimeout.triggered());
+
+        verify(
+                acknowledgementSender,
+                times(1)
+        ).send(
+                reconnect.context(),
+                PLAYER_ID,
+                true,
+                "Player session registered"
+        );
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                eq(reconnect.context()),
+                eq(PLAYER_ID),
+                eq(false),
+                anyString()
+        );
+        assertTrue(
+                leaseBindingRegistry.awaitPendingRelease(
+                        reconnect.player(),
+                        reconnectRequestId,
+                        PROXY_IDENTITY
+                ).isEmpty()
+        );
+
+        timeoutScheduler.trigger();
+
+        verify(
+                reconnectCoordinator,
+                times(2)
+        ).acquire(
+                any(PlayerSessionLeaseRequest.class)
+        );
+        verify(
+                acknowledgementSender,
+                never()
+        ).send(
+                eq(reconnect.context()),
+                eq(PLAYER_ID),
+                eq(false),
+                anyString()
+        );
+    }
+
+    @Test
     void pendingReleaseWatchdogSchedulingFailureFailsClosedImmediately() {
         PlayerSessionCoordinator coordinator =
                 mock(PlayerSessionCoordinator.class);
@@ -4324,12 +5125,19 @@ class PlayerAuthenticatedMessageHandlerTest {
 
         verify(
                 acknowledgementSender,
-                times(2)
+                times(1)
         ).send(
                 oldConnection.context(),
                 PLAYER_ID,
                 true,
                 "Player session registered"
+        );
+
+        verify(acknowledgementSender).send(
+                oldConnection.context(),
+                PLAYER_ID,
+                false,
+                "Player authentication request conflict"
         );
 
         verify(
@@ -4866,6 +5674,37 @@ class PlayerAuthenticatedMessageHandlerTest {
         );
     }
 
+    private ProtocolEnvelope<PlayerAuthenticatedPayload>
+    authenticatedEnvelope(
+            UUID requestId,
+            UUID payloadId,
+            String payloadName,
+            long authenticatedAt
+    ) {
+        ProtocolEnvelope<PlayerAuthenticatedPayload> envelope =
+                ProtocolEnvelope.create(
+                        ProtocolMessageType
+                                .PLAYER_AUTHENTICATED,
+                        new PlayerAuthenticatedPayload(
+                                payloadId,
+                                payloadName,
+                                authenticatedAt
+                        )
+                );
+
+        return new ProtocolEnvelope<>(
+                envelope.version(),
+                envelope.type(),
+                requestId,
+                envelope.timestamp(),
+                new PlayerAuthenticatedPayload(
+                        payloadId,
+                        payloadName,
+                        authenticatedAt
+                )
+        );
+    }
+
     private ContextFixture createContext(
             String serverName,
             UUID carrierId,
@@ -4902,6 +5741,18 @@ class PlayerAuthenticatedMessageHandlerTest {
                 ),
                 carrier
         );
+    }
+
+    private DisconnectEvent disconnectEvent(
+            Player player
+    ) {
+        DisconnectEvent event =
+                mock(DisconnectEvent.class);
+
+        when(event.getPlayer())
+                .thenReturn(player);
+
+        return event;
     }
 
     private static final class

@@ -17,6 +17,7 @@ import org.slf4j.Logger;
 
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -413,6 +414,300 @@ class PlayerDisconnectListenerTest {
     }
 
     @Test
+    void disconnectExternalReleaseCompletionCompletesCanonicalPendingRelease() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        Player oldConnection = player(PLAYER_ID);
+        Player reconnect = player(PLAYER_ID);
+
+        PlayerSessionLease oldLease = lease(1L);
+        AuthenticatedPlayerSession session =
+                oldLease.session();
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement successfulAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        true,
+                        "Player session registered"
+                );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement conflictAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session binding conflict"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                leaseBindingRegistry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        oldBegin.attemptId()
+                )
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                leaseBindingRegistry.bind(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        oldBegin.attemptId(),
+                        session,
+                        oldLease,
+                        successfulAcknowledgement,
+                        conflictAcknowledgement
+                )
+        );
+
+        CompletableFuture<Boolean> externalReleaseStage =
+                new CompletableFuture<>();
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(externalReleaseStage);
+
+        listenerWith(coordinator).onDisconnect(
+                disconnectEvent(oldConnection)
+        );
+
+        verify(coordinator).releaseIfOwned(oldLease);
+
+        UUID reconnectAcquisitionId =
+                UUID.fromString(
+                        "33333333-4444-5555-6666-777777777777"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult reconnectBegin =
+                leaseBindingRegistry.beginTracked(
+                        reconnect,
+                        reconnectAcquisitionId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                reconnectBegin.decision()
+        );
+
+        CompletionStage<Boolean> internalPendingRelease =
+                leaseBindingRegistry.awaitPendingRelease(
+                        reconnect,
+                        reconnectAcquisitionId,
+                        PROXY_IDENTITY
+                ).orElseThrow();
+
+        assertFalse(
+                internalPendingRelease == externalReleaseStage
+        );
+        assertFalse(
+                leaseBindingRegistry.attachReleaseCompletion(
+                        oldLease,
+                        new CompletableFuture<>()
+                ),
+                "a different external stage must be inert after "
+                        + "the disconnect listener associates the "
+                        + "real release stage"
+        );
+
+        externalReleaseStage.complete(true);
+
+        assertTrue(
+                internalPendingRelease
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertTrue(
+                internalPendingRelease
+                        .toCompletableFuture()
+                        .join()
+        );
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(oldLease)
+        );
+    }
+
+    @Test
+    void disconnectReleaseFalseCompletesCanonicalPendingReleaseWithExactStage() {
+        CompletableFuture<Boolean> externalReleaseStage =
+                new CompletableFuture<>();
+
+        TrackedDisconnectRelease release =
+                startDisconnectRelease(externalReleaseStage);
+
+        externalReleaseStage.complete(false);
+
+        assertTrue(
+                release.internalPendingRelease()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertFalse(
+                release.internalPendingRelease()
+                        .toCompletableFuture()
+                        .join()
+        );
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        release.lease()
+                )
+        );
+    }
+
+    @Test
+    void disconnectReleaseExceptionCompletesCanonicalPendingReleaseWithExactStage() {
+        CompletableFuture<Boolean> externalReleaseStage =
+                new CompletableFuture<>();
+
+        TrackedDisconnectRelease release =
+                startDisconnectRelease(externalReleaseStage);
+
+        externalReleaseStage.completeExceptionally(
+                new IllegalStateException("release failed")
+        );
+
+        assertTrue(
+                release.internalPendingRelease()
+                        .toCompletableFuture()
+                        .isCompletedExceptionally()
+        );
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(
+                        release.lease()
+                )
+        );
+    }
+
+    @Test
+    void completedDisconnectReleaseStageCompletesAfterAttachment() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease = lease(1L);
+        AuthenticatedPlayerSession session =
+                oldLease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                leaseBindingRegistry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        oldBegin.attemptId()
+                )
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                leaseBindingRegistry.bind(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        oldBegin.attemptId(),
+                        session,
+                        oldLease,
+                        new PlayerSessionLeaseBindingRegistry
+                                .TerminalAcknowledgement(
+                                true,
+                                "Player session registered"
+                        ),
+                        new PlayerSessionLeaseBindingRegistry
+                                .TerminalAcknowledgement(
+                                false,
+                                "Player session binding conflict"
+                        )
+                )
+        );
+
+        CompletableFuture<Boolean> externalReleaseStage =
+                CompletableFuture.completedFuture(true);
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(externalReleaseStage);
+
+        listenerWith(coordinator).onDisconnect(
+                disconnectEvent(oldConnection)
+        );
+
+        verify(coordinator).releaseIfOwned(oldLease);
+        assertFalse(
+                leaseBindingRegistry.attachReleaseCompletion(
+                        oldLease,
+                        new CompletableFuture<>()
+                )
+        );
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(oldLease)
+        );
+    }
+
+    @Test
+    void disconnectReleaseThrowBeforeAttachDoesNotRetainRelease() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenThrow(new IllegalStateException("release failed"));
+
+        listenerWith(coordinator).onDisconnect(
+                disconnectEvent(oldConnection)
+        );
+
+        verify(coordinator).releaseIfOwned(oldLease);
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(oldLease)
+        );
+    }
+
+    @Test
+    void disconnectReleaseNullBeforeAttachDoesNotRetainRelease() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        Player oldConnection = player(PLAYER_ID);
+        PlayerSessionLease oldLease =
+                bindLeaseForDisconnect(oldConnection);
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(null);
+
+        listenerWith(coordinator).onDisconnect(
+                disconnectEvent(oldConnection)
+        );
+
+        verify(coordinator).releaseIfOwned(oldLease);
+        assertTrue(
+                leaseBindingRegistry.reserveReleaseIfUnbound(oldLease)
+        );
+    }
+
+    @Test
     void rejectsNullEvent() {
         assertThrows(
                 NullPointerException.class,
@@ -567,6 +862,169 @@ class PlayerDisconnectListenerTest {
         );
 
         return lease;
+    }
+
+    private TrackedDisconnectRelease startDisconnectRelease(
+            CompletableFuture<Boolean> externalReleaseStage
+    ) {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        Player oldConnection = player(PLAYER_ID);
+        Player reconnect = player(PLAYER_ID);
+
+        PlayerSessionLease oldLease = lease(1L);
+        AuthenticatedPlayerSession session =
+                oldLease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                leaseBindingRegistry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        oldBegin.attemptId()
+                )
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                leaseBindingRegistry.bind(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        oldBegin.attemptId(),
+                        session,
+                        oldLease,
+                        new PlayerSessionLeaseBindingRegistry
+                                .TerminalAcknowledgement(
+                                true,
+                                "Player session registered"
+                        ),
+                        new PlayerSessionLeaseBindingRegistry
+                                .TerminalAcknowledgement(
+                                false,
+                                "Player session binding conflict"
+                        )
+                )
+        );
+
+        when(coordinator.releaseIfOwned(oldLease))
+                .thenReturn(externalReleaseStage);
+
+        listenerWith(coordinator).onDisconnect(
+                disconnectEvent(oldConnection)
+        );
+
+        verify(coordinator).releaseIfOwned(oldLease);
+
+        UUID reconnectAcquisitionId =
+                UUID.fromString(
+                        "33333333-4444-5555-6666-777777777777"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult reconnectBegin =
+                leaseBindingRegistry.beginTracked(
+                        reconnect,
+                        reconnectAcquisitionId,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                reconnectBegin.decision()
+        );
+
+        CompletionStage<Boolean> internalPendingRelease =
+                leaseBindingRegistry.awaitPendingRelease(
+                        reconnect,
+                        reconnectAcquisitionId,
+                        PROXY_IDENTITY
+                ).orElseThrow();
+
+        assertFalse(
+                internalPendingRelease == externalReleaseStage
+        );
+        assertFalse(
+                leaseBindingRegistry.attachReleaseCompletion(
+                        oldLease,
+                        new CompletableFuture<>()
+                )
+        );
+
+        return new TrackedDisconnectRelease(
+                oldLease,
+                reconnect,
+                reconnectAcquisitionId,
+                internalPendingRelease
+        );
+    }
+
+    private PlayerSessionLease bindLeaseForDisconnect(
+            Player oldConnection
+    ) {
+        PlayerSessionLease oldLease = lease(1L);
+        AuthenticatedPlayerSession session =
+                oldLease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                leaseBindingRegistry.beginTracked(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        session
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+        assertTrue(
+                leaseBindingRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        oldBegin.attemptId()
+                )
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingResult.BOUND,
+                leaseBindingRegistry.bind(
+                        oldConnection,
+                        ACQUISITION_ID,
+                        oldBegin.attemptId(),
+                        session,
+                        oldLease,
+                        new PlayerSessionLeaseBindingRegistry
+                                .TerminalAcknowledgement(
+                                true,
+                                "Player session registered"
+                        ),
+                        new PlayerSessionLeaseBindingRegistry
+                                .TerminalAcknowledgement(
+                                false,
+                                "Player session binding conflict"
+                        )
+                )
+        );
+
+        return oldLease;
+    }
+
+    private record TrackedDisconnectRelease(
+            PlayerSessionLease lease,
+            Player reconnect,
+            UUID reconnectAcquisitionId,
+            CompletionStage<Boolean> internalPendingRelease
+    ) {
     }
 
     private PlayerSessionLease lease(long fencingToken) {
