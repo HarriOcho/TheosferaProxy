@@ -729,7 +729,7 @@ class PlayerDisconnectListenerTest {
         releaseTimeoutScheduler.scheduled(0).fire();
         releaseStage.complete(true);
 
-        assertTrue(
+        assertFalse(
                 leaseBindingRegistry.reserveReleaseIfUnbound(
                         oldLease
                 )

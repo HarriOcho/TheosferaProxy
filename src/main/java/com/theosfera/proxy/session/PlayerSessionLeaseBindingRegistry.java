@@ -36,9 +36,14 @@ public final class PlayerSessionLeaseBindingRegistry {
             pendingReleases =
             new HashMap<>();
 
-    private final Map<UUID, ReleaseQuarantine>
+    private final LinkedHashMap<ReleaseQuarantineKey, ReleaseQuarantine>
             releaseQuarantines =
-            new HashMap<>();
+            new LinkedHashMap<>();
+
+    private final LinkedHashMap<UUID, FencingFloor>
+            releaseFencingFloors =
+            new LinkedHashMap<>();
+    private boolean unknownFencingFloorAdmissionsClosed;
 
     private final Map<UUID, ActiveRequest> activeRequests =
             new HashMap<>();
@@ -49,6 +54,9 @@ public final class PlayerSessionLeaseBindingRegistry {
     private final LongSupplier monotonicTime;
     private final int requestCapacity;
     private final long terminalReplayWindow;
+    private final long releaseQuarantineTtl;
+    private final int releaseQuarantineCapacity;
+    private final int fencingFloorCapacity;
 
     private long lastGeneration;
     private long lastAttempt;
@@ -57,7 +65,10 @@ public final class PlayerSessionLeaseBindingRegistry {
         this(
                 System::nanoTime,
                 DEFAULT_REQUEST_CAPACITY,
-                DEFAULT_TERMINAL_REPLAY_WINDOW
+                DEFAULT_TERMINAL_REPLAY_WINDOW,
+                DEFAULT_TERMINAL_REPLAY_WINDOW,
+                DEFAULT_REQUEST_CAPACITY,
+                DEFAULT_REQUEST_CAPACITY
         );
     }
 
@@ -65,6 +76,24 @@ public final class PlayerSessionLeaseBindingRegistry {
             LongSupplier monotonicTime,
             int requestCapacity,
             long terminalReplayWindow
+    ) {
+        this(
+                monotonicTime,
+                requestCapacity,
+                terminalReplayWindow,
+                DEFAULT_TERMINAL_REPLAY_WINDOW,
+                requestCapacity,
+                requestCapacity
+        );
+    }
+
+    PlayerSessionLeaseBindingRegistry(
+            LongSupplier monotonicTime,
+            int requestCapacity,
+            long terminalReplayWindow,
+            long releaseQuarantineTtl,
+            int releaseQuarantineCapacity,
+            int fencingFloorCapacity
     ) {
         this.monotonicTime =
                 Objects.requireNonNull(
@@ -85,9 +114,36 @@ public final class PlayerSessionLeaseBindingRegistry {
             );
         }
 
+        if (releaseQuarantineTtl <= 0) {
+            throw new IllegalArgumentException(
+                    "releaseQuarantineTtl "
+                            + "must be greater than zero"
+            );
+        }
+
+        if (releaseQuarantineCapacity <= 0) {
+            throw new IllegalArgumentException(
+                    "releaseQuarantineCapacity "
+                            + "must be greater than zero"
+            );
+        }
+
+        if (fencingFloorCapacity <= 0) {
+            throw new IllegalArgumentException(
+                    "fencingFloorCapacity "
+                            + "must be greater than zero"
+            );
+        }
+
         this.requestCapacity = requestCapacity;
         this.terminalReplayWindow =
                 terminalReplayWindow;
+        this.releaseQuarantineTtl =
+                releaseQuarantineTtl;
+        this.releaseQuarantineCapacity =
+                releaseQuarantineCapacity;
+        this.fencingFloorCapacity =
+                fencingFloorCapacity;
     }
 
     public synchronized long begin(
@@ -476,6 +532,26 @@ public final class PlayerSessionLeaseBindingRegistry {
         }
 
         remaining.remove(nonNullAcquisitionId);
+
+        if (unknownFencingFloorAdmissionsClosed
+                && !releaseFencingFloors.containsKey(playerId)) {
+            updateState(
+                    playerId,
+                    new PlayerState(
+                            existing.boundLease(),
+                            remaining
+                    )
+            );
+
+            discardActiveRequestWithoutReplay(
+                    nonNullAcquisitionId,
+                    nonNullPlayer,
+                    expectedAttemptId,
+                    expectedSession
+            );
+
+            return PlayerSessionLeaseBindingResult.STALE;
+        }
 
         long fencingFloor =
                 fencingFloorFor(playerId);
@@ -983,6 +1059,11 @@ public final class PlayerSessionLeaseBindingRegistry {
         UUID playerId =
                 nonNullLease.session().playerId();
 
+        if (unknownFencingFloorAdmissionsClosed
+                && !releaseFencingFloors.containsKey(playerId)) {
+            return false;
+        }
+
         if (nonNullLease.fencingToken()
                 <= fencingFloorFor(playerId)) {
             return false;
@@ -1062,15 +1143,17 @@ public final class PlayerSessionLeaseBindingRegistry {
             return true;
         }
 
-        ReleaseQuarantine quarantine =
-                releaseQuarantines.get(
-                        nonNullLease.session().playerId()
+        ReleaseQuarantineKey quarantineKey =
+                findUnattachedReleaseQuarantineKey(
+                        nonNullLease
                 );
 
-        if (quarantine == null
-                || !quarantine.lease().equals(nonNullLease)) {
+        if (quarantineKey == null) {
             return false;
         }
+
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.get(quarantineKey);
 
         CompletionStage<Boolean> existingExternal =
                 quarantine.externalCompletion();
@@ -1083,8 +1166,8 @@ public final class PlayerSessionLeaseBindingRegistry {
             return false;
         }
 
-        releaseQuarantines.put(
-                nonNullLease.session().playerId(),
+        releaseQuarantines.replace(
+                quarantineKey,
                 quarantine.withExternalCompletion(nonNullExternal)
         );
 
@@ -1092,6 +1175,17 @@ public final class PlayerSessionLeaseBindingRegistry {
     }
 
     public synchronized boolean claimReleaseTimeout(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> expectedExternalCompletion
+    ) {
+        return claimReleaseTimeoutWithEvictions(
+                lease,
+                expectedExternalCompletion
+        ).claimed();
+    }
+
+    public synchronized ReleaseTimeoutClaim
+    claimReleaseTimeoutWithEvictions(
             PlayerSessionLease lease,
             CompletionStage<Boolean> expectedExternalCompletion
     ) {
@@ -1114,14 +1208,98 @@ public final class PlayerSessionLeaseBindingRegistry {
                 || !trackedRelease.lease().equals(nonNullLease)
                 || trackedRelease.externalCompletion()
                 != nonNullExpected) {
-            return false;
+            return ReleaseTimeoutClaim.notClaimed();
         }
 
         pendingReleases.remove(nonNullLease);
-        quarantineRelease(
+        List<QuarantinedReleaseTimeout> evicted =
+                quarantineRelease(
                 nonNullLease,
                 trackedRelease.completion(),
                 trackedRelease.externalCompletion()
+        );
+
+        return ReleaseTimeoutClaim.claimed(evicted);
+    }
+
+    public boolean failReleaseTimeoutScheduling(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> expectedExternalCompletion
+    ) {
+        PlayerSessionLease nonNullLease =
+                Objects.requireNonNull(
+                        lease,
+                        "lease cannot be null"
+                );
+
+        CompletionStage<Boolean> nonNullExpected =
+                Objects.requireNonNull(
+                        expectedExternalCompletion,
+                        "expectedExternalCompletion cannot be null"
+                );
+
+        CompletableFuture<Boolean> completion;
+        synchronized (this) {
+            TrackedRelease trackedRelease =
+                    pendingReleases.get(nonNullLease);
+
+            if (trackedRelease == null
+                    || !trackedRelease.lease().equals(nonNullLease)
+                    || trackedRelease.externalCompletion()
+                    != nonNullExpected) {
+                return false;
+            }
+
+            pendingReleases.remove(nonNullLease);
+            completion = trackedRelease.completion();
+
+            recordFencingFloor(
+                    nonNullLease.session().playerId(),
+                    nonNullLease.fencingToken()
+            );
+
+            terminalizeExactWaiters(
+                    nonNullLease.session().playerId(),
+                    nonNullLease,
+                    completion,
+                    failClosedAcknowledgement()
+            );
+        }
+
+        completion.complete(false);
+        return true;
+    }
+
+    public synchronized boolean claimReleaseQuarantineRetentionTimeout(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> expectedExternalCompletion
+    ) {
+        PlayerSessionLease nonNullLease =
+                Objects.requireNonNull(
+                        lease,
+                        "lease cannot be null"
+                );
+
+        CompletionStage<Boolean> nonNullExpected =
+                Objects.requireNonNull(
+                        expectedExternalCompletion,
+                        "expectedExternalCompletion cannot be null"
+                );
+
+        ReleaseQuarantineKey key =
+                findReleaseQuarantineKey(
+                        nonNullLease,
+                        nonNullExpected
+                );
+
+        if (key == null) {
+            return false;
+        }
+
+        removeExactQuarantineFailClosed(
+                nonNullLease,
+                key.completion(),
+                failClosedAcknowledgement()
         );
 
         return true;
@@ -1443,6 +1621,16 @@ public final class PlayerSessionLeaseBindingRegistry {
                     nonNullExpectedCompletion
             );
         }
+
+        removeExactQuarantineFailClosed(
+                releaseLease,
+                nonNullExpectedCompletion,
+                nonNullAcknowledgement
+        );
+
+        nonNullExpectedCompletion
+                .toCompletableFuture()
+                .complete(false);
 
         return cancellation;
     }
@@ -1897,20 +2085,17 @@ public final class PlayerSessionLeaseBindingRegistry {
                         completion
                 );
             } else {
-                ReleaseQuarantine quarantine =
-                        releaseQuarantines.get(
-                                nonNullLease.session().playerId()
+                ReleaseQuarantineKey key =
+                        findUnattachedReleaseQuarantineKey(
+                                nonNullLease
                         );
 
-                if (quarantine == null
-                        || !quarantine.lease().equals(nonNullLease)
-                        || quarantine.externalCompletion() != null) {
+                if (key == null) {
                     return false;
                 }
 
-                releaseQuarantines.remove(
-                        nonNullLease.session().playerId()
-                );
+                ReleaseQuarantine quarantine =
+                        releaseQuarantines.remove(key);
                 completion = quarantine.completion();
             }
         }
@@ -2017,11 +2202,13 @@ public final class PlayerSessionLeaseBindingRegistry {
         generationsByPlayerId.clear();
         pendingReleases.clear();
         releaseQuarantines.clear();
+        releaseFencingFloors.clear();
+        unknownFencingFloorAdmissionsClosed = false;
         activeRequests.clear();
         terminalRequests.clear();
     }
 
-    private void quarantineRelease(
+    private List<QuarantinedReleaseTimeout> quarantineRelease(
             PlayerSessionLease lease,
             CompletionStage<Boolean> completion
     ) {
@@ -2030,19 +2217,19 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         if (trackedRelease == null
                 || trackedRelease.completion() != completion) {
-            return;
+            return List.of();
         }
 
         pendingReleases.remove(lease);
 
-        quarantineRelease(
+        return quarantineRelease(
                 lease,
                 trackedRelease.completion(),
                 trackedRelease.externalCompletion()
         );
     }
 
-    private void quarantineRelease(
+    private List<QuarantinedReleaseTimeout> quarantineRelease(
             PlayerSessionLease lease,
             CompletableFuture<Boolean> completion,
             CompletionStage<Boolean> externalCompletion
@@ -2050,33 +2237,57 @@ public final class PlayerSessionLeaseBindingRegistry {
         UUID playerId =
                 lease.session().playerId();
 
-        ReleaseQuarantine existing =
-                releaseQuarantines.get(playerId);
+        FencingFloorRegistration floorRegistration =
+                recordFencingFloor(
+                playerId,
+                lease.fencingToken()
+        );
 
-        if (existing == null
-                || lease.fencingToken()
-                >= existing.fencingFloor()) {
-            releaseQuarantines.put(
+        if (floorRegistration
+                == FencingFloorRegistration.CAPACITY_EXHAUSTED) {
+            terminalizeExactWaiters(
                     playerId,
-                    new ReleaseQuarantine(
-                            lease,
-                            completion,
-                            externalCompletion,
-                            lease.fencingToken()
-                    )
+                    lease,
+                    completion,
+                    failClosedAcknowledgement()
             );
+            completion.complete(false);
+            return List.of();
         }
+
+        List<QuarantinedReleaseTimeout> evicted =
+                evictQuarantinesForCapacity();
+
+        ReleaseQuarantineKey key =
+                new ReleaseQuarantineKey(
+                        lease,
+                        completion
+                );
+
+        releaseQuarantines.put(
+                key,
+                new ReleaseQuarantine(
+                        key,
+                        externalCompletion,
+                        expiresAtReleaseQuarantine()
+                )
+        );
+
+        return evicted;
     }
 
     private boolean isQuarantined(
             UUID playerId,
             CompletionStage<Boolean> completion
     ) {
-        ReleaseQuarantine quarantine =
-                releaseQuarantines.get(playerId);
-
-        return quarantine != null
-                && quarantine.completion() == completion;
+        return releaseQuarantines
+                .keySet()
+                .stream()
+                .anyMatch(key ->
+                        key.playerId().equals(playerId)
+                                && key.completion()
+                                == completion
+                );
     }
 
     private boolean isExactQuarantine(
@@ -2084,60 +2295,348 @@ public final class PlayerSessionLeaseBindingRegistry {
             PlayerSessionLease lease,
             CompletionStage<Boolean> completion
     ) {
-        ReleaseQuarantine quarantine =
-                releaseQuarantines.get(playerId);
-
-        return quarantine != null
-                && quarantine.lease().equals(lease)
-                && quarantine.completion() == completion;
+        return findExactReleaseQuarantineKey(
+                playerId,
+                lease,
+                completion
+        ) != null;
     }
 
     private CompletableFuture<Boolean> removeReleaseQuarantine(
             PlayerSessionLease lease,
             CompletionStage<Boolean> completion
     ) {
-        ReleaseQuarantine quarantine =
-                releaseQuarantines.get(
-                        lease.session().playerId()
+        ReleaseQuarantineKey key =
+                findReleaseQuarantineKey(
+                        lease,
+                        completion
                 );
 
-        if (quarantine == null
-                || !quarantine.lease().equals(lease)
-                || quarantine.externalCompletion() != completion) {
+        if (key == null) {
             return null;
         }
 
-        releaseQuarantines.remove(
-                lease.session().playerId()
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.remove(key);
+
+        return quarantine == null
+                ? null
+                : quarantine.completion();
+    }
+
+    synchronized int expireReleaseQuarantines() {
+        long now = monotonicTime.getAsLong();
+        List<ReleaseQuarantineKey> expired =
+                releaseQuarantines
+                        .entrySet()
+                        .stream()
+                        .filter(entry ->
+                                entry.getValue()
+                                        .expiresAt()
+                                        <= now
+                        )
+                        .map(Map.Entry::getKey)
+                        .toList();
+
+        for (ReleaseQuarantineKey key : expired) {
+            removeExactQuarantineFailClosed(
+                    key.lease(),
+                    key.completion(),
+                    failClosedAcknowledgement()
+            );
+        }
+
+        return expired.size();
+    }
+
+    synchronized int exactQuarantineCount() {
+        return releaseQuarantines.size();
+    }
+
+    private ReleaseQuarantineKey findUnattachedReleaseQuarantineKey(
+            PlayerSessionLease lease
+    ) {
+        for (Map.Entry<ReleaseQuarantineKey, ReleaseQuarantine>
+                entry : releaseQuarantines.entrySet()) {
+            ReleaseQuarantineKey key =
+                    entry.getKey();
+            ReleaseQuarantine quarantine =
+                    entry.getValue();
+
+            if (key.lease().equals(lease)
+                    && quarantine.externalCompletion() == null) {
+                return key;
+            }
+        }
+
+        return null;
+    }
+
+    private ReleaseQuarantineKey findReleaseQuarantineKey(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> externalCompletion
+    ) {
+        for (Map.Entry<ReleaseQuarantineKey, ReleaseQuarantine>
+                entry : releaseQuarantines.entrySet()) {
+            ReleaseQuarantineKey key =
+                    entry.getKey();
+            ReleaseQuarantine quarantine =
+                    entry.getValue();
+
+            if (key.lease().equals(lease)
+                    && quarantine.externalCompletion()
+                    == externalCompletion) {
+                return key;
+            }
+        }
+
+        return null;
+    }
+
+    private ReleaseQuarantineKey findExactReleaseQuarantineKey(
+            UUID playerId,
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> completion
+    ) {
+        for (ReleaseQuarantineKey key
+                : releaseQuarantines.keySet()) {
+            if (key.playerId().equals(playerId)
+                    && key.lease().equals(lease)
+                    && key.completion() == completion) {
+                return key;
+            }
+        }
+
+        return null;
+    }
+
+    private void removeExactQuarantineFailClosed(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> completion,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        ReleaseQuarantineKey key =
+                findExactReleaseQuarantineKey(
+                        lease.session().playerId(),
+                        lease,
+                        completion
+                );
+
+        if (key == null) {
+            return;
+        }
+
+        ReleaseQuarantine quarantine =
+                releaseQuarantines.remove(key);
+
+        if (quarantine == null) {
+            return;
+        }
+
+        terminalizeExactQuarantineWaiters(
+                quarantine,
+                acknowledgement
         );
 
-        return quarantine.completion();
+        quarantine.completion().complete(false);
+    }
+
+    private void terminalizeExactQuarantineWaiters(
+            ReleaseQuarantine quarantine,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        terminalizeExactWaiters(
+                quarantine.playerId(),
+                quarantine.lease(),
+                quarantine.completion(),
+                acknowledgement
+        );
+    }
+
+    private void terminalizeExactWaiters(
+            UUID playerId,
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> completion,
+            TerminalAcknowledgement acknowledgement
+    ) {
+        UUID nonNullPlayerId =
+                Objects.requireNonNull(
+                        playerId,
+                        "playerId cannot be null"
+                );
+        PlayerSessionLease nonNullLease =
+                Objects.requireNonNull(
+                        lease,
+                        "lease cannot be null"
+                );
+        CompletionStage<Boolean> nonNullCompletion =
+                Objects.requireNonNull(
+                        completion,
+                        "completion cannot be null"
+                );
+        TerminalAcknowledgement nonNullAcknowledgement =
+                Objects.requireNonNull(
+                        acknowledgement,
+                        "acknowledgement cannot be null"
+                );
+
+        PlayerState state =
+                states.get(nonNullPlayerId);
+
+        if (state == null
+                || state.pendingAcquisitions().isEmpty()) {
+            return;
+        }
+
+        Map<UUID, PendingAcquisition> remaining =
+                new HashMap<>(
+                        state.pendingAcquisitions()
+                );
+
+        for (Map.Entry<UUID, PendingAcquisition> entry
+                : state.pendingAcquisitions().entrySet()) {
+            PendingRelease pendingRelease =
+                    entry.getValue()
+                            .pendingRelease();
+
+            if (pendingRelease == null
+                    || !pendingRelease.lease()
+                    .equals(nonNullLease)
+                    || pendingRelease.completion()
+                    != nonNullCompletion) {
+                continue;
+            }
+
+            remaining.remove(entry.getKey());
+            completeActiveRequest(
+                    entry.getKey(),
+                    nonNullAcknowledgement
+            );
+        }
+
+        updateState(
+                nonNullPlayerId,
+                new PlayerState(
+                        state.boundLease(),
+                        remaining
+                )
+        );
+    }
+
+    private List<QuarantinedReleaseTimeout>
+    evictQuarantinesForCapacity() {
+        List<QuarantinedReleaseTimeout> evicted =
+                new ArrayList<>();
+
+        while (releaseQuarantines.size()
+                >= releaseQuarantineCapacity) {
+            ReleaseQuarantineKey eldest =
+                    releaseQuarantines
+                            .keySet()
+                            .iterator()
+                            .next();
+
+            ReleaseQuarantine quarantine =
+                    releaseQuarantines.get(eldest);
+
+            if (quarantine != null) {
+                evicted.add(
+                        new QuarantinedReleaseTimeout(
+                                quarantine.lease(),
+                                quarantine.externalCompletion()
+                        )
+                );
+            }
+
+            removeExactQuarantineFailClosed(
+                    eldest.lease(),
+                    eldest.completion(),
+                    failClosedAcknowledgement()
+            );
+        }
+
+        return List.copyOf(evicted);
+    }
+
+    private FencingFloorRegistration recordFencingFloor(
+            UUID playerId,
+            long fencingToken
+    ) {
+        FencingFloor existing =
+                releaseFencingFloors.get(playerId);
+
+        if (existing != null) {
+            releaseFencingFloors.put(
+                    playerId,
+                    new FencingFloor(
+                            Math.max(
+                                    existing.fencingFloor(),
+                                    fencingToken
+                            )
+                    )
+            );
+            return FencingFloorRegistration.REGISTERED;
+        }
+
+        if (releaseFencingFloors.size()
+                >= fencingFloorCapacity) {
+            unknownFencingFloorAdmissionsClosed = true;
+            return FencingFloorRegistration.CAPACITY_EXHAUSTED;
+        }
+
+        releaseFencingFloors.put(
+                playerId,
+                new FencingFloor(fencingToken)
+        );
+
+        return FencingFloorRegistration.REGISTERED;
+    }
+
+    private boolean hasExactQuarantine(UUID playerId) {
+        return releaseQuarantines
+                .keySet()
+                .stream()
+                .anyMatch(key ->
+                        key.playerId().equals(playerId)
+                );
+    }
+
+    private long expiresAtReleaseQuarantine() {
+        long now = monotonicTime.getAsLong();
+
+        try {
+            return Math.addExact(
+                    now,
+                    releaseQuarantineTtl
+            );
+        } catch (ArithmeticException exception) {
+            return Long.MAX_VALUE;
+        }
+    }
+
+    private TerminalAcknowledgement failClosedAcknowledgement() {
+        return new TerminalAcknowledgement(
+                false,
+                "Player session coordination unavailable"
+        );
     }
 
     private long fencingFloorFor(UUID playerId) {
-        ReleaseQuarantine quarantine =
-                releaseQuarantines.get(playerId);
+        FencingFloor floor =
+                releaseFencingFloors.get(playerId);
 
-        return quarantine == null
+        return floor == null
                 ? 0L
-                : quarantine.fencingFloor();
+                : floor.fencingFloor();
     }
 
     private void clearReleaseQuarantineIfSuperseded(
             UUID playerId,
             PlayerSessionLease lease
     ) {
-        ReleaseQuarantine quarantine =
-                releaseQuarantines.get(playerId);
-
-        if (quarantine == null) {
-            return;
-        }
-
-        if (lease.fencingToken()
-                > quarantine.fencingFloor()) {
-            releaseQuarantines.remove(playerId);
-        }
+        // Exact release quarantines are operation-owned. A newer
+        // binding may pass the fencing floor, but it must not clear
+        // unrelated release callbacks or waiter timeouts.
     }
 
     private Map<UUID, PendingAcquisition> markDisconnected(
@@ -2505,6 +3004,11 @@ public final class PlayerSessionLeaseBindingRegistry {
         CAPACITY_EXHAUSTED
     }
 
+    private enum FencingFloorRegistration {
+        REGISTERED,
+        CAPACITY_EXHAUSTED
+    }
+
     public record BeginResult(
             BeginDecision decision,
             long attemptId,
@@ -2617,6 +3121,57 @@ public final class PlayerSessionLeaseBindingRegistry {
                     message,
                     "message cannot be null"
             );
+        }
+    }
+
+    public record ReleaseTimeoutClaim(
+            boolean claimed,
+            List<QuarantinedReleaseTimeout> evictedQuarantines
+    ) {
+
+        public ReleaseTimeoutClaim {
+            evictedQuarantines =
+                    List.copyOf(
+                            Objects.requireNonNull(
+                                    evictedQuarantines,
+                                    "evictedQuarantines cannot be null"
+                            )
+                    );
+        }
+
+        private static ReleaseTimeoutClaim claimed(
+                List<QuarantinedReleaseTimeout> evictedQuarantines
+        ) {
+            return new ReleaseTimeoutClaim(
+                    true,
+                    evictedQuarantines
+            );
+        }
+
+        private static ReleaseTimeoutClaim notClaimed() {
+            return new ReleaseTimeoutClaim(
+                    false,
+                    List.of()
+            );
+        }
+    }
+
+    public record QuarantinedReleaseTimeout(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> externalCompletion
+    ) {
+
+        public QuarantinedReleaseTimeout {
+            lease = Objects.requireNonNull(
+                    lease,
+                    "lease cannot be null"
+            );
+
+            externalCompletion =
+                    Objects.requireNonNull(
+                            externalCompletion,
+                            "externalCompletion cannot be null"
+                    );
         }
     }
 
@@ -2879,14 +3434,12 @@ public final class PlayerSessionLeaseBindingRegistry {
         }
     }
 
-    private record ReleaseQuarantine(
+    private record ReleaseQuarantineKey(
             PlayerSessionLease lease,
-            CompletableFuture<Boolean> completion,
-            CompletionStage<Boolean> externalCompletion,
-            long fencingFloor
+            CompletableFuture<Boolean> completion
     ) {
 
-        private ReleaseQuarantine {
+        private ReleaseQuarantineKey {
             Objects.requireNonNull(
                     lease,
                     "lease cannot be null"
@@ -2897,25 +3450,67 @@ public final class PlayerSessionLeaseBindingRegistry {
                             completion,
                             "completion cannot be null"
                     );
+        }
 
+        private UUID playerId() {
+            return lease.session().playerId();
+        }
+    }
+
+    private record FencingFloor(
+            long fencingFloor
+    ) {
+
+        private FencingFloor {
             if (fencingFloor <= 0) {
                 throw new IllegalArgumentException(
                         "fencingFloor must be greater than zero"
                 );
             }
         }
+    }
+
+    private record ReleaseQuarantine(
+            ReleaseQuarantineKey key,
+            CompletionStage<Boolean> externalCompletion,
+            long expiresAt
+    ) {
+
+        private ReleaseQuarantine {
+            Objects.requireNonNull(
+                    key,
+                    "key cannot be null"
+            );
+
+            if (expiresAt <= 0) {
+                throw new IllegalArgumentException(
+                        "expiresAt must be greater than zero"
+                );
+            }
+        }
+
+        private PlayerSessionLease lease() {
+            return key.lease();
+        }
+
+        private UUID playerId() {
+            return key.playerId();
+        }
+
+        private CompletableFuture<Boolean> completion() {
+            return key.completion();
+        }
 
         private ReleaseQuarantine withExternalCompletion(
                 CompletionStage<Boolean> newExternalCompletion
         ) {
             return new ReleaseQuarantine(
-                    lease,
-                    completion,
+                    key,
                     Objects.requireNonNull(
                             newExternalCompletion,
                             "newExternalCompletion cannot be null"
                     ),
-                    fencingFloor
+                    expiresAt
             );
         }
 

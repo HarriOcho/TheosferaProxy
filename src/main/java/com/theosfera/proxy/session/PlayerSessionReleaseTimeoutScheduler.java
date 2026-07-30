@@ -13,28 +13,62 @@ public interface PlayerSessionReleaseTimeoutScheduler {
             Runnable timeout
     );
 
-    record ReleaseTimeoutKey(
-            UUID playerId,
-            PlayerSessionLease lease,
-            long fencingToken,
-            CompletionStage<Boolean> externalCompletion
-    ) {
+    enum ReleaseTimeoutPhase {
+        OWNED_RELEASE_TIMEOUT,
+        QUARANTINE_RETENTION_TIMEOUT
+    }
 
-        public ReleaseTimeoutKey {
-            playerId = Objects.requireNonNull(
+    final class ReleaseTimeoutKey {
+
+        private final ReleaseTimeoutPhase phase;
+        private final UUID playerId;
+        private final PlayerSessionLease lease;
+        private final long fencingToken;
+        private final CompletionStage<Boolean> externalCompletion;
+
+        public ReleaseTimeoutKey(
+                UUID playerId,
+                PlayerSessionLease lease,
+                long fencingToken,
+                CompletionStage<Boolean> externalCompletion
+        ) {
+            this(
+                    ReleaseTimeoutPhase.OWNED_RELEASE_TIMEOUT,
+                    playerId,
+                    lease,
+                    fencingToken,
+                    externalCompletion
+            );
+        }
+
+        public ReleaseTimeoutKey(
+                ReleaseTimeoutPhase phase,
+                UUID playerId,
+                PlayerSessionLease lease,
+                long fencingToken,
+                CompletionStage<Boolean> externalCompletion
+        ) {
+            this.phase = Objects.requireNonNull(
+                    phase,
+                    "phase cannot be null"
+            );
+
+            this.playerId = Objects.requireNonNull(
                     playerId,
                     "playerId cannot be null"
             );
 
-            lease = Objects.requireNonNull(
+            this.lease = Objects.requireNonNull(
                     lease,
                     "lease cannot be null"
             );
 
-            externalCompletion = Objects.requireNonNull(
+            this.externalCompletion = Objects.requireNonNull(
                     externalCompletion,
                     "externalCompletion cannot be null"
             );
+
+            this.fencingToken = fencingToken;
 
             if (fencingToken <= 0) {
                 throw new IllegalArgumentException(
@@ -53,6 +87,55 @@ public interface PlayerSessionReleaseTimeoutScheduler {
                         "playerId must match lease session"
                 );
             }
+        }
+
+        public ReleaseTimeoutPhase phase() {
+            return phase;
+        }
+
+        public UUID playerId() {
+            return playerId;
+        }
+
+        public PlayerSessionLease lease() {
+            return lease;
+        }
+
+        public long fencingToken() {
+            return fencingToken;
+        }
+
+        public CompletionStage<Boolean> externalCompletion() {
+            return externalCompletion;
+        }
+
+        @Override
+        public boolean equals(Object object) {
+            if (this == object) {
+                return true;
+            }
+
+            if (!(object instanceof ReleaseTimeoutKey other)) {
+                return false;
+            }
+
+            return fencingToken == other.fencingToken
+                    && phase == other.phase
+                    && playerId.equals(other.playerId)
+                    && lease.equals(other.lease)
+                    && externalCompletion
+                    == other.externalCompletion;
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(
+                    phase,
+                    playerId,
+                    lease,
+                    fencingToken,
+                    System.identityHashCode(externalCompletion)
+            );
         }
     }
 

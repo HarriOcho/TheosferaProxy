@@ -4119,10 +4119,15 @@ class PlayerAuthenticatedMessageHandlerTest {
         assertFalse(
                 hungRelease.isDone()
         );
-        assertFalse(
+        assertTrue(
                 firstPendingRelease
                         .toCompletableFuture()
                         .isDone()
+        );
+        assertFalse(
+                firstPendingRelease
+                        .toCompletableFuture()
+                        .join()
         );
 
         UUID secondRequestId =

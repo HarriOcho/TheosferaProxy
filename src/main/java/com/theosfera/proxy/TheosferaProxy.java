@@ -271,6 +271,7 @@ public final class TheosferaProxy {
         capacityRegistry.clear();
         transferRegistry.clear();
         presenceRegistry.clear();
+        releaseService.clear();
         sessionLeaseBindingRegistry.clear();
         sessionRegistry.clear();
         pendingPingRegistry.clear();

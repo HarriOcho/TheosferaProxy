@@ -5,6 +5,10 @@ import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.velocitypowered.api.proxy.Player;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -2525,6 +2529,686 @@ class PlayerSessionLeaseBindingRegistryTest {
     }
 
     @Test
+    void higherFencingQuarantineDoesNotReplaceExactQuarantineWithWaitingAcquisition() {
+        Player player = player(PLAYER_ID);
+        PlayerSessionLease releaseA = lease(OWNER, 2L);
+        AuthenticatedPlayerSession sessionA =
+                releaseA.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult beginA =
+                registry.beginTracked(
+                        player,
+                        ACQUISITION_1,
+                        sessionA
+                );
+
+        assertTrue(
+                registry.claimAcquisitionResult(
+                        player,
+                        ACQUISITION_1,
+                        beginA.attemptId()
+                )
+        );
+        assertTrue(
+                registry.reserveReleaseIfUnbound(releaseA)
+        );
+
+        CompletableFuture<Boolean> externalA =
+                new CompletableFuture<>();
+
+        assertTrue(
+                registry.attachReleaseCompletion(
+                        releaseA,
+                        externalA
+                )
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingResult.RELEASE_PENDING,
+                registry.bind(
+                        player,
+                        ACQUISITION_1,
+                        beginA.attemptId(),
+                        sessionA,
+                        releaseA,
+                        successfulAcknowledgement(),
+                        conflictAcknowledgement()
+                )
+        );
+
+        CompletionStage<Boolean> internalA =
+                registry.awaitPendingRelease(
+                        player,
+                        ACQUISITION_1,
+                        OWNER
+                ).orElseThrow();
+
+        assertTrue(
+                registry.claimReleaseTimeout(
+                        releaseA,
+                        externalA
+                )
+        );
+
+        PlayerSessionLease releaseB = lease(OWNER, 3L);
+        CompletableFuture<Boolean> externalB =
+                new CompletableFuture<>();
+
+        assertTrue(
+                registry.reserveReleaseIfUnbound(releaseB)
+        );
+        assertTrue(
+                registry.attachReleaseCompletion(
+                        releaseB,
+                        externalB
+                )
+        );
+        assertTrue(
+                registry.claimReleaseTimeout(
+                        releaseB,
+                        externalB
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation
+                cancellation =
+                registry.claimPendingReleaseTimeout(
+                        player,
+                        ACQUISITION_1,
+                        beginA.attemptId(),
+                        sessionA,
+                        internalA,
+                        new PlayerSessionLeaseBindingRegistry
+                                .TerminalAcknowledgement(
+                                false,
+                                "Release A timed out"
+                        )
+                );
+
+        assertTrue(cancellation.shouldRespond());
+        assertTrue(cancellation.leaseToRelease().isEmpty());
+        assertTrue(
+                internalA.toCompletableFuture().isDone()
+        );
+        assertFalse(
+                internalA.toCompletableFuture().join()
+        );
+
+        registry.completeRelease(
+                releaseA,
+                externalA,
+                true
+        );
+        assertFalse(
+                registry.reserveReleaseIfUnbound(releaseB)
+        );
+        registry.completeRelease(
+                releaseB,
+                externalB,
+                true
+        );
+        assertFalse(
+                registry.reserveReleaseIfUnbound(releaseB)
+        );
+        assertTrue(
+                registry.reserveReleaseIfUnbound(
+                        lease(OWNER, 4L)
+                )
+        );
+    }
+
+    @Test
+    void quarantinedHungReleasesExpireWithoutExternalCompletion() {
+        AtomicLong now =
+                new AtomicLong(1_000L);
+        PlayerSessionLeaseBindingRegistry expiringRegistry =
+                expiringRegistry(
+                        now::get,
+                        16,
+                        60_000L,
+                        100L,
+                        8,
+                        8
+                );
+        List<CompletionStage<Boolean>> internals =
+                new ArrayList<>();
+        List<CompletableFuture<Boolean>> externals =
+                new ArrayList<>();
+        List<PlayerSessionLease> leases =
+                new ArrayList<>();
+
+        for (int index = 0; index < 3; index++) {
+            UUID playerId =
+                    new UUID(0L, 100L + index);
+            Player player = player(playerId);
+            PlayerSessionLease lease =
+                    lease(playerId, OWNER, index + 1L);
+            AuthenticatedPlayerSession session =
+                    lease.session();
+            UUID acquisitionId =
+                    new UUID(0L, 200L + index);
+
+            PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                    expiringRegistry.beginTracked(
+                            player,
+                            acquisitionId,
+                            session
+                    );
+
+            assertTrue(
+                    expiringRegistry.claimAcquisitionResult(
+                            player,
+                            acquisitionId,
+                            begin.attemptId()
+                    )
+            );
+            assertTrue(
+                    expiringRegistry.reserveReleaseIfUnbound(
+                            lease
+                    )
+            );
+
+            CompletableFuture<Boolean> external =
+                    new CompletableFuture<>();
+
+            assertTrue(
+                    expiringRegistry.attachReleaseCompletion(
+                            lease,
+                            external
+                    )
+            );
+            assertEquals(
+                    PlayerSessionLeaseBindingResult.RELEASE_PENDING,
+                    expiringRegistry.bind(
+                            player,
+                            acquisitionId,
+                            begin.attemptId(),
+                            session,
+                            lease,
+                            successfulAcknowledgement(),
+                            conflictAcknowledgement()
+                    )
+            );
+
+            CompletionStage<Boolean> internal =
+                    expiringRegistry.awaitPendingRelease(
+                            player,
+                            acquisitionId,
+                            OWNER
+                    ).orElseThrow();
+
+            assertTrue(
+                    expiringRegistry.claimReleaseTimeout(
+                            lease,
+                            external
+                    )
+            );
+            internals.add(internal);
+            externals.add(external);
+            leases.add(lease);
+            assertEquals(
+                    0,
+                    expireReleaseQuarantines(expiringRegistry)
+            );
+            assertFalse(
+                    internal.toCompletableFuture().isDone()
+            );
+        }
+
+        now.addAndGet(101L);
+
+        assertEquals(
+                3,
+                expireReleaseQuarantines(expiringRegistry)
+        );
+        assertEquals(
+                0,
+                exactQuarantineCount(expiringRegistry)
+        );
+
+        for (CompletionStage<Boolean> internal : internals) {
+            assertTrue(
+                    internal.toCompletableFuture().isDone()
+            );
+            assertFalse(
+                    internal.toCompletableFuture().join()
+            );
+        }
+
+        for (int index = 0; index < leases.size(); index++) {
+            PlayerSessionLease lease = leases.get(index);
+            CompletableFuture<Boolean> external =
+                    externals.get(index);
+
+            external.complete(true);
+            expiringRegistry.completeRelease(
+                    lease,
+                    external,
+                    true
+            );
+            assertFalse(
+                    expiringRegistry.reserveReleaseIfUnbound(
+                            lease
+                    )
+            );
+        }
+    }
+
+    @Test
+    void exactQuarantinesCoexistForSamePlayer() {
+        Player player = player(PLAYER_ID);
+        QuarantinedReleaseFixture quarantineA =
+                quarantineRelease(
+                        player,
+                        ACQUISITION_1,
+                        lease(OWNER, 2L)
+                );
+        QuarantinedReleaseFixture quarantineB =
+                quarantineRelease(
+                        player(PLAYER_ID),
+                        ACQUISITION_2,
+                        lease(OWNER, 3L)
+                );
+
+        assertEquals(2, registry.exactQuarantineCount());
+
+        registry.completeRelease(
+                lease(OWNER, 2L),
+                quarantineA.externalCompletion(),
+                true
+        );
+
+        assertTrue(
+                quarantineA.completion()
+                        .toCompletableFuture()
+                        .join()
+        );
+        assertFalse(
+                quarantineB.completion()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertEquals(1, registry.exactQuarantineCount());
+
+        registry.completeRelease(
+                lease(OWNER, 3L),
+                quarantineB.externalCompletion(),
+                true
+        );
+
+        assertTrue(
+                quarantineB.completion()
+                        .toCompletableFuture()
+                        .join()
+        );
+        assertEquals(0, registry.exactQuarantineCount());
+    }
+
+    @Test
+    void capacityEvictionTerminatesBeforeRemoval() {
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        System::nanoTime,
+                        16,
+                        60_000L,
+                        60_000L,
+                        1,
+                        8
+                );
+
+        QuarantinedReleaseFixture quarantineA =
+                quarantineRelease(
+                        boundedRegistry,
+                        player(PLAYER_ID),
+                        ACQUISITION_1,
+                        lease(OWNER, 2L)
+                );
+        QuarantinedReleaseFixture quarantineB =
+                quarantineRelease(
+                        boundedRegistry,
+                        player(PLAYER_ID),
+                        ACQUISITION_2,
+                        lease(OWNER, 3L)
+                );
+
+        assertEquals(1, boundedRegistry.exactQuarantineCount());
+        assertTrue(
+                quarantineA.completion()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertFalse(
+                quarantineA.completion()
+                        .toCompletableFuture()
+                        .join()
+        );
+        assertFalse(
+                quarantineB.completion()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        lease(OWNER, 2L)
+                )
+        );
+    }
+
+    @Test
+    void quarantineCapacityRemainsBoundedAcrossDistinctPlayers() {
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        System::nanoTime,
+                        16,
+                        60_000L,
+                        60_000L,
+                        2,
+                        8
+                );
+
+        UUID playerAId =
+                new UUID(0L, 501L);
+        UUID playerBId =
+                new UUID(0L, 502L);
+        UUID playerCId =
+                new UUID(0L, 503L);
+        PlayerSessionLease leaseA =
+                lease(playerAId, OWNER, 2L);
+        PlayerSessionLease leaseB =
+                lease(playerBId, OWNER, 3L);
+        PlayerSessionLease leaseC =
+                lease(playerCId, OWNER, 4L);
+
+        QuarantinedReleaseFixture quarantineA =
+                quarantineRelease(
+                        boundedRegistry,
+                        player(playerAId),
+                        ACQUISITION_1,
+                        leaseA
+                );
+        QuarantinedReleaseFixture quarantineB =
+                quarantineRelease(
+                        boundedRegistry,
+                        player(playerBId),
+                        ACQUISITION_2,
+                        leaseB
+                );
+
+        assertEquals(2, boundedRegistry.exactQuarantineCount());
+
+        QuarantinedReleaseFixture quarantineC =
+                quarantineRelease(
+                        boundedRegistry,
+                        player(playerCId),
+                        ACQUISITION_3,
+                        leaseC
+                );
+
+        assertEquals(2, boundedRegistry.exactQuarantineCount());
+        assertTrue(
+                quarantineA.completion()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertFalse(
+                quarantineA.completion()
+                        .toCompletableFuture()
+                        .join()
+        );
+        assertFalse(
+                quarantineB.completion()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertFalse(
+                quarantineC.completion()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        leaseA
+                )
+        );
+
+        boundedRegistry.completeRelease(
+                leaseA,
+                quarantineA.externalCompletion(),
+                true
+        );
+
+        assertEquals(2, boundedRegistry.exactQuarantineCount());
+        assertFalse(
+                quarantineB.completion()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+        assertFalse(
+                quarantineC.completion()
+                        .toCompletableFuture()
+                        .isDone()
+        );
+    }
+
+    @Test
+    void fencingFloorNeverDecreasesWhenExactQuarantineExpires() {
+        AtomicLong now =
+                new AtomicLong(1_000L);
+        PlayerSessionLeaseBindingRegistry expiringRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        now::get,
+                        16,
+                        60_000L,
+                        100L,
+                        8,
+                        8
+                );
+
+        quarantineRelease(
+                expiringRegistry,
+                player(PLAYER_ID),
+                ACQUISITION_1,
+                lease(OWNER, 2L)
+        );
+        quarantineRelease(
+                expiringRegistry,
+                player(PLAYER_ID),
+                ACQUISITION_2,
+                lease(OWNER, 3L)
+        );
+
+        now.addAndGet(101L);
+
+        assertEquals(
+                2,
+                expiringRegistry.expireReleaseQuarantines()
+        );
+        assertFalse(
+                expiringRegistry.reserveReleaseIfUnbound(
+                        lease(OWNER, 2L)
+                )
+        );
+        assertFalse(
+                expiringRegistry.reserveReleaseIfUnbound(
+                        lease(OWNER, 3L)
+                )
+        );
+        assertTrue(
+                expiringRegistry.reserveReleaseIfUnbound(
+                        lease(OWNER, 4L)
+                )
+        );
+    }
+
+    @Test
+    void fencingFloorCapacityFailurePreservesExistingFloorAndTerminatesExactWaiters() {
+        AtomicLong now =
+                new AtomicLong(1_000L);
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        now::get,
+                        16,
+                        60_000L,
+                        100L,
+                        8,
+                        1
+                );
+
+        UUID playerAId =
+                new UUID(0L, 401L);
+        PlayerSessionLease leaseA =
+                lease(playerAId, OWNER, 2L);
+
+        quarantineRelease(
+                boundedRegistry,
+                player(playerAId),
+                ACQUISITION_1,
+                leaseA
+        );
+
+        now.addAndGet(101L);
+
+        assertEquals(
+                1,
+                boundedRegistry.expireReleaseQuarantines()
+        );
+        assertEquals(
+                0,
+                boundedRegistry.exactQuarantineCount()
+        );
+
+        UUID playerBId =
+                new UUID(0L, 402L);
+        Player playerB =
+                player(playerBId);
+        PlayerSessionLease leaseB =
+                lease(playerBId, OWNER, 3L);
+        AuthenticatedPlayerSession sessionB =
+                leaseB.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult beginB =
+                boundedRegistry.beginTracked(
+                        playerB,
+                        ACQUISITION_2,
+                        sessionB
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                beginB.decision()
+        );
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        playerB,
+                        ACQUISITION_2,
+                        beginB.attemptId()
+                )
+        );
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        leaseB
+                )
+        );
+
+        CompletableFuture<Boolean> externalB =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        leaseB,
+                        externalB
+                )
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingResult.RELEASE_PENDING,
+                boundedRegistry.bind(
+                        playerB,
+                        ACQUISITION_2,
+                        beginB.attemptId(),
+                        sessionB,
+                        leaseB,
+                        successfulAcknowledgement(),
+                        conflictAcknowledgement()
+                )
+        );
+
+        CompletionStage<Boolean> internalB =
+                boundedRegistry.awaitPendingRelease(
+                        playerB,
+                        ACQUISITION_2,
+                        OWNER
+                ).orElseThrow();
+
+        assertTrue(
+                boundedRegistry.claimReleaseTimeout(
+                        leaseB,
+                        externalB
+                )
+        );
+
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        leaseA
+                )
+        );
+        assertEquals(
+                0,
+                boundedRegistry.exactQuarantineCount()
+        );
+        assertTrue(
+                internalB.toCompletableFuture().isDone()
+        );
+        assertFalse(
+                internalB.toCompletableFuture().join()
+        );
+        assertTrue(
+                boundedRegistry.awaitPendingRelease(
+                        playerB,
+                        ACQUISITION_2,
+                        OWNER
+                ).isEmpty()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replayB =
+                boundedRegistry.beginTracked(
+                        playerB,
+                        ACQUISITION_2,
+                        sessionB
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replayB.decision()
+        );
+        assertEquals(
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                ),
+                replayB.acknowledgement().orElseThrow()
+        );
+
+        externalB.complete(true);
+        boundedRegistry.completeRelease(
+                leaseB,
+                externalB,
+                true
+        );
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        leaseA
+                )
+        );
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        leaseB
+                )
+        );
+    }
+
+    @Test
     void watchdogBeforeExternalAttachmentAllowsExactLateAttachmentToQuarantine() {
         Player player = player(PLAYER_ID);
         PlayerSessionLease oldLease = lease(OWNER, 2L);
@@ -2613,19 +3297,12 @@ class PlayerSessionLeaseBindingRegistryTest {
         assertFalse(
                 internalPendingRelease == externalReleaseStage
         );
-        assertTrue(
+        assertFalse(
                 registry.attachReleaseCompletion(
                         oldLease,
                         externalReleaseStage
                 ),
-                "exact late external release stage must attach "
-                        + "to its quarantined release"
-        );
-        assertTrue(
-                registry.attachReleaseCompletion(
-                        oldLease,
-                        externalReleaseStage
-                )
+                "waiter timeout must retire its quarantined release"
         );
         assertFalse(
                 registry.attachReleaseCompletion(
@@ -2644,12 +3321,12 @@ class PlayerSessionLeaseBindingRegistryTest {
                         .toCompletableFuture()
                         .isDone()
         );
-        assertTrue(
+        assertFalse(
                 internalPendingRelease
                         .toCompletableFuture()
                         .join()
         );
-        assertTrue(
+        assertFalse(
                 registry.reserveReleaseIfUnbound(oldLease)
         );
     }
@@ -2759,7 +3436,7 @@ class PlayerSessionLeaseBindingRegistryTest {
                 ).shouldRespond()
         );
 
-        assertTrue(
+        assertFalse(
                 registry.failReleaseBeforeExternalAttachment(
                         oldLease,
                         new NullPointerException("release stage")
@@ -2768,9 +3445,14 @@ class PlayerSessionLeaseBindingRegistryTest {
         assertTrue(
                 internalPendingRelease
                         .toCompletableFuture()
-                        .isCompletedExceptionally()
+                        .isDone()
         );
-        assertTrue(
+        assertFalse(
+                internalPendingRelease
+                        .toCompletableFuture()
+                        .join()
+        );
+        assertFalse(
                 registry.reserveReleaseIfUnbound(oldLease)
         );
     }
@@ -3044,7 +3726,7 @@ class PlayerSessionLeaseBindingRegistryTest {
                         .toCompletableFuture()
                         .isDone()
         );
-        assertTrue(
+        assertFalse(
                 registry.reserveReleaseIfUnbound(oldLease)
         );
     }
@@ -5660,7 +6342,106 @@ class PlayerSessionLeaseBindingRegistryTest {
         return player;
     }
 
+    private PlayerSessionLeaseBindingRegistry expiringRegistry(
+            java.util.function.LongSupplier monotonicTime,
+            int requestCapacity,
+            long terminalReplayWindow,
+            long quarantineTtl,
+            int quarantineCapacity,
+            int fencingFloorCapacity
+    ) {
+        try {
+            Constructor<PlayerSessionLeaseBindingRegistry>
+                    constructor =
+                    PlayerSessionLeaseBindingRegistry.class
+                            .getDeclaredConstructor(
+                                    java.util.function
+                                            .LongSupplier.class,
+                                    int.class,
+                                    long.class,
+                                    long.class,
+                                    int.class,
+                                    int.class
+                            );
+
+            constructor.setAccessible(true);
+
+            return constructor.newInstance(
+                    monotonicTime,
+                    requestCapacity,
+                    terminalReplayWindow,
+                    quarantineTtl,
+                    quarantineCapacity,
+                    fencingFloorCapacity
+            );
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(
+                    "registry must expose explicit quarantine "
+                            + "TTL and capacity policy",
+                    exception
+            );
+        }
+    }
+
+    private int expireReleaseQuarantines(
+            PlayerSessionLeaseBindingRegistry targetRegistry
+    ) {
+        try {
+            Method method =
+                    PlayerSessionLeaseBindingRegistry.class
+                            .getDeclaredMethod(
+                                    "expireReleaseQuarantines"
+                            );
+
+            method.setAccessible(true);
+
+            return (int) method.invoke(targetRegistry);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(
+                    "registry must support independent "
+                            + "quarantine expiration",
+                    exception
+            );
+        }
+    }
+
+    private int exactQuarantineCount(
+            PlayerSessionLeaseBindingRegistry targetRegistry
+    ) {
+        try {
+            Method method =
+                    PlayerSessionLeaseBindingRegistry.class
+                            .getDeclaredMethod(
+                                    "exactQuarantineCount"
+                            );
+
+            method.setAccessible(true);
+
+            return (int) method.invoke(targetRegistry);
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(
+                    "registry must expose exact quarantine count "
+                            + "for bounded retention tests",
+                    exception
+            );
+        }
+    }
+
     private QuarantinedReleaseFixture quarantineRelease(
+            Player player,
+            UUID acquisitionId,
+            PlayerSessionLease lease
+    ) {
+        return quarantineRelease(
+                registry,
+                player,
+                acquisitionId,
+                lease
+        );
+    }
+
+    private QuarantinedReleaseFixture quarantineRelease(
+            PlayerSessionLeaseBindingRegistry targetRegistry,
             Player player,
             UUID acquisitionId,
             PlayerSessionLease lease
@@ -5669,7 +6450,7 @@ class PlayerSessionLeaseBindingRegistryTest {
                 lease.session();
 
         PlayerSessionLeaseBindingRegistry.BeginResult begin =
-                registry.beginTracked(
+                targetRegistry.beginTracked(
                         player,
                         acquisitionId,
                         session
@@ -5682,7 +6463,7 @@ class PlayerSessionLeaseBindingRegistryTest {
         );
 
         assertTrue(
-                registry.claimAcquisitionResult(
+                targetRegistry.claimAcquisitionResult(
                         player,
                         acquisitionId,
                         begin.attemptId()
@@ -5690,7 +6471,7 @@ class PlayerSessionLeaseBindingRegistryTest {
         );
 
         assertTrue(
-                registry.reserveReleaseIfUnbound(
+                targetRegistry.reserveReleaseIfUnbound(
                         lease
                 )
         );
@@ -5699,7 +6480,7 @@ class PlayerSessionLeaseBindingRegistryTest {
                 new CompletableFuture<>();
 
         assertTrue(
-                registry.attachReleaseCompletion(
+                targetRegistry.attachReleaseCompletion(
                         lease,
                         externalCompletion
                 )
@@ -5707,7 +6488,7 @@ class PlayerSessionLeaseBindingRegistryTest {
 
         assertEquals(
                 PlayerSessionLeaseBindingResult.RELEASE_PENDING,
-                registry.bind(
+                targetRegistry.bind(
                         player,
                         acquisitionId,
                         begin.attemptId(),
@@ -5719,29 +6500,18 @@ class PlayerSessionLeaseBindingRegistryTest {
         );
 
         CompletionStage<Boolean> completion =
-                registry.awaitPendingRelease(
+                targetRegistry.awaitPendingRelease(
                         player,
                         acquisitionId,
                         OWNER
                 ).orElseThrow();
 
-        PlayerSessionLeaseBindingRegistry.Cancellation
-                cancellation =
-                registry.claimPendingReleaseTimeout(
-                        player,
-                        acquisitionId,
-                        begin.attemptId(),
-                        session,
-                        completion,
-                        new PlayerSessionLeaseBindingRegistry
-                                .TerminalAcknowledgement(
-                                false,
-                                "Player session coordination unavailable"
-                        )
-                );
-
-        assertTrue(cancellation.shouldRespond());
-        assertTrue(cancellation.leaseToRelease().isEmpty());
+        assertTrue(
+                targetRegistry.claimReleaseTimeout(
+                        lease,
+                        externalCompletion
+                )
+        );
 
         return new QuarantinedReleaseFixture(
                 completion,
@@ -5804,9 +6574,17 @@ class PlayerSessionLeaseBindingRegistryTest {
             ProxyInstanceIdentity owner,
             long fencingToken
     ) {
+        return lease(PLAYER_ID, owner, fencingToken);
+    }
+
+    private PlayerSessionLease lease(
+            UUID playerId,
+            ProxyInstanceIdentity owner,
+            long fencingToken
+    ) {
         return new PlayerSessionLease(
                 new AuthenticatedPlayerSession(
-                        PLAYER_ID,
+                        playerId,
                         "HarriOcho",
                         1_750_000_000_000L
                 ),
