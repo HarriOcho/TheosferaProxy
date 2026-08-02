@@ -187,6 +187,7 @@ public final class TheosferaProxy {
                         presenceRegistry,
                         transferRegistry,
                         capacityRegistry,
+                        sessionRegistry,
                         releaseService,
                         logger
                 );

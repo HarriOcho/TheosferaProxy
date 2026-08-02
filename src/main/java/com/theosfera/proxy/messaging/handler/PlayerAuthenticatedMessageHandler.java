@@ -829,6 +829,24 @@ public final class PlayerAuthenticatedMessageHandler
                                 attemptId
                         );
 
+            case CAPACITY_EXHAUSTED -> {
+                rejectCoordinationFailure(
+                        context,
+                        carrier,
+                        session,
+                        acquisitionId,
+                        attemptId,
+                        new IllegalStateException(
+                                "Session binding capacity exhausted"
+                        )
+                );
+
+                releaseUnboundLease(
+                        lease,
+                        bindingResult
+                );
+            }
+
             case STALE -> {
                 releaseUnboundLease(
                         lease,
@@ -1123,6 +1141,9 @@ public final class PlayerAuthenticatedMessageHandler
     ) {
         PlayerSessionReleaseInvoker releaseInvoker =
                 bindingResult == PlayerSessionLeaseBindingResult.STALE
+                        || bindingResult
+                        == PlayerSessionLeaseBindingResult
+                        .CAPACITY_EXHAUSTED
                         ? releaseService
                         ::releaseRejectedAcquisitionIfUnbound
                         : releaseService::releaseIfUnbound;

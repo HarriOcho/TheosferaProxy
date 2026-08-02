@@ -172,6 +172,7 @@ class ProtocolPlayerSessionFlowTest {
                         leaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
+                        sessionRegistry,
                         releaseService,
                         logger
                 );

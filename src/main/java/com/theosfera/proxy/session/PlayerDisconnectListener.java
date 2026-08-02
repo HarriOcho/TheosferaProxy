@@ -18,6 +18,8 @@ public final class PlayerDisconnectListener {
     private final PlayerSessionLeaseBindingRegistry
             leaseBindingRegistry;
     private final PlayerSessionReleaseService releaseService;
+    private final AuthenticatedPlayerSessionRegistry
+            sessionRegistry;
     private final PlayerServerPresenceRegistry
             presenceRegistry;
     private final PendingPlayerTransferRegistry
@@ -31,6 +33,7 @@ public final class PlayerDisconnectListener {
                     leaseBindingRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
+            AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerSessionReleaseService releaseService,
             Logger logger
     ) {
@@ -39,6 +42,7 @@ public final class PlayerDisconnectListener {
                 presenceRegistry,
                 transferRegistry,
                 new BackendCapacityReservationRegistry(),
+                sessionRegistry,
                 releaseService,
                 logger
         );
@@ -50,6 +54,7 @@ public final class PlayerDisconnectListener {
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
             BackendCapacityReservationRegistry capacityRegistry,
+            AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerSessionReleaseService releaseService,
             Logger logger
     ) {
@@ -72,6 +77,11 @@ public final class PlayerDisconnectListener {
         this.capacityRegistry = Objects.requireNonNull(
                 capacityRegistry,
                 "capacityRegistry cannot be null"
+        );
+
+        this.sessionRegistry = Objects.requireNonNull(
+                sessionRegistry,
+                "sessionRegistry cannot be null"
         );
 
         this.logger = Objects.requireNonNull(
@@ -113,12 +123,31 @@ public final class PlayerDisconnectListener {
                         .remove(playerId)
                         .isPresent();
 
-        Optional<PlayerSessionLease> lease =
-                leaseBindingRegistry
-                        .removeForDisconnect(player);
+        Optional<PlayerSessionLease> lease;
+        boolean authenticationRemoved;
+
+        synchronized (leaseBindingRegistry) {
+            Optional<PlayerSessionLease> authenticatedLease =
+                    leaseBindingRegistry.find(player);
+
+            lease =
+                    leaseBindingRegistry
+                            .removeForDisconnect(player);
+
+            authenticationRemoved =
+                    authenticatedLease
+                            .flatMap(ownedLease ->
+                                    sessionRegistry.removeIfMatches(
+                                            ownedLease.session()
+                                    )
+                            )
+                            .isPresent();
+        }
 
         boolean localStateRemoved =
-                transferRemoved || presenceRemoved;
+                transferRemoved
+                        || presenceRemoved
+                        || authenticationRemoved;
 
         if (lease.isEmpty()) {
             if (localStateRemoved) {

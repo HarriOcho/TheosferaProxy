@@ -93,6 +93,7 @@ class PlayerDisconnectListenerTest {
                 leaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
+                sessionRegistry,
                 releaseService(
                         sessionCoordinator,
                         new ManualPlayerSessionReleaseTimeoutScheduler()
@@ -308,6 +309,124 @@ class PlayerDisconnectListenerTest {
                 disconnectEvent(oldConnection)
         );
 
+        assertEquals(
+                newLease,
+                leaseBindingRegistry
+                        .find(newConnection)
+                        .orElseThrow()
+        );
+
+        verify(
+                coordinator,
+                never()
+        ).releaseIfOwned(
+                any(PlayerSessionLease.class)
+        );
+    }
+
+    @Test
+    void disconnectRevokesUuidAuthenticationWhileNewConnectionAcquisitionIsPending() {
+        Player oldConnection = player(PLAYER_ID);
+        Player newConnection = player(PLAYER_ID);
+
+        PlayerSessionLease oldLease =
+                registerSessionLease(oldConnection);
+
+        AuthenticatedPlayerSession oldSession =
+                oldLease.session();
+
+        assertTrue(
+                sessionRegistry.isAuthenticated(PLAYER_ID)
+        );
+        assertTrue(
+                leaseBindingRegistry
+                        .find(oldConnection)
+                        .isPresent()
+        );
+
+        AuthenticatedPlayerSession newSession =
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        oldSession.playerName(),
+                        oldSession.authenticatedAt() + 1L
+                );
+
+        UUID newAcquisitionId =
+                UUID.fromString(
+                        "33333333-4444-5555-6666-777777777777"
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                leaseBindingRegistry.beginTracked(
+                        newConnection,
+                        newAcquisitionId,
+                        newSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+        assertTrue(
+                leaseBindingRegistry
+                        .find(newConnection)
+                        .isEmpty()
+        );
+
+        listener.onDisconnect(
+                disconnectEvent(oldConnection)
+        );
+
+        assertTrue(
+                leaseBindingRegistry
+                        .find(oldConnection)
+                        .isEmpty()
+        );
+        assertTrue(
+                leaseBindingRegistry
+                        .find(newConnection)
+                        .isEmpty()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                leaseBindingRegistry.beginTracked(
+                        newConnection,
+                        newAcquisitionId,
+                        newSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PENDING_REPLAY,
+                replay.decision()
+        );
+        assertFalse(
+                sessionRegistry.isAuthenticated(PLAYER_ID),
+                "a replacement connection must not inherit UUID-level "
+                        + "authentication from the disconnected connection"
+        );
+    }
+
+    @Test
+    void oldDisconnectDoesNotRevokeNewConnectionAuthentication() {
+        PlayerSessionCoordinator coordinator =
+                mock(PlayerSessionCoordinator.class);
+
+        Player oldConnection = player(PLAYER_ID);
+        Player newConnection = player(PLAYER_ID);
+
+        PlayerSessionLease newLease =
+                registerSessionLease(newConnection);
+
+        listenerWith(coordinator).onDisconnect(
+                disconnectEvent(oldConnection)
+        );
+
+        assertEquals(
+                newLease.session(),
+                sessionRegistry.find(PLAYER_ID).orElseThrow()
+        );
         assertEquals(
                 newLease,
                 leaseBindingRegistry
@@ -994,6 +1113,7 @@ class PlayerDisconnectListenerTest {
                         null,
                         presenceRegistry,
                         transferRegistry,
+                        sessionRegistry,
                         releaseService(
                                 sessionCoordinator,
                                 new ManualPlayerSessionReleaseTimeoutScheduler()
@@ -1009,30 +1129,6 @@ class PlayerDisconnectListenerTest {
                         presenceRegistry,
                         transferRegistry,
                         null,
-                        logger
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> new PlayerDisconnectListener(
-                        leaseBindingRegistry,
-                        null,
-                        transferRegistry,
-                        releaseService(
-                                sessionCoordinator,
-                                new ManualPlayerSessionReleaseTimeoutScheduler()
-                        ),
-                        logger
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> new PlayerDisconnectListener(
-                        leaseBindingRegistry,
-                        presenceRegistry,
-                        null,
                         releaseService(
                                 sessionCoordinator,
                                 new ManualPlayerSessionReleaseTimeoutScheduler()
@@ -1047,6 +1143,49 @@ class PlayerDisconnectListenerTest {
                         leaseBindingRegistry,
                         presenceRegistry,
                         transferRegistry,
+                        sessionRegistry,
+                        null,
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerDisconnectListener(
+                        leaseBindingRegistry,
+                        null,
+                        transferRegistry,
+                        sessionRegistry,
+                        releaseService(
+                                sessionCoordinator,
+                                new ManualPlayerSessionReleaseTimeoutScheduler()
+                        ),
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerDisconnectListener(
+                        leaseBindingRegistry,
+                        presenceRegistry,
+                        null,
+                        sessionRegistry,
+                        releaseService(
+                                sessionCoordinator,
+                                new ManualPlayerSessionReleaseTimeoutScheduler()
+                        ),
+                        logger
+                )
+        );
+
+        assertThrows(
+                NullPointerException.class,
+                () -> new PlayerDisconnectListener(
+                        leaseBindingRegistry,
+                        presenceRegistry,
+                        transferRegistry,
+                        sessionRegistry,
                         releaseService(
                                 sessionCoordinator,
                                 new ManualPlayerSessionReleaseTimeoutScheduler()
@@ -1062,6 +1201,7 @@ class PlayerDisconnectListenerTest {
                         presenceRegistry,
                         transferRegistry,
                         (BackendCapacityReservationRegistry) null,
+                        sessionRegistry,
                         releaseService(
                                 sessionCoordinator,
                                 new ManualPlayerSessionReleaseTimeoutScheduler()
@@ -1332,6 +1472,7 @@ class PlayerDisconnectListenerTest {
                 leaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
+                sessionRegistry,
                 releaseService(
                         coordinator,
                         new ManualPlayerSessionReleaseTimeoutScheduler()
@@ -1348,6 +1489,7 @@ class PlayerDisconnectListenerTest {
                 leaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
+                sessionRegistry,
                 releaseService(
                         coordinator,
                         releaseTimeoutScheduler

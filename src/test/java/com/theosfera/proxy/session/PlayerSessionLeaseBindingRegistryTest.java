@@ -16,6 +16,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -4199,6 +4200,574 @@ class PlayerSessionLeaseBindingRegistryTest {
                         successfulAcknowledgement(),
                         conflictAcknowledgement()
                 )
+        );
+    }
+
+    @Test
+    void closedUnknownFencingFloorAdmissionRetainsRequestUntilTerminalFailure() {
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        System::nanoTime,
+                        16,
+                        60_000_000_000L,
+                        60_000_000_000L,
+                        8,
+                        1
+                );
+
+        UUID admittedFloorPlayerId =
+                UUID.fromString(
+                        "2cbca648-acad-45cc-b3d7-80f775898a38"
+                );
+        UUID rejectedFloorPlayerId =
+                UUID.fromString(
+                        "db30eee4-5468-4e76-a537-9d5b1e14ea03"
+                );
+        UUID gateProbePlayerId =
+                UUID.fromString(
+                        "08b2f433-a1a0-4625-a29d-8418c578f46c"
+                );
+        UUID affectedPlayerId =
+                UUID.fromString(
+                        "72c8ad1f-486e-49bc-a9f6-a12efad21b4e"
+                );
+
+        PlayerSessionLease admittedFloorLease =
+                lease(admittedFloorPlayerId, OWNER, 11L);
+        CompletableFuture<Boolean> admittedFloorRelease =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        admittedFloorLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        admittedFloorLease,
+                        admittedFloorRelease
+                )
+        );
+        assertTrue(
+                boundedRegistry.claimReleaseTimeout(
+                        admittedFloorLease,
+                        admittedFloorRelease
+                )
+        );
+
+        PlayerSessionLease rejectedFloorLease =
+                lease(rejectedFloorPlayerId, OWNER, 12L);
+        CompletableFuture<Boolean> rejectedFloorRelease =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        rejectedFloorLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        rejectedFloorLease,
+                        rejectedFloorRelease
+                )
+        );
+        assertTrue(
+                boundedRegistry
+                        .claimReleaseTimeoutWithEvictions(
+                                rejectedFloorLease,
+                                rejectedFloorRelease
+                        )
+                        .claimed()
+        );
+
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        lease(gateProbePlayerId, OWNER, 13L)
+                )
+        );
+
+        Player affectedPlayer = player(affectedPlayerId);
+        PlayerSessionLease affectedLease =
+                lease(affectedPlayerId, OWNER, 1L);
+        AuthenticatedPlayerSession affectedSession =
+                affectedLease.session();
+
+        PlayerSessionLeaseBindingRegistry.BeginResult begin =
+                boundedRegistry.beginTracked(
+                        affectedPlayer,
+                        ACQUISITION_1,
+                        affectedSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                begin.decision()
+        );
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        affectedPlayer,
+                        ACQUISITION_1,
+                        begin.attemptId()
+                )
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.CAPACITY_EXHAUSTED,
+                boundedRegistry.bind(
+                        affectedPlayer,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        affectedSession,
+                        affectedLease,
+                        successfulAcknowledgement(),
+                        conflictAcknowledgement()
+                )
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement acknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation completion =
+                boundedRegistry.completeTerminalRequest(
+                        affectedPlayer,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        affectedSession,
+                        acknowledgement
+                );
+
+        assertTrue(completion.shouldRespond());
+        assertTrue(completion.leaseToRelease().isEmpty());
+
+        assertFalse(
+                boundedRegistry.completeTerminalRequest(
+                        affectedPlayer,
+                        ACQUISITION_1,
+                        begin.attemptId(),
+                        affectedSession,
+                        acknowledgement
+                ).shouldRespond()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult replay =
+                boundedRegistry.beginTracked(
+                        affectedPlayer,
+                        ACQUISITION_1,
+                        affectedSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                replay.decision()
+        );
+        assertEquals(
+                acknowledgement,
+                replay.acknowledgement().orElseThrow()
+        );
+    }
+
+    @Test
+    void closedUnknownFencingFloorAdmissionDoesNotOverrideStaleGeneration() {
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        System::nanoTime,
+                        16,
+                        60_000_000_000L,
+                        60_000_000_000L,
+                        8,
+                        1
+                );
+
+        UUID admittedFloorPlayerId =
+                UUID.fromString(
+                        "dbe10f6e-facc-40aa-b1cf-7043a455bfe2"
+                );
+        UUID rejectedFloorPlayerId =
+                UUID.fromString(
+                        "89038ec2-dc69-4b76-bbc3-b73b7ddf21c1"
+                );
+        UUID gateProbePlayerId =
+                UUID.fromString(
+                        "a5bfc155-2f07-40b4-a0b2-654a06887db4"
+                );
+        UUID affectedPlayerId =
+                UUID.fromString(
+                        "b22a6309-4ead-4c1b-bb3c-5fe42eb21d64"
+                );
+        UUID oldRequestId =
+                UUID.fromString(
+                        "39bb5661-7f50-457c-9db2-39de52449822"
+                );
+        UUID newRequestId =
+                UUID.fromString(
+                        "0d7dd5d3-efac-4c87-9986-19e227c4ee91"
+                );
+
+        PlayerSessionLease admittedFloorLease =
+                lease(admittedFloorPlayerId, OWNER, 11L);
+        CompletableFuture<Boolean> admittedFloorRelease =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        admittedFloorLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        admittedFloorLease,
+                        admittedFloorRelease
+                )
+        );
+        assertTrue(
+                boundedRegistry.claimReleaseTimeout(
+                        admittedFloorLease,
+                        admittedFloorRelease
+                )
+        );
+
+        PlayerSessionLease rejectedFloorLease =
+                lease(rejectedFloorPlayerId, OWNER, 12L);
+        CompletableFuture<Boolean> rejectedFloorRelease =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        rejectedFloorLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        rejectedFloorLease,
+                        rejectedFloorRelease
+                )
+        );
+        assertTrue(
+                boundedRegistry
+                        .claimReleaseTimeoutWithEvictions(
+                                rejectedFloorLease,
+                                rejectedFloorRelease
+                        )
+                        .claimed()
+        );
+
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        lease(gateProbePlayerId, OWNER, 13L)
+                )
+        );
+
+        Player oldConnection = player(affectedPlayerId);
+        Player newConnection = player(affectedPlayerId);
+
+        AuthenticatedPlayerSession oldSession =
+                new AuthenticatedPlayerSession(
+                        affectedPlayerId,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                boundedRegistry.beginTracked(
+                        oldConnection,
+                        oldRequestId,
+                        oldSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        oldRequestId,
+                        oldBegin.attemptId()
+                )
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PENDING_REPLAY,
+                boundedRegistry.beginTracked(
+                        oldConnection,
+                        oldRequestId,
+                        oldSession
+                ).decision()
+        );
+
+        AuthenticatedPlayerSession newSession =
+                new AuthenticatedPlayerSession(
+                        affectedPlayerId,
+                        "HarriOcho",
+                        1_750_000_000_001L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult newBegin =
+                boundedRegistry.beginTracked(
+                        newConnection,
+                        newRequestId,
+                        newSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                newBegin.decision()
+        );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        oldSession,
+                        OWNER,
+                        14L
+                );
+
+        PlayerSessionLeaseBindingResult result =
+                boundedRegistry.bind(
+                        oldConnection,
+                        oldRequestId,
+                        oldBegin.attemptId(),
+                        oldSession,
+                        oldLease,
+                        successfulAcknowledgement(),
+                        conflictAcknowledgement()
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PENDING_REPLAY,
+                boundedRegistry.beginTracked(
+                        newConnection,
+                        newRequestId,
+                        newSession
+                ).decision()
+        );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                result
+        );
+    }
+
+    @Test
+    void supersededCapacityFailureDoesNotCacheTerminalReplay() {
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        System::nanoTime,
+                        16,
+                        60_000_000_000L,
+                        60_000_000_000L,
+                        8,
+                        1
+                );
+
+        UUID admittedFloorPlayerId =
+                UUID.fromString(
+                        "4d486189-92fe-43cb-b2f0-4f23753f914f"
+                );
+        UUID rejectedFloorPlayerId =
+                UUID.fromString(
+                        "91340e9e-e916-4544-8e0d-d4f8999ddda9"
+                );
+        UUID gateProbePlayerId =
+                UUID.fromString(
+                        "92db4d96-6d39-4418-a717-773f1d7c5c57"
+                );
+        UUID affectedPlayerId =
+                UUID.fromString(
+                        "7e237b1b-449b-43a9-b0a3-d43c10975bdd"
+                );
+        UUID oldRequestId =
+                UUID.fromString(
+                        "730c98c8-51c5-4d69-9442-f16c5915a786"
+                );
+        UUID newRequestId =
+                UUID.fromString(
+                        "a162f225-a660-498d-b831-494d52ecf1e3"
+                );
+
+        PlayerSessionLease admittedFloorLease =
+                lease(admittedFloorPlayerId, OWNER, 11L);
+        CompletableFuture<Boolean> admittedFloorRelease =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        admittedFloorLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        admittedFloorLease,
+                        admittedFloorRelease
+                )
+        );
+        assertTrue(
+                boundedRegistry.claimReleaseTimeout(
+                        admittedFloorLease,
+                        admittedFloorRelease
+                )
+        );
+
+        PlayerSessionLease rejectedFloorLease =
+                lease(rejectedFloorPlayerId, OWNER, 12L);
+        CompletableFuture<Boolean> rejectedFloorRelease =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        rejectedFloorLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        rejectedFloorLease,
+                        rejectedFloorRelease
+                )
+        );
+        assertTrue(
+                boundedRegistry
+                        .claimReleaseTimeoutWithEvictions(
+                                rejectedFloorLease,
+                                rejectedFloorRelease
+                        )
+                        .claimed()
+        );
+
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        lease(gateProbePlayerId, OWNER, 13L)
+                )
+        );
+
+        Player oldConnection = player(affectedPlayerId);
+        Player newConnection = player(affectedPlayerId);
+
+        AuthenticatedPlayerSession oldSession =
+                new AuthenticatedPlayerSession(
+                        affectedPlayerId,
+                        "HarriOcho",
+                        1_750_000_000_000L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldBegin =
+                boundedRegistry.beginTracked(
+                        oldConnection,
+                        oldRequestId,
+                        oldSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                oldBegin.decision()
+        );
+        assertTrue(
+                boundedRegistry.claimAcquisitionResult(
+                        oldConnection,
+                        oldRequestId,
+                        oldBegin.attemptId()
+                )
+        );
+
+        PlayerSessionLease oldLease =
+                new PlayerSessionLease(
+                        oldSession,
+                        OWNER,
+                        14L
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingResult
+                        .CAPACITY_EXHAUSTED,
+                boundedRegistry.bind(
+                        oldConnection,
+                        oldRequestId,
+                        oldBegin.attemptId(),
+                        oldSession,
+                        oldLease,
+                        successfulAcknowledgement(),
+                        conflictAcknowledgement()
+                )
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PENDING_REPLAY,
+                boundedRegistry.beginTracked(
+                        oldConnection,
+                        oldRequestId,
+                        oldSession
+                ).decision()
+        );
+
+        AuthenticatedPlayerSession newSession =
+                new AuthenticatedPlayerSession(
+                        affectedPlayerId,
+                        "HarriOcho",
+                        1_750_000_000_001L
+                );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult newBegin =
+                boundedRegistry.beginTracked(
+                        newConnection,
+                        newRequestId,
+                        newSession
+                );
+
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PROCEED,
+                newBegin.decision()
+        );
+
+        PlayerSessionLeaseBindingRegistry
+                .TerminalAcknowledgement failureAcknowledgement =
+                new PlayerSessionLeaseBindingRegistry
+                        .TerminalAcknowledgement(
+                        false,
+                        "Player session coordination unavailable"
+                );
+
+        PlayerSessionLeaseBindingRegistry.Cancellation completion =
+                boundedRegistry.completeTerminalRequest(
+                        oldConnection,
+                        oldRequestId,
+                        oldBegin.attemptId(),
+                        oldSession,
+                        failureAcknowledgement
+                );
+
+        assertFalse(completion.shouldRespond());
+        assertEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.PENDING_REPLAY,
+                boundedRegistry.beginTracked(
+                        newConnection,
+                        newRequestId,
+                        newSession
+                ).decision()
+        );
+
+        PlayerSessionLeaseBindingRegistry.BeginResult oldReplay =
+                boundedRegistry.beginTracked(
+                        oldConnection,
+                        oldRequestId,
+                        oldSession
+                );
+
+        assertNotEquals(
+                PlayerSessionLeaseBindingRegistry
+                        .BeginDecision.COMPLETED_REPLAY,
+                oldReplay.decision(),
+                "a superseded request must not cache a terminal replay"
         );
     }
 

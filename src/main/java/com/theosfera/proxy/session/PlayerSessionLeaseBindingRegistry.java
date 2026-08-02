@@ -533,8 +533,14 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         remaining.remove(nonNullAcquisitionId);
 
-        if (unknownFencingFloorAdmissionsClosed
-                && !releaseFencingFloors.containsKey(playerId)) {
+        long newestOtherGeneration =
+                newestGeneration(
+                        existing.boundLease(),
+                        remaining
+                );
+
+        if (acquisition.generation()
+                < newestOtherGeneration) {
             updateState(
                     playerId,
                     new PlayerState(
@@ -551,6 +557,12 @@ public final class PlayerSessionLeaseBindingRegistry {
             );
 
             return PlayerSessionLeaseBindingResult.STALE;
+        }
+
+        if (unknownFencingFloorAdmissionsClosed
+                && !releaseFencingFloors.containsKey(playerId)) {
+            return PlayerSessionLeaseBindingResult
+                    .CAPACITY_EXHAUSTED;
         }
 
         long fencingFloor =
@@ -634,32 +646,6 @@ public final class PlayerSessionLeaseBindingRegistry {
             );
 
             return PlayerSessionLeaseBindingResult.DISCONNECTED;
-        }
-
-        long newestOtherGeneration =
-                newestGeneration(
-                        existing.boundLease(),
-                        remaining
-                );
-
-        if (acquisition.generation()
-                < newestOtherGeneration) {
-            updateState(
-                    playerId,
-                    new PlayerState(
-                            existing.boundLease(),
-                            remaining
-                    )
-            );
-
-            discardActiveRequestWithoutReplay(
-                    nonNullAcquisitionId,
-                    nonNullPlayer,
-                    expectedAttemptId,
-                    expectedSession
-            );
-
-            return PlayerSessionLeaseBindingResult.STALE;
         }
 
         Optional<BoundLease> currentBound =
@@ -963,6 +949,8 @@ public final class PlayerSessionLeaseBindingRegistry {
     private Cancellation cancel(
             Player nonNullPlayer,
             UUID nonNullAcquisitionId,
+            long expectedAttemptId,
+            AuthenticatedPlayerSession expectedSession,
             TerminalAcknowledgement acknowledgement
     ) {
         TerminalAcknowledgement nonNullAcknowledgement =
@@ -1006,10 +994,19 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         remaining.remove(nonNullAcquisitionId);
 
-        completeActiveRequest(
-                nonNullAcquisitionId,
-                nonNullAcknowledgement
-        );
+        if (shouldRespond) {
+            completeActiveRequest(
+                    nonNullAcquisitionId,
+                    nonNullAcknowledgement
+            );
+        } else {
+            discardActiveRequestWithoutReplay(
+                    nonNullAcquisitionId,
+                    nonNullPlayer,
+                    expectedAttemptId,
+                    expectedSession
+            );
+        }
 
         Optional<PlayerSessionLease> leaseToRelease =
                 Optional.empty();
@@ -1447,6 +1444,8 @@ public final class PlayerSessionLeaseBindingRegistry {
         return cancel(
                 nonNullPlayer,
                 nonNullAcquisitionId,
+                expectedAttemptId,
+                nonNullExpectedSession,
                 nonNullAcknowledgement
         );
     }
@@ -1518,6 +1517,8 @@ public final class PlayerSessionLeaseBindingRegistry {
         return cancel(
                 nonNullPlayer,
                 nonNullAcquisitionId,
+                expectedAttemptId,
+                nonNullExpectedSession,
                 nonNullAcknowledgement
         );
     }
@@ -1633,6 +1634,8 @@ public final class PlayerSessionLeaseBindingRegistry {
                 cancel(
                 nonNullPlayer,
                 nonNullAcquisitionId,
+                expectedAttemptId,
+                nonNullExpectedSession,
                 nonNullAcknowledgement
         );
 
