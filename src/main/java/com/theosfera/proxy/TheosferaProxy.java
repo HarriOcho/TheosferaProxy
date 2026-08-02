@@ -4,12 +4,12 @@ import com.google.inject.Inject;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthCheckScheduler;
 import com.theosfera.proxy.backend.BackendHealthCheckTask;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
-import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
-import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendPingConnectionResolver;
 import com.theosfera.proxy.backend.BackendPingEmitter;
+import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
 import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import com.theosfera.proxy.command.LobbyCommand;
 import com.theosfera.proxy.command.LobbyCommandRegistration;
@@ -20,6 +20,7 @@ import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentityConfigLoader;
 import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
+import com.theosfera.proxy.coordination.velocity.VelocityRedisCoordinationBootstrap;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.theosfera.proxy.failover.BackendKickFailoverService;
 import com.theosfera.proxy.failover.PendingPlayerFailoverRegistry;
@@ -30,9 +31,9 @@ import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PingMessageHandler;
-import com.theosfera.proxy.messaging.handler.PongMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
+import com.theosfera.proxy.messaging.handler.PongMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
 import com.theosfera.proxy.observability.BackendOperationalSnapshotService;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
@@ -43,8 +44,8 @@ import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionAcquisitionTimeoutScheduler;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionReleaseTimeoutScheduler;
-import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.TransferResultSender;
@@ -102,6 +103,8 @@ public final class TheosferaProxy {
     private ProxyStatusCommandRegistration
             proxyStatusCommandRegistration;
     private BackendHealthCheckScheduler healthCheckScheduler;
+    private VelocityRedisCoordinationBootstrap coordinationBootstrap;
+    private boolean operationalSurfaceActive;
 
     @Inject
     public TheosferaProxy(
@@ -197,6 +200,103 @@ public final class TheosferaProxy {
     ) {
         initializeProtocolMessaging();
 
+        coordinationBootstrap = new VelocityRedisCoordinationBootstrap(
+                proxyServer,
+                this,
+                dataDirectory,
+                proxyInstanceIdentity,
+                logger,
+                Clock.systemUTC()
+        );
+
+        final boolean coordinationReady;
+        try {
+            coordinationReady = coordinationBootstrap
+                    .start()
+                    .toCompletableFuture()
+                    .join();
+        } catch (RuntimeException exception) {
+            logger.error(
+                    "TheosferaProxy quedara cerrado porque la coordinacion Redis no pudo inicializarse.",
+                    exception
+            );
+            return;
+        }
+
+        if (!coordinationReady) {
+            logger.error(
+                    "TheosferaProxy quedara cerrado porque no pudo adquirir su membresia distribuida."
+            );
+            return;
+        }
+
+        try {
+            activateOperationalSurface();
+        } catch (RuntimeException exception) {
+            logger.error(
+                    "Fallo al activar la superficie operativa del Proxy despues de adquirir membership.",
+                    exception
+            );
+            coordinationBootstrap.beginStopping();
+            deactivateOperationalSurface();
+            coordinationBootstrap.stop().toCompletableFuture().join();
+            throw exception;
+        }
+
+        logger.info(
+                "Canal de protocolo registrado: {}.",
+                ProtocolChannel.IDENTIFIER.getId()
+        );
+
+        logger.info(
+                "TheosferaProxy iniciado correctamente con membresia Redis autoritativa."
+        );
+    }
+
+    @Subscribe
+    public void onProxyShutdown(
+            final ProxyShutdownEvent event
+    ) {
+        if (coordinationBootstrap != null) {
+            coordinationBootstrap.beginStopping();
+        }
+
+        deactivateOperationalSurface();
+        clearRuntimeRegistries();
+
+        if (coordinationBootstrap != null) {
+            try {
+                boolean released = coordinationBootstrap
+                        .stop()
+                        .toCompletableFuture()
+                        .join();
+                if (!released) {
+                    logger.warn(
+                            "El Proxy se apago sin confirmar la liberacion exacta de membership Redis."
+                    );
+                }
+            } catch (RuntimeException exception) {
+                logger.warn(
+                        "Fallo durante el cierre de la coordinacion Redis.",
+                        exception
+                );
+            }
+        }
+
+        logger.info(
+                "TheosferaProxy apagado correctamente."
+        );
+    }
+
+    private void activateOperationalSurface() {
+        if (operationalSurfaceActive) {
+            throw new IllegalStateException(
+                    "Proxy operational surface is already active"
+            );
+        }
+
+        operationalSurfaceActive = true;
+
         channelRegistration.register();
         lobbyCommandRegistration.register();
         proxyStatusCommandRegistration.register();
@@ -219,21 +319,15 @@ public final class TheosferaProxy {
         if (healthCheckScheduler != null) {
             healthCheckScheduler.start();
         }
-
-        logger.info(
-                "Canal de protocolo registrado: {}.",
-                ProtocolChannel.IDENTIFIER.getId()
-        );
-
-        logger.info(
-                "TheosferaProxy iniciado correctamente."
-        );
     }
 
-    @Subscribe
-    public void onProxyShutdown(
-            final ProxyShutdownEvent event
-    ) {
+    private void deactivateOperationalSurface() {
+        if (!operationalSurfaceActive) {
+            return;
+        }
+
+        operationalSurfaceActive = false;
+
         if (healthCheckScheduler != null) {
             healthCheckScheduler.stop();
         }
@@ -265,6 +359,15 @@ public final class TheosferaProxy {
             );
         }
 
+        channelRegistration.unregister();
+
+        logger.info(
+                "Canal de protocolo desregistrado: {}.",
+                ProtocolChannel.IDENTIFIER.getId()
+        );
+    }
+
+    private void clearRuntimeRegistries() {
         bootstrapRegistry.clear();
         failoverRegistry.clear();
         capacityRegistry.clear();
@@ -276,16 +379,6 @@ public final class TheosferaProxy {
         pendingPingRegistry.clear();
         healthRegistry.clear();
         identityRegistry.clear();
-        channelRegistration.unregister();
-
-        logger.info(
-                "Canal de protocolo desregistrado: {}.",
-                ProtocolChannel.IDENTIFIER.getId()
-        );
-
-        logger.info(
-                "TheosferaProxy apagado correctamente."
-        );
     }
 
     private void initializeProtocolMessaging() {
