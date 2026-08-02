@@ -162,7 +162,7 @@ public final class RedisCoordinationRuntime {
             if (!started
                     || stopping
                     || connection == null
-                    || stateRegistry.get() != CoordinationState.HEALTHY) {
+                    || !stateRegistry.is(CoordinationState.HEALTHY)) {
                 throw new IllegalStateException(
                         "Redis player session coordinator requires a healthy runtime"
                 );
