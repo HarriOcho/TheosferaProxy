@@ -21,6 +21,7 @@ import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -41,7 +42,7 @@ class TheosferaProxyLifecycleTest {
     Path temporaryDirectory;
 
     @Test
-    void registersAndUnregistersCommandsInLifecycle() {
+    void registersAndUnregistersCommandsInLifecycle() throws Exception {
         ProxyServer proxyServer =
                 mock(ProxyServer.class);
 
@@ -127,7 +128,8 @@ class TheosferaProxyLifecycleTest {
                         temporaryDirectory
                 );
 
-        plugin.onProxyInitialization(null);
+        invokeNoArg(plugin, "initializeProtocolMessaging");
+        invokeNoArg(plugin, "activateOperationalSurface");
 
         verify(commandManager).register(
                 eq(lobbyCommandMeta),
@@ -152,7 +154,7 @@ class TheosferaProxyLifecycleTest {
         BackendKickFailoverListener registeredListener =
                 listenerCaptor.getValue();
 
-        plugin.onProxyShutdown(null);
+        invokeNoArg(plugin, "deactivateOperationalSurface");
 
         verify(commandManager).unregister(lobbyCommandMeta);
         verify(commandManager).unregister(
@@ -261,22 +263,13 @@ class TheosferaProxyLifecycleTest {
                         temporaryDirectory
                 );
 
-        plugin.onProxyInitialization(null);
+        invokeNoArg(plugin, "initializeProtocolMessaging");
 
-        ArgumentCaptor<ProtocolMessageListener> listenerCaptor =
-                ArgumentCaptor.forClass(
-                        ProtocolMessageListener.class
-                );
-
-        verify(eventManager).register(
-                eq(plugin),
-                listenerCaptor.capture()
-        );
+        ProtocolMessageListener listener =
+                protocolMessageListenerFrom(plugin);
 
         PlayerAuthenticatedMessageHandler handler =
-                playerAuthenticatedHandlerFrom(
-                        listenerCaptor.getValue()
-                );
+                playerAuthenticatedHandlerFrom(listener);
 
         ProxyInstanceIdentity identity =
                 proxyIdentityFrom(handler);
@@ -289,8 +282,24 @@ class TheosferaProxyLifecycleTest {
                 "theosfera-proxy-local",
                 identity.proxyName()
         );
+    }
 
-        plugin.onProxyShutdown(null);
+    private void invokeNoArg(
+            TheosferaProxy plugin,
+            String methodName
+    ) throws ReflectiveOperationException {
+        Method method = TheosferaProxy.class.getDeclaredMethod(methodName);
+        method.setAccessible(true);
+        method.invoke(plugin);
+    }
+
+    private ProtocolMessageListener protocolMessageListenerFrom(
+            TheosferaProxy plugin
+    ) throws ReflectiveOperationException {
+        Field listenerField = TheosferaProxy.class
+                .getDeclaredField("protocolMessageListener");
+        listenerField.setAccessible(true);
+        return (ProtocolMessageListener) listenerField.get(plugin);
     }
 
     private PlayerAuthenticatedMessageHandler
