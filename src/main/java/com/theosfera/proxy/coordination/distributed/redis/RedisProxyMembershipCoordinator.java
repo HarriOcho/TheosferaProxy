@@ -58,20 +58,13 @@ public final class RedisProxyMembershipCoordinator
         );
 
         return store.acquire(nonNullIdentity, membershipTtl)
-                .handle((response, failure) -> {
-                    if (failure != null) {
-                        return failedOrUnavailableAcquire(failure);
-                    }
-
-                    try {
-                        return completed(handleAcquireResponse(
+                .handle(
+                        (response, failure) -> acquireAfterStore(
                                 nonNullIdentity,
-                                response
-                        ));
-                    } catch (RuntimeException exception) {
-                        return failedStage(exception);
-                    }
-                })
+                                response,
+                                failure
+                        )
+                )
                 .thenCompose(stage -> stage);
     }
 
@@ -85,20 +78,13 @@ public final class RedisProxyMembershipCoordinator
         );
 
         return store.renew(nonNullExpected, membershipTtl)
-                .handle((response, failure) -> {
-                    if (failure != null) {
-                        return failedOrUnavailableRenew(failure);
-                    }
-
-                    try {
-                        return completed(handleRenewResponse(
+                .handle(
+                        (response, failure) -> renewAfterStore(
                                 nonNullExpected,
-                                response
-                        ));
-                    } catch (RuntimeException exception) {
-                        return failedStage(exception);
-                    }
-                })
+                                response,
+                                failure
+                        )
+                )
                 .thenCompose(stage -> stage);
     }
 
@@ -112,6 +98,40 @@ public final class RedisProxyMembershipCoordinator
                         "expected cannot be null"
                 )
         );
+    }
+
+    private CompletionStage<ProxyMembershipAcquireResult>
+    acquireAfterStore(
+            ProxyInstanceIdentity identity,
+            RedisProxyMembershipAcquireResponse response,
+            Throwable failure
+    ) {
+        if (failure != null) {
+            return failedOrUnavailableAcquire(failure);
+        }
+
+        try {
+            return completed(handleAcquireResponse(identity, response));
+        } catch (RuntimeException exception) {
+            return failedStage(exception);
+        }
+    }
+
+    private CompletionStage<ProxyMembershipRenewResult>
+    renewAfterStore(
+            ProxyMembershipLease expected,
+            RedisProxyMembershipRenewResponse response,
+            Throwable failure
+    ) {
+        if (failure != null) {
+            return failedOrUnavailableRenew(failure);
+        }
+
+        try {
+            return completed(handleRenewResponse(expected, response));
+        } catch (RuntimeException exception) {
+            return failedStage(exception);
+        }
     }
 
     private ProxyMembershipAcquireResult handleAcquireResponse(
