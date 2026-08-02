@@ -44,17 +44,10 @@ public final class PlayerSessionShutdownReleaseService {
     }
 
     public CompletionStage<ReleaseSummary> releaseBoundSessions() {
+        List<PlayerSessionLease> leases = snapshotAndFenceBindings();
         List<CompletableFuture<Boolean>> releases = new ArrayList<>();
 
-        for (Player player : proxyServer.getAllPlayers()) {
-            PlayerSessionLease lease = bindingRegistry
-                    .find(player)
-                    .orElse(null);
-
-            if (lease == null) {
-                continue;
-            }
-
+        for (PlayerSessionLease lease : leases) {
             releases.add(startRelease(lease));
         }
 
@@ -77,6 +70,28 @@ public final class PlayerSessionShutdownReleaseService {
             }
             return new ReleaseSummary(releases.size(), released);
         });
+    }
+
+    private List<PlayerSessionLease> snapshotAndFenceBindings() {
+        synchronized (bindingRegistry) {
+            List<PlayerSessionLease> leases = new ArrayList<>();
+
+            for (Player player : proxyServer.getAllPlayers()) {
+                bindingRegistry.find(player).ifPresent(leases::add);
+            }
+
+            /*
+             * This clear is deliberately performed while holding the same
+             * monitor used by the registry's synchronized acquisition/binding
+             * methods. Once it completes, an acquisition callback that was
+             * already in flight can no longer claim or bind its result. The
+             * existing handler then treats a successful late result as
+             * unclaimed and releases that lease explicitly.
+             */
+            bindingRegistry.clear();
+
+            return List.copyOf(leases);
+        }
     }
 
     private CompletableFuture<Boolean> startRelease(
