@@ -36,6 +36,97 @@ class RedisCoordinationConfigLoaderTest {
     }
 
     @Test
+    void loadsLegacyConfigWithoutPlayerSessionProperties()
+            throws Exception {
+        Path configFile = tempDirectory.resolve(
+                RedisCoordinationConfigLoader.FILE_NAME
+        );
+        Files.writeString(
+                configFile,
+                """
+                redis-uri=redis://127.0.0.1:6379
+                membership-ttl-seconds=15
+                membership-renew-seconds=5
+                """
+        );
+
+        RedisCoordinationConfig config =
+                new RedisCoordinationConfigLoader(tempDirectory).load();
+
+        assertEquals(Duration.ofSeconds(30), config.playerSessionTtl());
+        assertEquals(
+                Duration.ofSeconds(10),
+                config.playerSessionRenewInterval()
+        );
+    }
+
+    @Test
+    void rejectsBlankLegacyOptionalPlayerSessionProperty()
+            throws Exception {
+        Path configFile = tempDirectory.resolve(
+                RedisCoordinationConfigLoader.FILE_NAME
+        );
+        Files.writeString(
+                configFile,
+                """
+                redis-uri=redis://127.0.0.1:6379
+                membership-ttl-seconds=15
+                membership-renew-seconds=5
+                player-session-ttl-seconds=
+                """
+        );
+
+        RedisCoordinationConfigLoader loader =
+                new RedisCoordinationConfigLoader(tempDirectory);
+
+        assertThrows(IllegalStateException.class, loader::load);
+    }
+
+    @Test
+    void rejectsNonNumericLegacyOptionalPlayerSessionProperty()
+            throws Exception {
+        Path configFile = tempDirectory.resolve(
+                RedisCoordinationConfigLoader.FILE_NAME
+        );
+        Files.writeString(
+                configFile,
+                """
+                redis-uri=redis://127.0.0.1:6379
+                membership-ttl-seconds=15
+                membership-renew-seconds=5
+                player-session-renew-seconds=ten
+                """
+        );
+
+        RedisCoordinationConfigLoader loader =
+                new RedisCoordinationConfigLoader(tempDirectory);
+
+        assertThrows(IllegalStateException.class, loader::load);
+    }
+
+    @Test
+    void rejectsNonPositiveLegacyOptionalPlayerSessionProperty()
+            throws Exception {
+        Path configFile = tempDirectory.resolve(
+                RedisCoordinationConfigLoader.FILE_NAME
+        );
+        Files.writeString(
+                configFile,
+                """
+                redis-uri=redis://127.0.0.1:6379
+                membership-ttl-seconds=15
+                membership-renew-seconds=5
+                player-session-ttl-seconds=0
+                """
+        );
+
+        RedisCoordinationConfigLoader loader =
+                new RedisCoordinationConfigLoader(tempDirectory);
+
+        assertThrows(IllegalStateException.class, loader::load);
+    }
+
+    @Test
     void rejectsMembershipRenewIntervalNotShorterThanTtl()
             throws Exception {
         Path configFile = tempDirectory.resolve(
