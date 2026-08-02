@@ -6,6 +6,7 @@ import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 import org.slf4j.Logger;
 
 import java.util.List;
@@ -17,7 +18,9 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class PlayerSessionShutdownReleaseServiceTest {
@@ -53,6 +56,11 @@ class PlayerSessionShutdownReleaseServiceTest {
         assertEquals(2, summary.attempted());
         assertEquals(2, summary.released());
         assertTrue(summary.complete());
+
+        InOrder shutdownOrder = inOrder(bindings, coordinator);
+        shutdownOrder.verify(bindings).clear();
+        shutdownOrder.verify(coordinator).releaseIfOwned(firstLease);
+        shutdownOrder.verify(coordinator).releaseIfOwned(secondLease);
     }
 
     @Test
@@ -84,6 +92,7 @@ class PlayerSessionShutdownReleaseServiceTest {
         assertEquals(1, summary.attempted());
         assertEquals(0, summary.released());
         assertFalse(summary.complete());
+        verify(bindings).clear();
     }
 
     @Test
@@ -113,6 +122,7 @@ class PlayerSessionShutdownReleaseServiceTest {
         assertEquals(1, summary.attempted());
         assertEquals(0, summary.released());
         assertFalse(summary.complete());
+        verify(bindings).clear();
     }
 
     private PlayerSessionShutdownReleaseService service(
