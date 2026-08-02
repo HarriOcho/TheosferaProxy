@@ -129,7 +129,7 @@ class RedisCoordinationRuntimeIntegrationTest {
                                 "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
                         ),
                         "HarriOcho",
-                        Instant.parse("2026-08-02T20:00:00Z")
+                        Instant.parse("2026-08-02T20:00:00Z").toEpochMilli()
                 );
 
         PlayerSessionAcquireResult acquired = await(
