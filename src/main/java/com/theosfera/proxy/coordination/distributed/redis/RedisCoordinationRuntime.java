@@ -1,5 +1,6 @@
 package com.theosfera.proxy.coordination.distributed.redis;
 
+import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.CoordinationStateRegistry;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.ProxyMembershipLifecycle;
@@ -67,6 +68,7 @@ public final class RedisCoordinationRuntime {
             synchronized (lock) {
                 started = false;
             }
+            stateRegistry.set(CoordinationState.FENCED);
             logger.error("No se pudo conectar con Redis para coordinacion.", exception);
             return CompletableFuture.completedFuture(false);
         }
