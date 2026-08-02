@@ -324,7 +324,9 @@ Componentes:
 - `AuthenticatedPlayerSessionRegistry`;
 - `PlayerSessionCoordinator`;
 - `LocalPlayerSessionCoordinator`;
+- `RedisPlayerSessionCoordinator`;
 - `ProxyInstanceIdentity`;
+- `ProxyInstanceIdentityConfigLoader`;
 - `PlayerSessionLease`;
 - `PlayerSessionLeaseRequest`;
 - `PlayerSessionAcquireResult`;
@@ -350,9 +352,48 @@ La sesión contiene:
 - nombre validado;
 - instante de autenticación.
 
-El adaptador runtime actual es `LocalPlayerSessionCoordinator`. Todavía no
-existe `RedisPlayerSessionCoordinator`; por tanto no hay exclusión real entre
-múltiples procesos Proxy.
+El adaptador runtime actual sigue siendo `LocalPlayerSessionCoordinator`.
+`RedisPlayerSessionCoordinator` existe como adaptador distribuido aislado y
+probado bajo:
+
+```text
+com.theosfera.proxy.coordination.distributed.redis
+```
+
+`TheosferaProxy` todavía no crea conexiones Redis ni referencia
+`RedisPlayerSessionCoordinator` en su composición runtime; por tanto Redis no
+es todavía la autoridad runtime y no hay exclusión real entre múltiples
+procesos Proxy.
+
+`ProxyInstanceIdentity` ahora separa:
+
+- `proxyName`: identidad lógica estable configurada de la instancia Proxy;
+- `incarnationId`: UUID efímero nuevo en cada ejecución del proceso.
+
+La identidad se carga durante la inicialización mediante
+`ProxyInstanceIdentityConfigLoader`, no mediante I/O en el constructor.
+Archivo runtime:
+
+```text
+plugins/theosferaproxy/proxy-instance.properties
+```
+
+Propiedad:
+
+```properties
+proxy-name=proxy-1
+```
+
+Semántica confirmada:
+
+- reiniciar la misma instancia lógica conserva `proxyName`;
+- cada arranque genera un `incarnationId` nuevo;
+- distintas instancias Proxy deben usar distintos `proxyName`;
+- `incarnationId` no se persiste;
+- no se genera un nombre lógico aleatorio;
+- una configuración inválida falla temprano;
+- `proxy-name` acepta ASCII lowercase, números y guiones, de 1 a 32
+  caracteres, sin iniciar ni terminar en guion.
 
 El registro local histórico distingue:
 
@@ -1215,7 +1256,9 @@ Bloques principales fusionados en TheosferaProxy:
 - Proxy Operational Observability;
 - Proxy Status Command Formatting;
 - Local Player Session Coordination Contracts;
-- Runtime Player Session Coordination.
+- Runtime Player Session Coordination;
+- Stable Proxy Instance Identity;
+- Redis Player Session Coordinator.
 
 Bloques de contrato fusionados en TheosferaProtocol:
 
@@ -1263,6 +1306,10 @@ Commits relevantes ya integrados para el circuito Auth→Lobby:
   `7e5bd7a feat: add local player session coordination contracts (#44)`;
 - TheosferaProxy:
   `87ea7d4 feat: integrate player session coordination at runtime (#45)`;
+- TheosferaProxy:
+  `d4c06d9 feat: configure stable proxy instance identity (#47)`;
+- TheosferaProxy:
+  `e2fe4f1 feat: add Redis player session coordinator (#48)`;
 - TheosferaAuth:
   `b6ae696 Merge pull request #4 from HarriOcho/fix/auth-transfer-handoff-lifecycle`.
 
@@ -1311,6 +1358,16 @@ Estado Git del checkpoint actual de coordinación runtime de sesiones:
 - working tree limpio antes de crear la rama documental;
 - rama documental actual:
   `docs/session-coordination-runtime-checkpoint`.
+
+Estado Git del checkpoint actual de Redis Player Session Coordinator:
+
+- `main` sincronizada con `origin/main` en `e2fe4f1`;
+- base confirmada: `main` @ `e2fe4f1`;
+- PR `#47` fusionado en `main` mediante squash;
+- PR `#48` fusionado en `main` mediante squash;
+- working tree limpio antes de crear la rama documental;
+- rama documental actual:
+  `docs/redis-player-session-coordinator-checkpoint`.
 
 Estado posterior de desarrollo histórico del checkpoint de health checking:
 
@@ -1406,13 +1463,13 @@ Limitaciones honestas del checkpoint actual:
 - el estado de salud, reservas, sesiones, leases, bindings, replays,
   quarantines, presencia y transferencias sigue siendo local al proceso de
   Proxy;
-- no existe Redis ni coordinación entre múltiples proxies;
+- existe un adaptador Redis distribuido para sesiones autenticadas, pero no
+  está conectado al runtime;
+- no existe coordinación runtime entre múltiples proxies;
 - `LocalPlayerSessionCoordinator` es el adaptador runtime actual;
-- `RedisPlayerSessionCoordinator` no existe todavía;
-- `ProxyInstanceIdentity` se crea actualmente con `proxyName`
-  `theosfera-proxy-local` y una `incarnationId` generada mediante
-  `UUID.randomUUID()` al arrancar; esa identidad no es estable ni suficiente
-  para coordinación Redis/multi-proxy;
+- `RedisPlayerSessionCoordinator` existe y está probado aisladamente;
+- `ProxyInstanceIdentity` ya usa `proxyName` estable configurado e
+  `incarnationId` efímero por arranque;
 - el inventario observado inicialmente en `lobby-2` se debía a que `lobby-2`
   fue clonado desde `lobby-1`; no constituye sincronización cross-server y no
   debe presentarse como evidencia del Proxy.
@@ -1420,9 +1477,18 @@ Limitaciones honestas del checkpoint actual:
 Todavía no existen:
 
 - base de datos;
-- Redis;
-- recuperación tras reinicio;
-- replicación entre múltiples proxies;
+- configuración/lifecycle Redis del plugin;
+- activación de Redis como autoridad runtime;
+- recuperación/HA Redis validada;
+- persistencia/monotonicidad del contador de fencing ante restart/failover
+  Redis;
+- `ProxyMembershipCoordinator` distribuido;
+- renovación runtime de leases Redis;
+- wiring de `DISTRIBUTED_REQUIRED`;
+- coordinación Redis para presencia global, transferencias, capacidad o
+  bootstrap;
+- observabilidad runtime Redis;
+- replicación runtime entre múltiples proxies;
 - perfiles persistentes;
 - amigos;
 - parties;
@@ -1433,7 +1499,8 @@ Todavía no existen:
 
 La base de datos será la fuente permanente.
 
-Redis coordinará estado temporal y eventos cuando sea introducido.
+Redis existe ya como adaptador probado para `PlayerSessionCoordinator`, pero
+todavía no coordina estado temporal ni eventos en runtime.
 
 Un fallo de Redis no debe causar pérdida de perfiles o progreso.
 
@@ -1483,6 +1550,9 @@ para jugadores autenticados y la observabilidad operacional administrativa.
 La autenticación de jugadores ya no registra directamente la sesión y responde:
 primero adquiere un lease mediante `PlayerSessionCoordinator` y luego vincula
 ese lease a la conexión exacta.
+La identidad estable del proxy está configurada mediante `proxy-name` y el
+adaptador `RedisPlayerSessionCoordinator` existe como implementación
+distribuida probada, aunque el runtime sigue en modo `LOCAL`.
 
 La política fue validada en runtime con pérdida de frescura, exclusión del
 destino como backend jugable normal, resolución `BOOTSTRAP_REQUIRED`, fallo
@@ -1543,10 +1613,22 @@ checking o failover.
 Limitaciones actuales:
 
 - el estado continúa siendo local al proceso;
-- no existe Redis ni coordinación entre múltiples proxies;
+- existe un adaptador Redis distribuido para sesiones, pero no está conectado
+  al runtime;
+- no existe coordinación runtime entre múltiples proxies;
 - `LocalPlayerSessionCoordinator` sigue siendo el adaptador runtime;
-- `ProxyInstanceIdentity` todavía usa una identidad local/no estable:
-  `theosfera-proxy-local` y un UUID aleatorio por arranque;
+- `ProxyInstanceIdentity` ya usa `proxyName` estable configurado e
+  `incarnationId` efímero por arranque;
+- no existe todavía configuración/lifecycle Redis del plugin;
+- no existe `ProxyMembershipCoordinator` distribuido;
+- no existe renovación runtime de leases Redis;
+- no existe wiring de `DISTRIBUTED_REQUIRED`;
+- presencia global, transferencias, capacidad y bootstrap siguen sin
+  coordinación Redis;
+- no existe recuperación/HA Redis validada;
+- persistencia/monotonicidad del contador de fencing ante restart/failover
+  Redis sigue pendiente;
+- no existe todavía observabilidad runtime Redis;
 - la vista administrativa no es transaccional entre registros;
 - no existen métricas históricas, series temporales ni auditoría durable;
 - el comando no muestra todavía el detalle de cada transferencia pendiente;
@@ -1556,8 +1638,9 @@ Limitaciones actuales:
 
 Trabajo futuro, sin implementar todavía:
 
-- identidad estable y segura de cada instancia Proxy;
-- persistencia o coordinación distribuida del estado temporal;
+- configuración/lifecycle Redis, membresía distribuida y activación controlada
+  de `DISTRIBUTED_REQUIRED`;
+- persistencia o coordinación distribuida activa del estado temporal;
 - observabilidad detallada de transferencias, métricas e historia;
 - modo mantenimiento.
 
@@ -1566,22 +1649,30 @@ TheosferaProxy.
 
 Siguiente hito técnico recomendado:
 
-1. definir y configurar una identidad estable y segura de cada instancia Proxy;
-2. después, diseñar e implementar `RedisPlayerSessionCoordinator` respetando el
-   contrato `PlayerSessionCoordinator`;
-3. validar atomicidad, TTL, fencing, liberación exact-match e idempotencia;
-4. añadir Redis/Testcontainers, pruebas multi-proxy y escenarios de restart,
-   partition, timeout y callbacks tardíos;
-5. ampliar observabilidad de coordinación distribuida;
-6. retirar sobrecargas legacy cuando sea seguro.
+1. diseñar e implementar `RedisProxyMembershipCoordinator` o un
+   `ProxyMembershipCoordinator` distribuido respetando la frontera existente;
+2. adquirir membresía de forma atómica por `proxyName`;
+3. usar un lease de membresía con TTL inicial de diseño de 15 segundos;
+4. renovar mediante exact-match;
+5. liberar mediante exact-match;
+6. mantener fencing monotónico;
+7. demostrar que dos procesos con el mismo `proxyName` no pueden ser
+   propietarios válidos simultáneamente;
+8. mantener todavía el runtime sin activar `DISTRIBUTED_REQUIRED` hasta
+   completar lifecycle, configuración y estado operacional;
+9. después integrar configuración/lifecycle Redis, `CoordinationState`,
+   renovación de membresía, wiring de `DISTRIBUTED_REQUIRED` y renovación
+   runtime de sesiones;
+10. después avanzar hacia presencia, transferencia, capacidad y bootstrap
+    distribuidos.
 
 La observabilidad operacional básica ya no es trabajo pendiente. La frontera de
 coordinación distribuida ya fue diseñada. PR `#44` introdujo los contratos
 asíncronos y el adaptador local de sesiones; PR `#45` integró esa frontera al
 runtime de autenticación y materializó el hardening de binding, replay,
-release, timeouts, quarantines, capacidad y lifecycle. Redis y la persistencia
-temporal continúan sin implementar y requieren identidad estable de Proxy antes
-de escribir el adaptador distribuido.
+release, timeouts, quarantines, capacidad y lifecycle. PR `#47` resolvió la
+identidad estable de Proxy. PR `#48` implementó el adaptador Redis de sesiones,
+pero no lo conectó al runtime ni convirtió Redis en autoridad operacional.
 
 No introducir parties, amigos o escuadrones sin definir primero su
 persistencia y consistencia distribuida.
@@ -1705,9 +1796,13 @@ cubiertos por pruebas automatizadas. El retry alternativo Auth→Lobby, `/hub`
 y `/theosferaproxy status` fueron además validados en runtime.
 distribución proporcional entre dos Lobbies activos continúa pendiente de
 una prueba runtime con tres jugadores simultáneos, y `TIMED_OUT` terminal
-no fue provocado deliberadamente en runtime. El siguiente incremento
-recomendado es diseñar la frontera de coordinación global distribuida antes
-de introducir Redis o estado compartido entre múltiples proxies.
+no fue provocado deliberadamente en runtime. La recomendación de diseñar la
+frontera de coordinación global distribuida antes de introducir Redis
+corresponde al estado histórico de este checkpoint y quedó superseded: la
+frontera distribuida fue diseñada posteriormente y
+`RedisPlayerSessionCoordinator` fue implementado en PR `#48`. El siguiente
+hito actual se define en las secciones posteriores, especialmente en el punto
+exacto de reanudación y en el checkpoint `#27`.
 
 ## 24. Checkpoint de observabilidad operacional
 
@@ -1791,22 +1886,26 @@ Validación confirmada:
 9. la operación existente de Auth, Lobby y health checking permaneció funcional;
 10. no se observaron errores de TheosferaProxy durante esta validación.
 
-Limitaciones honestas:
+Limitaciones honestas de ese checkpoint histórico:
 
 - toda la información continúa siendo local al proceso de Velocity;
 - la vista no es transaccional entre registros;
-- no existen Redis, métricas históricas, series temporales ni auditoría durable;
+- en ese momento no existían Redis, métricas históricas, series temporales ni
+  auditoría durable; Redis quedó parcialmente superseded por PR `#48` como
+  adaptador de sesiones no conectado al runtime;
 - el comando no reemplaza una futura capa de monitoreo;
 - no se validó la distribución proporcional con tres jugadores simultáneos;
 - `TIMED_OUT` terminal no fue provocado deliberadamente en runtime.
 
-Punto exacto de continuación después de este checkpoint:
+Punto exacto de continuación histórico después de este checkpoint:
 
 - diseñar la frontera de coordinación global distribuida para múltiples
   proxies;
 - definir propiedad del estado, consistencia, TTL, recuperación y degradación;
 - conservar comportamiento fail-closed ante pérdida de la capa distribuida;
-- decidir después si Redis será el transporte temporal adecuado;
+- decidir después si Redis será el transporte temporal adecuado; PR `#48`
+  seleccionó Redis para el adaptador de sesiones, pero no lo activó como
+  transporte runtime general;
 - no introducir parties, amigos o escuadrones sin una fuente de verdad y una
   estrategia explícita de consistencia distribuida.
 
@@ -1865,9 +1964,11 @@ El primer incremento local de esa frontera está repartido entre PR `#44` y PR
 - PR `#45` integró esa frontera al runtime: la autenticación adquiere y vincula
   un lease antes de responder el ACK.
 
-Esto no convierte al runtime en distribuido. `LocalPlayerSessionCoordinator`
-continúa respaldado por memoria local y `RedisPlayerSessionCoordinator` no
-existe todavía.
+Esto no convirtió al runtime en distribuido. `LocalPlayerSessionCoordinator`
+continúa respaldado por memoria local. La frase histórica de este checkpoint
+indicaba que `RedisPlayerSessionCoordinator` no existía todavía; quedó
+superseded por PR `#48`, que lo añadió como adaptador aislado sin conectarlo al
+runtime.
 
 Modos definidos:
 
@@ -1923,8 +2024,11 @@ Los eventos distribuidos serán avisos o mecanismos de invalidación y no
 constituirán una fuente de verdad. Toda decisión autoritativa deberá consultar
 o modificar el estado coordinado mediante operaciones atómicas.
 
-Redis continúa siendo únicamente un candidato. Antes de seleccionarlo deberá
-demostrar:
+Históricamente, en este diseño Redis era únicamente un candidato. Tras PR
+`#48`, Redis fue seleccionado para el primer adaptador distribuido de sesiones,
+pero todavía no es autoridad runtime ni está validado para todas las piezas de
+la frontera. Los criterios que siguen permanecen vigentes para la activación
+operacional y para los siguientes coordinadores:
 
 - atomicidad multi-clave;
 - TTL autoritativo;
@@ -1948,22 +2052,29 @@ Primer incremento de implementación recomendado en el diseño histórico:
 6. crear posteriormente un simulador multi-proxy compartido únicamente para
    pruebas de exclusión, TTL, fencing y degradación.
 
-Estado actual posterior a PR `#45`: PR `#44` materializó los puntos 1, 2 y la
-base de equivalencia local para sesiones autenticadas; PR `#45` conectó esa
+Estado histórico posterior a PR `#45`: PR `#44` materializó los puntos 1, 2 y
+la base de equivalencia local para sesiones autenticadas; PR `#45` conectó esa
 frontera con el flujo runtime y añadió las garantías de coordinación, binding,
-replay, release y lifecycle descritas en este checkpoint. Redis, simulador
-multi-proxy, coordinación global de presencia, transferencia, capacidad y
-bootstrap siguen pendientes.
+replay, release y lifecycle descritas en este checkpoint. Ese estado quedó
+parcialmente superseded por PR `#47` y PR `#48`: la identidad estable y el
+adaptador Redis de sesiones ya existen, mientras el runtime sigue en `LOCAL` y
+la coordinación global de membresía, presencia, transferencia, capacidad y
+bootstrap sigue pendiente.
 
 No introducir parties, amigos, escuadrones ni otras operaciones sociales antes
 de implementar una fuente de verdad persistente y una estrategia distribuida
 coherente con esta frontera.
 
-## 26. Checkpoint de coordinación runtime de sesiones
+## 26. Checkpoint histórico de coordinación runtime de sesiones
 
 PR que cierra este checkpoint:
 
 - `87ea7d4 feat: integrate player session coordination at runtime (#45)`.
+
+Este checkpoint conserva evidencia histórica de PR `#45`. Las afirmaciones de
+esta sección sobre ausencia de Redis y falta de identidad estable quedaron
+superseded por PR `#47` y PR `#48`; el estado actual está en el checkpoint
+posterior.
 
 Antecedente directo ya fusionado:
 
@@ -2073,19 +2184,24 @@ Validación confirmada por familias de pruebas:
 - `CAPACITY_EXHAUSTED`;
 - terminalización CURRENT vs SUPERSEDED.
 
-Limitaciones actuales:
+Limitaciones en ese checkpoint histórico:
 
 - el runtime sigue usando `LocalPlayerSessionCoordinator`;
-- `RedisPlayerSessionCoordinator` no existe todavía;
+- en ese momento histórico `RedisPlayerSessionCoordinator` no existía todavía;
+  desde PR `#48` existe como adaptador aislado y probado, aunque no está
+  conectado al runtime;
 - no existe coordinación real entre múltiples procesos Proxy;
-- `ProxyInstanceIdentity` se crea con `proxyName` local
-  `theosfera-proxy-local` y una `incarnationId` aleatoria por arranque, por lo
-  que todavía no es una identidad estable ni adecuada para Redis/multi-proxy;
-- no se implementaron Redis, Testcontainers, simulador multi-proxy ni pruebas
-  runtime de dos proxies;
+- en ese momento histórico `ProxyInstanceIdentity` usaba `proxyName` local
+  `theosfera-proxy-local` y una `incarnationId` aleatoria por arranque; esa
+  limitación quedó superseded por PR `#47`, que introdujo `proxyName` estable
+  configurado e `incarnationId` efímero;
+- en ese momento histórico no se implementaron Redis, Testcontainers,
+  simulador multi-proxy ni pruebas runtime de dos proxies; PR `#48` añadió
+  Redis/Testcontainers para el adaptador de sesiones, pero no pruebas runtime
+  reales de dos proxies;
 - el estado temporal de sesiones sigue siendo local y no persistente.
 
-Punto exacto de reanudación:
+Punto exacto de reanudación histórico, superseded por PR `#47` y PR `#48`:
 
 1. definir/configurar una identidad estable y segura de cada instancia Proxy;
 2. después diseñar/implementar `RedisPlayerSessionCoordinator` respetando
@@ -2097,4 +2213,273 @@ Punto exacto de reanudación:
 7. añadir observabilidad de coordinación distribuida;
 8. retirar sobrecargas legacy cuando sea seguro.
 
-No implementar Redis dentro de este checkpoint documental.
+No se implementó Redis dentro de ese checkpoint documental; se implementó
+después en PR `#48` como adaptador aislado.
+
+## 27. Checkpoint de identidad estable y Redis Player Session Coordinator
+
+PRs que cierran este checkpoint:
+
+- `d4c06d9 feat: configure stable proxy instance identity (#47)`;
+- `e2fe4f1 feat: add Redis player session coordinator (#48)`.
+
+Evidencia Git del checkpoint:
+
+- `main` sincronizada con `origin/main` en `e2fe4f1`;
+- PR `#47` fusionado en `main`;
+- PR `#48` fusionado en `main`;
+- working tree limpio antes de crear la rama documental;
+- rama documental:
+  `docs/redis-player-session-coordinator-checkpoint`.
+
+### Stable Proxy Identity
+
+`ProxyInstanceIdentity` separa `proxyName` e `incarnationId`.
+
+Configuración runtime:
+
+```text
+plugins/theosferaproxy/proxy-instance.properties
+```
+
+```properties
+proxy-name=proxy-1
+```
+
+`proxyName` es la identidad lógica estable de la instancia Proxy.
+`incarnationId` es un UUID efímero generado en cada ejecución del proceso.
+Reiniciar la misma instancia lógica conserva `proxyName`; cada arranque genera
+un `incarnationId` nuevo. Distintas instancias Proxy deben usar distintos
+`proxyName`.
+
+`incarnationId` no se persiste, no se genera un nombre lógico aleatorio y una
+configuración inválida falla temprano. El formato aceptado para `proxy-name` es
+ASCII lowercase, números y guiones, de 1 a 32 caracteres, sin iniciar ni
+terminar en guion. La carga ocurre durante inicialización, no mediante I/O en
+el constructor.
+
+### Redis Player Session Coordinator
+
+`RedisPlayerSessionCoordinator` existe bajo:
+
+```text
+com.theosfera.proxy.coordination.distributed.redis
+```
+
+Implementa `PlayerSessionCoordinator` y fue probado aisladamente. El runtime
+sigue en modo `LOCAL`: `TheosferaProxy` compone todavía
+`LocalPlayerSessionCoordinator`, no crea conexiones Redis y no referencia
+`RedisPlayerSessionCoordinator` en su composición runtime. No existe fallback
+silencioso hacia `LocalPlayerSessionCoordinator`; simplemente el adaptador
+Redis aún no está conectado.
+
+Modelo Redis de sesión:
+
+```text
+theosfera:coordination:player-session:<playerUuid>
+theosfera:coordination:player-session:fencing
+```
+
+El lease Redis es un hash explícito con:
+
+- `player-id`;
+- `player-name`;
+- `authenticated-at`;
+- `proxy-name`;
+- `incarnation-id`;
+- `fencing-token`.
+
+TTL inicial de diseño: 30 segundos. El TTL es autoritativo en Redis e
+inyectable en el coordinador.
+
+El contador de fencing usa Redis `INCR`, no depende de un contador Java local y
+actualmente no expira. Un `acquire` nuevo obtiene fencing nuevo;
+`ALREADY_OWNED` conserva fencing; `renew` conserva fencing; `release` +
+reacquire produce fencing mayor; expiración + reacquire produce fencing mayor.
+No está validado todavía que restart/HA de Redis preserve correctamente la
+monotonicidad bajo todos los escenarios.
+
+`LettuceRedisPlayerSessionStore` implementa operaciones Lua/EVAL atómicas.
+
+`ACQUIRE` cubre:
+
+- creación;
+- idempotencia exacta;
+- detección de otro owner;
+- conflicto de sesión;
+- generación de fencing;
+- TTL.
+
+`RENEW` cubre:
+
+- exact-match;
+- conservación de fencing;
+- extensión del TTL.
+
+`RELEASE` cubre:
+
+- exact-match completo;
+- eliminación solo si sesión, owner, incarnation y fencing coinciden.
+
+No existe patrón inseguro `GET` -> decisión Java -> `SET` para estas
+operaciones.
+
+Política fail-closed e invariantes:
+
+- estructura Redis corrupta no se sobrescribe silenciosamente;
+- key con tipo incorrecto falla cerrada;
+- hashes incompletos fallan cerrados;
+- fencing inválido falla cerrado;
+- lease sin TTL válido falla cerrado;
+- contador fencing corrupto no crea una sesión nueva;
+- estado Redis inválido se propaga como fallo/invariante, no se disfraza
+  automáticamente como coordinación no disponible.
+
+Solo fallos operativos Redis reconocidos actualmente se traducen a
+`COORDINATION_UNAVAILABLE` en `acquire`/`renew` cuando corresponde:
+
+- `RedisConnectionException`;
+- `RedisCommandTimeoutException`.
+
+`releaseIfOwned` devuelve `false` para mismatch o ausencia de lease. Un fallo
+Redis completa excepcionalmente.
+
+`RedisPlayerSessionCoordinator` mantiene ownership local exacto:
+
+```text
+UUID -> PlayerSessionLease
+```
+
+El mirror evita que un release tardío de lease A, seguido por reacquire de
+lease B para la misma `AuthenticatedPlayerSession` con fencing mayor, elimine
+la sesión local correspondiente a B. Un release solo limpia
+`AuthenticatedPlayerSessionRegistry` cuando el lease local vigente sigue
+siendo exactamente el esperado. `AuthenticatedPlayerSessionRegistry` por sí
+solo no es autoridad del fencing distribuido.
+
+Cliente Redis:
+
+```text
+io.lettuce:lettuce-core:7.6.0.RELEASE
+```
+
+La razón arquitectónica es su API asíncrona, compatible con el requisito de no
+bloquear hilos de Velocity. En código Redis de producción no se usan `sync()`,
+`join()`, `get()`, `await()` ni `Thread.sleep`.
+
+### Validación
+
+Testcontainers:
+
+```text
+org.testcontainers:junit-jupiter:1.21.4
+redis:7.4.2-alpine
+```
+
+Validación local confirmada antes de PR:
+
+- `RedisPlayerSessionCoordinatorTest`: 17 tests, 0 skipped, 0 failures,
+  0 errors;
+- `LocalPlayerSessionCoordinatorTest`: 13 tests;
+- `PlayerAuthenticatedMessageHandlerTest`: 51 tests;
+- `PlayerSessionReleaseServiceTest`: 18 tests;
+- clean build local: `BUILD SUCCESSFUL`;
+- `git diff --cached --check` previo al commit: limpio.
+
+Las integration tests Redis locales fueron skipped porque Docker no estaba
+disponible en esa máquina. La suite de integración contiene 10 métodos `@Test`.
+El gate de CI usa `CI=true`; si Docker no está disponible en CI, `@BeforeAll`
+lanza `IllegalStateException` en vez de usar `Assumption`. GitHub Actions Build
+`#107` terminó `SUCCESS` sobre PR `#48`, por lo que no ocurrió la ruta conocida
+de skip por Docker unavailable. No se documenta aquí un conteo JUnit del CI
+porque no hay evidencia directa de ese conteo.
+
+### Shading Redis
+
+El JAR Shadow relocaliza dependencias Redis bajo namespaces privados:
+
+```text
+io.lettuce -> com.theosfera.proxy.libs.lettuce
+io.netty -> com.theosfera.proxy.libs.netty
+reactor -> com.theosfera.proxy.libs.reactor
+org.reactivestreams -> com.theosfera.proxy.libs.reactivestreams
+redis.clients.authentication -> com.theosfera.proxy.libs.redisauth
+```
+
+`META-INF/services` se fusiona mediante `mergeServiceFiles()`.
+
+Las pruebas de empaquetado verifican:
+
+- ausencia de clases bajo namespaces originales;
+- presencia de namespaces privados;
+- service descriptors coherentes;
+- ausencia de binarios nativos inesperados `.so`, `.dll` o `.dylib`.
+
+El JAR local validado durante el incremento fue de aproximadamente 8,417,506
+bytes. Ese tamaño es evidencia local del build del incremento, no un artefacto
+runtime desplegado.
+
+### Estado transitorio
+
+Estado runtime actual:
+
+- modo operacional: `LOCAL`;
+- Redis adapter presente pero no conectado;
+- `LocalPlayerSessionCoordinator` sigue siendo la autoridad runtime;
+- Redis no es todavía la autoridad runtime.
+
+Limitaciones honestas:
+
+- no existe configuración/lifecycle Redis del plugin;
+- no existe `ProxyMembershipCoordinator` distribuido;
+- no existe renovación runtime de leases Redis;
+- no existe wiring de `DISTRIBUTED_REQUIRED`;
+- presencia global, transferencias, capacidad y bootstrap siguen sin
+  coordinación Redis;
+- no existe recuperación/HA Redis validada;
+- persistencia/monotonicidad del fencing counter ante restart/failover Redis
+  sigue pendiente;
+- no existe observabilidad runtime Redis;
+- no se validó runtime real multi-proxy.
+
+Decisiones cerradas para el adaptador Redis de sesiones:
+
+- fail-closed;
+- no fallback silencioso;
+- fencing;
+- TTL;
+- exact-match;
+- atomicidad Lua/EVAL;
+- cliente async;
+- shading privado.
+
+Riesgos futuros:
+
+- restart Redis;
+- HA Redis;
+- persistencia del fencing counter;
+- membresía distribuida;
+- lifecycle/configuración Redis;
+- renew periódico de membresía y sesiones;
+- runtime real multi-proxy.
+
+Punto exacto de reanudación:
+
+1. diseñar e implementar `RedisProxyMembershipCoordinator` o un
+   `ProxyMembershipCoordinator` distribuido respetando la frontera existente;
+2. adquisición atómica de membresía por `proxyName`;
+3. lease de membresía con TTL inicial de diseño de 15 segundos;
+4. renovación exact-match;
+5. release exact-match;
+6. fencing monotónico;
+7. demostrar que dos procesos con el mismo `proxyName` no pueden ser
+   propietarios válidos simultáneamente;
+8. mantener todavía el runtime sin activar `DISTRIBUTED_REQUIRED` hasta
+   completar lifecycle/configuración y estado operacional;
+9. después integrar configuración/lifecycle Redis, `CoordinationState`,
+   renovación de membresía, wiring `DISTRIBUTED_REQUIRED` y renovación runtime
+   de sesiones;
+10. después avanzar hacia presencia, transferencia, capacidad y bootstrap
+    distribuidos.
+
+No introducir parties, amigos o escuadrones en el siguiente incremento.
