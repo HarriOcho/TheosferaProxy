@@ -174,14 +174,7 @@ public final class LocalPlayerSessionCoordinator
             return false;
         }
 
-        boolean removedFromRegistry =
-                sessionRegistry
-                        .removeIfMatches(expected.session())
-                        .isPresent();
-
-        if (!removedFromRegistry) {
-            return false;
-        }
+        sessionRegistry.removeIfMatches(expected.session());
 
         return leases.remove(playerId, existing);
     }

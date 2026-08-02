@@ -16,13 +16,18 @@ import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
+import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
+import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
+import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
-import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
+import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
+import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
+import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
@@ -67,6 +72,14 @@ class ProtocolPlayerTransferFlowTest {
     private static final UUID TRANSFER_REQUEST_ID =
             UUID.fromString(
                     "11111111-2222-3333-4444-555555555555"
+            );
+
+    private static final ProxyInstanceIdentity PROXY_IDENTITY =
+            new ProxyInstanceIdentity(
+                    "proxy-transfer-flow",
+                    UUID.fromString(
+                            "e494ac70-fe38-43b1-b8b8-c686150919d7"
+                    )
             );
 
     @Test
@@ -116,6 +129,14 @@ class ProtocolPlayerTransferFlowTest {
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
 
+        PlayerSessionCoordinator sessionCoordinator =
+                new LocalPlayerSessionCoordinator(
+                        sessionRegistry
+                );
+
+        PlayerSessionLeaseBindingRegistry leaseBindingRegistry =
+                new PlayerSessionLeaseBindingRegistry();
+
         PlayerServerPresenceRegistry presenceRegistry =
                 new PlayerServerPresenceRegistry(
                         sessionRegistry
@@ -141,10 +162,17 @@ class ProtocolPlayerTransferFlowTest {
         RegisteredServer skyblockTarget =
                 registeredServer("skyblock-1");
 
-        when(authSource.getPlayer()).thenReturn(player);
-        when(lobbySource.getPlayer()).thenReturn(player);
-        when(player.getUniqueId()).thenReturn(PLAYER_ID);
-        when(player.getUsername()).thenReturn("HarriOcho");
+        when(authSource.getPlayer())
+                .thenReturn(player);
+
+        when(lobbySource.getPlayer())
+                .thenReturn(player);
+
+        when(player.getUniqueId())
+                .thenReturn(PLAYER_ID);
+
+        when(player.getUsername())
+                .thenReturn("HarriOcho");
 
         when(player.getCurrentServer())
                 .thenReturn(Optional.of(lobbySource));
@@ -193,6 +221,15 @@ class ProtocolPlayerTransferFlowTest {
                         logger
                 );
 
+        PlayerSessionReleaseService releaseService =
+                new PlayerSessionReleaseService(
+                        sessionCoordinator,
+                        leaseBindingRegistry,
+                        (key, timeout) -> () -> {
+                        },
+                        logger
+                );
+
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
@@ -204,8 +241,13 @@ class ProtocolPlayerTransferFlowTest {
                                         logger
                                 ),
                                 new PlayerAuthenticatedMessageHandler(
-                                        sessionRegistry,
+                                        sessionCoordinator,
+                                        leaseBindingRegistry,
+                                        PROXY_IDENTITY,
                                         authenticationAckSender,
+                                        (key, timeout) -> () -> {
+                                        },
+                                        releaseService,
                                         logger
                                 ),
                                 new PlayerServerReadyMessageHandler(
@@ -371,7 +413,10 @@ class ProtocolPlayerTransferFlowTest {
                 (TransferResultPayload)
                         transferResult.payload();
 
-        assertEquals(PLAYER_ID, resultPayload.playerId());
+        assertEquals(
+                PLAYER_ID,
+                resultPayload.playerId()
+        );
 
         assertEquals(
                 TransferResultStatus.SUCCESS,
@@ -401,6 +446,7 @@ class ProtocolPlayerTransferFlowTest {
                 );
 
         listener.onPluginMessage(event);
+
         return event;
     }
 
@@ -413,7 +459,8 @@ class ProtocolPlayerTransferFlowTest {
         ServerInfo serverInfo =
                 mock(ServerInfo.class);
 
-        when(serverInfo.getName()).thenReturn(serverName);
+        when(serverInfo.getName())
+                .thenReturn(serverName);
 
         when(connection.getServerInfo())
                 .thenReturn(serverInfo);
@@ -430,7 +477,8 @@ class ProtocolPlayerTransferFlowTest {
         ServerInfo serverInfo =
                 mock(ServerInfo.class);
 
-        when(serverInfo.getName()).thenReturn(serverName);
+        when(serverInfo.getName())
+                .thenReturn(serverName);
 
         when(server.getServerInfo())
                 .thenReturn(serverInfo);

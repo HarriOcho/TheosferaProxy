@@ -259,7 +259,85 @@ class LocalPlayerSessionCoordinatorTest {
         assertFalse(
                 coordinator.releaseIfOwned(lease)
                         .toCompletableFuture()
+                .join()
+        );
+    }
+
+    @Test
+    void revokedLocalSessionDoesNotPreventExactCoordinatorRelease() {
+        AuthenticatedPlayerSession session = session();
+
+        PlayerSessionLease lease =
+                acquire(session, OWNER)
+                        .lease()
+                        .orElseThrow();
+
+        assertTrue(
+                registry.removeIfMatches(session)
+                        .isPresent()
+        );
+
+        assertTrue(
+                coordinator.releaseIfOwned(lease)
+                        .toCompletableFuture()
                         .join()
+        );
+
+        assertEquals(
+                PlayerSessionRenewResult.Status.NOT_FOUND,
+                coordinator.renew(lease)
+                        .toCompletableFuture()
+                        .join()
+                        .status()
+        );
+
+        PlayerSessionAcquireResult reacquired =
+                acquire(session, OWNER);
+
+        assertEquals(
+                PlayerSessionAcquireResult.Status.ACQUIRED,
+                reacquired.status()
+        );
+    }
+
+    @Test
+    void staleLeaseCannotReleaseCurrentCoordinatorLease() {
+        AuthenticatedPlayerSession session = session();
+
+        PlayerSessionLease stale =
+                acquire(session, OWNER)
+                        .lease()
+                        .orElseThrow();
+
+        assertTrue(
+                coordinator.releaseIfOwned(stale)
+                        .toCompletableFuture()
+                        .join()
+        );
+
+        PlayerSessionLease current =
+                acquire(session, OWNER)
+                        .lease()
+                        .orElseThrow();
+
+        assertFalse(
+                coordinator.releaseIfOwned(stale)
+                        .toCompletableFuture()
+                        .join()
+        );
+
+        PlayerSessionRenewResult renewed =
+                coordinator.renew(current)
+                        .toCompletableFuture()
+                        .join();
+
+        assertEquals(
+                PlayerSessionRenewResult.Status.RENEWED,
+                renewed.status()
+        );
+        assertEquals(
+                current,
+                renewed.lease().orElseThrow()
         );
     }
 
