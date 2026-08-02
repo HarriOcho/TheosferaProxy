@@ -20,6 +20,10 @@ public final class RedisCoordinationConfigLoader {
             "membership-ttl-seconds";
     private static final String MEMBERSHIP_RENEW_SECONDS_PROPERTY =
             "membership-renew-seconds";
+    private static final String PLAYER_SESSION_TTL_SECONDS_PROPERTY =
+            "player-session-ttl-seconds";
+    private static final String PLAYER_SESSION_RENEW_SECONDS_PROPERTY =
+            "player-session-renew-seconds";
 
     private static final String DEFAULT_CONFIG = """
             # Redis compartido para coordinacion distribuida entre proxies.
@@ -30,6 +34,12 @@ public final class RedisCoordinationConfigLoader {
 
             # Debe ser menor que membership-ttl-seconds.
             membership-renew-seconds=5
+
+            # Lease autoritativo de sesion autenticada del jugador.
+            player-session-ttl-seconds=30
+
+            # Debe ser menor que player-session-ttl-seconds.
+            player-session-renew-seconds=10
             """;
 
     private final Path configFile;
@@ -67,12 +77,22 @@ public final class RedisCoordinationConfigLoader {
                 properties,
                 MEMBERSHIP_RENEW_SECONDS_PROPERTY
         );
+        long playerSessionTtlSeconds = positiveLong(
+                properties,
+                PLAYER_SESSION_TTL_SECONDS_PROPERTY
+        );
+        long playerSessionRenewSeconds = positiveLong(
+                properties,
+                PLAYER_SESSION_RENEW_SECONDS_PROPERTY
+        );
 
         try {
             return new RedisCoordinationConfig(
                     redisUri,
                     Duration.ofSeconds(membershipTtlSeconds),
-                    Duration.ofSeconds(membershipRenewSeconds)
+                    Duration.ofSeconds(membershipRenewSeconds),
+                    Duration.ofSeconds(playerSessionTtlSeconds),
+                    Duration.ofSeconds(playerSessionRenewSeconds)
             );
         } catch (IllegalArgumentException exception) {
             throw new IllegalStateException(

@@ -5,6 +5,7 @@ import com.theosfera.proxy.coordination.CoordinationStateRegistry;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.ProxyMembershipLifecycle;
 import com.theosfera.proxy.coordination.ProxyMembershipRenewalScheduler;
+import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.api.StatefulRedisConnection;
 import org.slf4j.Logger;
@@ -147,6 +148,36 @@ public final class RedisCoordinationRuntime {
             closeResources();
             return failure == null && Boolean.TRUE.equals(released);
         });
+    }
+
+    public RedisPlayerSessionCoordinator createPlayerSessionCoordinator(
+            AuthenticatedPlayerSessionRegistry sessionRegistry
+    ) {
+        Objects.requireNonNull(
+                sessionRegistry,
+                "sessionRegistry cannot be null"
+        );
+
+        synchronized (lock) {
+            if (!started
+                    || stopping
+                    || connection == null
+                    || !stateRegistry.is(CoordinationState.HEALTHY)) {
+                throw new IllegalStateException(
+                        "Redis player session coordinator requires a healthy runtime"
+                );
+            }
+
+            return new RedisPlayerSessionCoordinator(
+                    connection.async(),
+                    sessionRegistry,
+                    config.playerSessionTtl()
+            );
+        }
+    }
+
+    public RedisCoordinationConfig config() {
+        return config;
     }
 
     public ProxyMembershipLifecycle membershipLifecycle() {

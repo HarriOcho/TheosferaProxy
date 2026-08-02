@@ -6,6 +6,8 @@ import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfig;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfigLoader;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationRuntime;
+import com.theosfera.proxy.coordination.distributed.redis.RedisPlayerSessionCoordinator;
+import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.velocitypowered.api.proxy.ProxyServer;
 import org.slf4j.Logger;
 
@@ -93,6 +95,31 @@ public final class VelocityRedisCoordinationBootstrap {
         runtime = createdRuntime;
 
         return createdRuntime.start();
+    }
+
+    public RedisPlayerSessionCoordinator createPlayerSessionCoordinator(
+            AuthenticatedPlayerSessionRegistry sessionRegistry
+    ) {
+        RedisCoordinationRuntime currentRuntime = runtime;
+        if (currentRuntime == null) {
+            throw new IllegalStateException(
+                    "Redis coordination bootstrap is not running"
+            );
+        }
+
+        return currentRuntime.createPlayerSessionCoordinator(
+                sessionRegistry
+        );
+    }
+
+    public RedisCoordinationConfig config() {
+        RedisCoordinationRuntime currentRuntime = runtime;
+        if (currentRuntime == null) {
+            throw new IllegalStateException(
+                    "Redis coordination bootstrap is not running"
+            );
+        }
+        return currentRuntime.config();
     }
 
     public void beginStopping() {

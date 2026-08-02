@@ -20,7 +20,7 @@ import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentityConfigLoader;
-import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
+import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfig;
 import com.theosfera.proxy.coordination.velocity.VelocityRedisCoordinationBootstrap;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.theosfera.proxy.failover.BackendKickFailoverService;
@@ -43,8 +43,11 @@ import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionReleaseService;
+import com.theosfera.proxy.session.PlayerSessionRenewalService;
+import com.theosfera.proxy.session.PlayerSessionShutdownReleaseService;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionAcquisitionTimeoutScheduler;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionReleaseTimeoutScheduler;
+import com.theosfera.proxy.session.velocity.VelocityPlayerSessionRenewalScheduler;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
@@ -64,6 +67,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Plugin(
         id = "theosferaproxy",
@@ -75,13 +79,14 @@ import java.util.UUID;
 )
 public final class TheosferaProxy {
 
+    private static final long SHUTDOWN_SESSION_RELEASE_TIMEOUT_SECONDS = 5L;
+
     private final ProxyServer proxyServer;
     private final Logger logger;
     private final Path dataDirectory;
     private final ProtocolChannelRegistration channelRegistration;
     private final BackendIdentityRegistry identityRegistry;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
-    private final PlayerSessionCoordinator sessionCoordinator;
     private final PlayerSessionLeaseBindingRegistry
             sessionLeaseBindingRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
@@ -89,14 +94,17 @@ public final class TheosferaProxy {
     private final BackendCapacityReservationRegistry capacityRegistry;
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final PendingPlayerFailoverRegistry failoverRegistry;
-    private final PlayerDisconnectListener playerDisconnectListener;
-    private final PlayerSessionReleaseService releaseService;
     private final UUID incarnationId;
     private final VelocityPlayerSessionReleaseTimeoutScheduler
             releaseTimeoutScheduler;
     private final BackendHealthRegistry healthRegistry;
     private final PendingBackendPingRegistry pendingPingRegistry;
 
+    private PlayerSessionCoordinator sessionCoordinator;
+    private PlayerDisconnectListener playerDisconnectListener;
+    private PlayerSessionReleaseService releaseService;
+    private PlayerSessionRenewalService sessionRenewalService;
+    private PlayerSessionShutdownReleaseService shutdownReleaseService;
     private ProtocolMessageListener protocolMessageListener;
     private ProxyInstanceIdentity proxyInstanceIdentity;
     private BackendKickFailoverListener backendKickFailoverListener;
@@ -127,11 +135,6 @@ public final class TheosferaProxy {
 
         this.sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
-
-        this.sessionCoordinator =
-                new LocalPlayerSessionCoordinator(
-                        sessionRegistry
-                );
 
         this.sessionLeaseBindingRegistry =
                 new PlayerSessionLeaseBindingRegistry();
@@ -174,32 +177,13 @@ public final class TheosferaProxy {
                         proxyServer,
                         this
                 );
-
-        this.releaseService =
-                new PlayerSessionReleaseService(
-                        sessionCoordinator,
-                        sessionLeaseBindingRegistry,
-                        releaseTimeoutScheduler,
-                        logger
-                );
-
-        this.playerDisconnectListener =
-                new PlayerDisconnectListener(
-                        sessionLeaseBindingRegistry,
-                        presenceRegistry,
-                        transferRegistry,
-                        capacityRegistry,
-                        sessionRegistry,
-                        releaseService,
-                        logger
-                );
     }
 
     @Subscribe
     public void onProxyInitialization(
             final ProxyInitializeEvent event
     ) {
-        initializeProtocolMessaging();
+        initializeProxyInstanceIdentity();
 
         coordinationBootstrap = new VelocityRedisCoordinationBootstrap(
                 proxyServer,
@@ -232,6 +216,8 @@ public final class TheosferaProxy {
         }
 
         try {
+            initializeDistributedPlayerSessions();
+            initializeProtocolMessaging();
             activateOperationalSurface();
         } catch (RuntimeException exception) {
             logger.error(
@@ -240,6 +226,7 @@ public final class TheosferaProxy {
             );
             coordinationBootstrap.beginStopping();
             deactivateOperationalSurface();
+            clearRuntimeRegistries();
             coordinationBootstrap.stop().toCompletableFuture().join();
             throw exception;
         }
@@ -250,7 +237,7 @@ public final class TheosferaProxy {
         );
 
         logger.info(
-                "TheosferaProxy iniciado correctamente con membresia Redis autoritativa."
+                "TheosferaProxy iniciado correctamente con membership y sesiones Redis autoritativas."
         );
     }
 
@@ -263,6 +250,7 @@ public final class TheosferaProxy {
         }
 
         deactivateOperationalSurface();
+        releaseBoundPlayerSessionsBeforeShutdown();
         clearRuntimeRegistries();
 
         if (coordinationBootstrap != null) {
@@ -289,6 +277,90 @@ public final class TheosferaProxy {
         );
     }
 
+    private void initializeProxyInstanceIdentity() {
+        if (proxyInstanceIdentity != null) {
+            throw new IllegalStateException(
+                    "Proxy instance identity is already initialized"
+            );
+        }
+
+        proxyInstanceIdentity =
+                new ProxyInstanceIdentity(
+                        new ProxyInstanceIdentityConfigLoader(
+                                dataDirectory
+                        ).loadProxyName(),
+                        incarnationId
+                );
+    }
+
+    private void initializeDistributedPlayerSessions() {
+        if (coordinationBootstrap == null
+                || coordinationBootstrap.state()
+                != CoordinationState.HEALTHY) {
+            throw new IllegalStateException(
+                    "Distributed player sessions require healthy Redis coordination"
+            );
+        }
+
+        if (sessionCoordinator != null
+                || releaseService != null
+                || playerDisconnectListener != null
+                || sessionRenewalService != null
+                || shutdownReleaseService != null) {
+            throw new IllegalStateException(
+                    "Distributed player sessions are already initialized"
+            );
+        }
+
+        RedisCoordinationConfig config = coordinationBootstrap.config();
+
+        sessionCoordinator = coordinationBootstrap
+                .createPlayerSessionCoordinator(sessionRegistry);
+
+        releaseService =
+                new PlayerSessionReleaseService(
+                        sessionCoordinator,
+                        sessionLeaseBindingRegistry,
+                        releaseTimeoutScheduler,
+                        logger
+                );
+
+        playerDisconnectListener =
+                new PlayerDisconnectListener(
+                        sessionLeaseBindingRegistry,
+                        presenceRegistry,
+                        transferRegistry,
+                        capacityRegistry,
+                        sessionRegistry,
+                        releaseService,
+                        logger
+                );
+
+        sessionRenewalService =
+                new PlayerSessionRenewalService(
+                        proxyServer,
+                        sessionCoordinator,
+                        sessionLeaseBindingRegistry,
+                        sessionRegistry,
+                        new VelocityPlayerSessionRenewalScheduler(
+                                proxyServer,
+                                this
+                        ),
+                        Clock.systemUTC(),
+                        config.playerSessionTtl(),
+                        config.playerSessionRenewInterval(),
+                        logger
+                );
+
+        shutdownReleaseService =
+                new PlayerSessionShutdownReleaseService(
+                        proxyServer,
+                        sessionCoordinator,
+                        sessionLeaseBindingRegistry,
+                        logger
+                );
+    }
+
     private void activateOperationalSurface() {
         if (operationalSurfaceActive) {
             throw new IllegalStateException(
@@ -296,6 +368,7 @@ public final class TheosferaProxy {
             );
         }
 
+        requireOperationalSessionRuntime();
         operationalSurfaceActive = true;
 
         channelRegistration.register();
@@ -320,6 +393,8 @@ public final class TheosferaProxy {
         if (healthCheckScheduler != null) {
             healthCheckScheduler.start();
         }
+
+        sessionRenewalService.start();
     }
 
     private void deactivateOperationalSurface() {
@@ -328,6 +403,10 @@ public final class TheosferaProxy {
         }
 
         operationalSurfaceActive = false;
+
+        if (sessionRenewalService != null) {
+            sessionRenewalService.stop();
+        }
 
         if (healthCheckScheduler != null) {
             healthCheckScheduler.stop();
@@ -348,10 +427,12 @@ public final class TheosferaProxy {
             proxyStatusCommandRegistration.unregister();
         }
 
-        proxyServer.getEventManager().unregisterListener(
-                this,
-                playerDisconnectListener
-        );
+        if (playerDisconnectListener != null) {
+            proxyServer.getEventManager().unregisterListener(
+                    this,
+                    playerDisconnectListener
+            );
+        }
 
         if (backendKickFailoverListener != null) {
             proxyServer.getEventManager().unregisterListener(
@@ -368,18 +449,63 @@ public final class TheosferaProxy {
         );
     }
 
+    private void releaseBoundPlayerSessionsBeforeShutdown() {
+        if (shutdownReleaseService == null) {
+            return;
+        }
+
+        try {
+            PlayerSessionShutdownReleaseService.ReleaseSummary summary =
+                    shutdownReleaseService
+                            .releaseBoundSessions()
+                            .toCompletableFuture()
+                            .orTimeout(
+                                    SHUTDOWN_SESSION_RELEASE_TIMEOUT_SECONDS,
+                                    TimeUnit.SECONDS
+                            )
+                            .join();
+
+            if (!summary.complete()) {
+                logger.warn(
+                        "Shutdown libero {}/{} sesiones Redis; las restantes dependeran de TTL.",
+                        summary.released(),
+                        summary.attempted()
+                );
+            }
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudieron drenar todas las sesiones Redis antes del shutdown; TTL actuara como fallback.",
+                    exception
+            );
+        }
+    }
+
     private void clearRuntimeRegistries() {
         bootstrapRegistry.clear();
         failoverRegistry.clear();
         capacityRegistry.clear();
         transferRegistry.clear();
         presenceRegistry.clear();
-        releaseService.clear();
+        if (releaseService != null) {
+            releaseService.clear();
+        }
         sessionLeaseBindingRegistry.clear();
         sessionRegistry.clear();
         pendingPingRegistry.clear();
         healthRegistry.clear();
         identityRegistry.clear();
+    }
+
+    private void requireOperationalSessionRuntime() {
+        if (sessionCoordinator == null
+                || releaseService == null
+                || playerDisconnectListener == null
+                || sessionRenewalService == null
+                || shutdownReleaseService == null) {
+            throw new IllegalStateException(
+                    "Distributed player session runtime is not initialized"
+            );
+        }
     }
 
     private void initializeProtocolMessaging() {
@@ -389,18 +515,18 @@ public final class TheosferaProxy {
             );
         }
 
+        if (proxyInstanceIdentity == null) {
+            throw new IllegalStateException(
+                    "Proxy instance identity must be initialized first"
+            );
+        }
+
+        requireOperationalSessionRuntime();
+
         BackendAuthorizationPolicy authorizationPolicy =
                 new BackendPolicyConfigLoader(
                         dataDirectory
                 ).load();
-
-        proxyInstanceIdentity =
-                new ProxyInstanceIdentity(
-                        new ProxyInstanceIdentityConfigLoader(
-                                dataDirectory
-                        ).loadProxyName(),
-                        incarnationId
-                );
 
         BackendMessageAuthorizer messageAuthorizer =
                 new BackendMessageAuthorizer(

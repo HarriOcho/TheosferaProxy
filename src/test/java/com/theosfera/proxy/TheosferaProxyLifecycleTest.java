@@ -2,12 +2,17 @@ package com.theosfera.proxy;
 
 import com.theosfera.proxy.command.LobbyCommand;
 import com.theosfera.proxy.command.ProxyStatusCommand;
+import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
 import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
+import com.theosfera.proxy.session.PlayerDisconnectListener;
+import com.theosfera.proxy.session.PlayerSessionReleaseService;
+import com.theosfera.proxy.session.PlayerSessionRenewalService;
+import com.theosfera.proxy.session.PlayerSessionShutdownReleaseService;
 import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
 import com.velocitypowered.api.event.EventManager;
@@ -128,8 +133,13 @@ class TheosferaProxyLifecycleTest {
                         temporaryDirectory
                 );
 
+        PlayerSessionRenewalService renewalService =
+                prepareSessionRuntime(plugin);
+        invokeNoArg(plugin, "initializeProxyInstanceIdentity");
         invokeNoArg(plugin, "initializeProtocolMessaging");
         invokeNoArg(plugin, "activateOperationalSurface");
+
+        verify(renewalService).start();
 
         verify(commandManager).register(
                 eq(lobbyCommandMeta),
@@ -156,6 +166,7 @@ class TheosferaProxyLifecycleTest {
 
         invokeNoArg(plugin, "deactivateOperationalSurface");
 
+        verify(renewalService).stop();
         verify(commandManager).unregister(lobbyCommandMeta);
         verify(commandManager).unregister(
                 proxyStatusCommandMeta
@@ -263,6 +274,8 @@ class TheosferaProxyLifecycleTest {
                         temporaryDirectory
                 );
 
+        prepareSessionRuntime(plugin);
+        invokeNoArg(plugin, "initializeProxyInstanceIdentity");
         invokeNoArg(plugin, "initializeProtocolMessaging");
 
         ProtocolMessageListener listener =
@@ -282,6 +295,50 @@ class TheosferaProxyLifecycleTest {
                 "theosfera-proxy-local",
                 identity.proxyName()
         );
+    }
+
+    private PlayerSessionRenewalService prepareSessionRuntime(
+            TheosferaProxy plugin
+    ) throws ReflectiveOperationException {
+        setField(
+                plugin,
+                "sessionCoordinator",
+                mock(PlayerSessionCoordinator.class)
+        );
+        setField(
+                plugin,
+                "releaseService",
+                mock(PlayerSessionReleaseService.class)
+        );
+        setField(
+                plugin,
+                "playerDisconnectListener",
+                mock(PlayerDisconnectListener.class)
+        );
+        setField(
+                plugin,
+                "shutdownReleaseService",
+                mock(PlayerSessionShutdownReleaseService.class)
+        );
+
+        PlayerSessionRenewalService renewalService =
+                mock(PlayerSessionRenewalService.class);
+        setField(
+                plugin,
+                "sessionRenewalService",
+                renewalService
+        );
+        return renewalService;
+    }
+
+    private void setField(
+            TheosferaProxy plugin,
+            String fieldName,
+            Object value
+    ) throws ReflectiveOperationException {
+        Field field = TheosferaProxy.class.getDeclaredField(fieldName);
+        field.setAccessible(true);
+        field.set(plugin, value);
     }
 
     private void invokeNoArg(
