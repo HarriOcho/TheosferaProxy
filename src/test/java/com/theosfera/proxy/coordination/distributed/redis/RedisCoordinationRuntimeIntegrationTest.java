@@ -8,6 +8,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
@@ -16,12 +17,15 @@ import org.testcontainers.utility.DockerImageName;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
+@Timeout(value = 30, unit = TimeUnit.SECONDS)
 class RedisCoordinationRuntimeIntegrationTest {
 
     private static final DockerImageName REDIS_IMAGE =
@@ -56,7 +60,7 @@ class RedisCoordinationRuntimeIntegrationTest {
     }
 
     @Test
-    void startAcquiresMembershipAndStopReleasesIt() {
+    void startAcquiresMembershipAndStopReleasesIt() throws Exception {
         RedisCoordinationConfig config = config();
         ProxyInstanceIdentity identity = identity("proxy-runtime");
         CoordinationStateRegistry states = new CoordinationStateRegistry();
@@ -71,11 +75,11 @@ class RedisCoordinationRuntimeIntegrationTest {
                 mock(Logger.class)
         );
 
-        assertTrue(runtime.start().toCompletableFuture().join());
+        assertTrue(await(runtime.start()));
         assertEquals(CoordinationState.HEALTHY, states.get());
         assertTrue(runtime.membershipLifecycle().currentLease() != null);
 
-        assertTrue(runtime.stop().toCompletableFuture().join());
+        assertTrue(await(runtime.stop()));
         assertEquals(CoordinationState.STOPPING, states.get());
 
         CoordinationStateRegistry replacementStates =
@@ -89,13 +93,13 @@ class RedisCoordinationRuntimeIntegrationTest {
                 mock(Logger.class)
         );
 
-        assertTrue(replacement.start().toCompletableFuture().join());
+        assertTrue(await(replacement.start()));
         assertEquals(CoordinationState.HEALTHY, replacementStates.get());
-        replacement.stop().toCompletableFuture().join();
+        assertTrue(await(replacement.stop()));
     }
 
     @Test
-    void secondIncarnationCannotStartWhileMembershipIsOwned() {
+    void secondIncarnationCannotStartWhileMembershipIsOwned() throws Exception {
         RedisCoordinationConfig config = config();
         RedisCoordinationRuntime first = runtime(
                 config,
@@ -106,11 +110,11 @@ class RedisCoordinationRuntimeIntegrationTest {
                 identity("proxy-collision")
         );
 
-        assertTrue(first.start().toCompletableFuture().join());
-        assertFalse(second.start().toCompletableFuture().join());
+        assertTrue(await(first.start()));
+        assertFalse(await(second.start()));
 
-        first.stop().toCompletableFuture().join();
-        second.stop().toCompletableFuture().join();
+        assertTrue(await(first.stop()));
+        assertTrue(await(second.stop()));
     }
 
     private RedisCoordinationRuntime runtime(
@@ -143,6 +147,10 @@ class RedisCoordinationRuntimeIntegrationTest {
                 proxyName,
                 UUID.randomUUID()
         );
+    }
+
+    private static <T> T await(CompletionStage<T> stage) throws Exception {
+        return stage.toCompletableFuture().get(10, TimeUnit.SECONDS);
     }
 
     private static final class ManualScheduler
