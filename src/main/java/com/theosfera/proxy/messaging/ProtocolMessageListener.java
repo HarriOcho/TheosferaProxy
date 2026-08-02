@@ -10,6 +10,7 @@ import com.velocitypowered.api.proxy.ServerConnection;
 import org.slf4j.Logger;
 
 import java.util.Objects;
+import java.util.function.BooleanSupplier;
 
 public final class ProtocolMessageListener {
 
@@ -17,6 +18,7 @@ public final class ProtocolMessageListener {
     private final ProtocolMessageDecoder decoder;
     private final BackendMessageAuthorizer authorizer;
     private final ProtocolMessageDispatcher dispatcher;
+    private final BooleanSupplier coordinationHealthy;
 
     public ProtocolMessageListener(
             Logger logger,
@@ -27,7 +29,23 @@ public final class ProtocolMessageListener {
                 logger,
                 new ProtocolMessageDecoder(),
                 authorizer,
-                dispatcher
+                dispatcher,
+                () -> true
+        );
+    }
+
+    public ProtocolMessageListener(
+            Logger logger,
+            BackendMessageAuthorizer authorizer,
+            ProtocolMessageDispatcher dispatcher,
+            BooleanSupplier coordinationHealthy
+    ) {
+        this(
+                logger,
+                new ProtocolMessageDecoder(),
+                authorizer,
+                dispatcher,
+                coordinationHealthy
         );
     }
 
@@ -36,6 +54,22 @@ public final class ProtocolMessageListener {
             ProtocolMessageDecoder decoder,
             BackendMessageAuthorizer authorizer,
             ProtocolMessageDispatcher dispatcher
+    ) {
+        this(
+                logger,
+                decoder,
+                authorizer,
+                dispatcher,
+                () -> true
+        );
+    }
+
+    ProtocolMessageListener(
+            Logger logger,
+            ProtocolMessageDecoder decoder,
+            BackendMessageAuthorizer authorizer,
+            ProtocolMessageDispatcher dispatcher,
+            BooleanSupplier coordinationHealthy
     ) {
         this.logger = Objects.requireNonNull(
                 logger,
@@ -53,6 +87,10 @@ public final class ProtocolMessageListener {
                 dispatcher,
                 "dispatcher cannot be null"
         );
+        this.coordinationHealthy = Objects.requireNonNull(
+                coordinationHealthy,
+                "coordinationHealthy cannot be null"
+        );
     }
 
     @Subscribe
@@ -66,6 +104,13 @@ public final class ProtocolMessageListener {
         event.setResult(
                 PluginMessageEvent.ForwardResult.handled()
         );
+
+        if (!coordinationHealthy.getAsBoolean()) {
+            logger.warn(
+                    "Mensaje de protocolo rechazado porque la coordinacion distribuida no esta HEALTHY."
+            );
+            return;
+        }
 
         if (!(event.getSource()
                 instanceof ServerConnection serverConnection)) {
