@@ -18,6 +18,7 @@ import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
+import com.theosfera.proxy.coordination.ProxyInstanceIdentityConfigLoader;
 import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.theosfera.proxy.failover.BackendKickFailoverService;
@@ -78,7 +79,6 @@ public final class TheosferaProxy {
     private final ProtocolChannelRegistration channelRegistration;
     private final BackendIdentityRegistry identityRegistry;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
-    private final ProxyInstanceIdentity proxyInstanceIdentity;
     private final PlayerSessionCoordinator sessionCoordinator;
     private final PlayerSessionLeaseBindingRegistry
             sessionLeaseBindingRegistry;
@@ -89,12 +89,14 @@ public final class TheosferaProxy {
     private final PendingPlayerFailoverRegistry failoverRegistry;
     private final PlayerDisconnectListener playerDisconnectListener;
     private final PlayerSessionReleaseService releaseService;
+    private final UUID incarnationId;
     private final VelocityPlayerSessionReleaseTimeoutScheduler
             releaseTimeoutScheduler;
     private final BackendHealthRegistry healthRegistry;
     private final PendingBackendPingRegistry pendingPingRegistry;
 
     private ProtocolMessageListener protocolMessageListener;
+    private ProxyInstanceIdentity proxyInstanceIdentity;
     private BackendKickFailoverListener backendKickFailoverListener;
     private LobbyCommandRegistration lobbyCommandRegistration;
     private ProxyStatusCommandRegistration
@@ -121,12 +123,6 @@ public final class TheosferaProxy {
 
         this.sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
-
-        this.proxyInstanceIdentity =
-                new ProxyInstanceIdentity(
-                        "theosfera-proxy-local",
-                        UUID.randomUUID()
-                );
 
         this.sessionCoordinator =
                 new LocalPlayerSessionCoordinator(
@@ -166,6 +162,8 @@ public final class TheosferaProxy {
                         clock,
                         Duration.ofSeconds(10)
                 );
+
+        this.incarnationId = UUID.randomUUID();
 
         this.releaseTimeoutScheduler =
                 new VelocityPlayerSessionReleaseTimeoutScheduler(
@@ -301,6 +299,14 @@ public final class TheosferaProxy {
                 new BackendPolicyConfigLoader(
                         dataDirectory
                 ).load();
+
+        proxyInstanceIdentity =
+                new ProxyInstanceIdentity(
+                        new ProxyInstanceIdentityConfigLoader(
+                                dataDirectory
+                        ).loadProxyName(),
+                        incarnationId
+                );
 
         BackendMessageAuthorizer messageAuthorizer =
                 new BackendMessageAuthorizer(
