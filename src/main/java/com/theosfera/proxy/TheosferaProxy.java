@@ -44,6 +44,7 @@ import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.session.PlayerSessionRenewalService;
+import com.theosfera.proxy.session.PlayerSessionShutdownReleaseService;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionAcquisitionTimeoutScheduler;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionReleaseTimeoutScheduler;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionRenewalScheduler;
@@ -66,6 +67,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @Plugin(
         id = "theosferaproxy",
@@ -76,6 +78,8 @@ import java.util.UUID;
         authors = {"HarriOcho"}
 )
 public final class TheosferaProxy {
+
+    private static final long SHUTDOWN_SESSION_RELEASE_TIMEOUT_SECONDS = 5L;
 
     private final ProxyServer proxyServer;
     private final Logger logger;
@@ -100,6 +104,7 @@ public final class TheosferaProxy {
     private PlayerDisconnectListener playerDisconnectListener;
     private PlayerSessionReleaseService releaseService;
     private PlayerSessionRenewalService sessionRenewalService;
+    private PlayerSessionShutdownReleaseService shutdownReleaseService;
     private ProtocolMessageListener protocolMessageListener;
     private ProxyInstanceIdentity proxyInstanceIdentity;
     private BackendKickFailoverListener backendKickFailoverListener;
@@ -245,6 +250,7 @@ public final class TheosferaProxy {
         }
 
         deactivateOperationalSurface();
+        releaseBoundPlayerSessionsBeforeShutdown();
         clearRuntimeRegistries();
 
         if (coordinationBootstrap != null) {
@@ -299,7 +305,8 @@ public final class TheosferaProxy {
         if (sessionCoordinator != null
                 || releaseService != null
                 || playerDisconnectListener != null
-                || sessionRenewalService != null) {
+                || sessionRenewalService != null
+                || shutdownReleaseService != null) {
             throw new IllegalStateException(
                     "Distributed player sessions are already initialized"
             );
@@ -342,6 +349,14 @@ public final class TheosferaProxy {
                         Clock.systemUTC(),
                         config.playerSessionTtl(),
                         config.playerSessionRenewInterval(),
+                        logger
+                );
+
+        shutdownReleaseService =
+                new PlayerSessionShutdownReleaseService(
+                        proxyServer,
+                        sessionCoordinator,
+                        sessionLeaseBindingRegistry,
                         logger
                 );
     }
@@ -434,6 +449,37 @@ public final class TheosferaProxy {
         );
     }
 
+    private void releaseBoundPlayerSessionsBeforeShutdown() {
+        if (shutdownReleaseService == null) {
+            return;
+        }
+
+        try {
+            PlayerSessionShutdownReleaseService.ReleaseSummary summary =
+                    shutdownReleaseService
+                            .releaseBoundSessions()
+                            .toCompletableFuture()
+                            .orTimeout(
+                                    SHUTDOWN_SESSION_RELEASE_TIMEOUT_SECONDS,
+                                    TimeUnit.SECONDS
+                            )
+                            .join();
+
+            if (!summary.complete()) {
+                logger.warn(
+                        "Shutdown libero {}/{} sesiones Redis; las restantes dependeran de TTL.",
+                        summary.released(),
+                        summary.attempted()
+                );
+            }
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudieron drenar todas las sesiones Redis antes del shutdown; TTL actuara como fallback.",
+                    exception
+            );
+        }
+    }
+
     private void clearRuntimeRegistries() {
         bootstrapRegistry.clear();
         failoverRegistry.clear();
@@ -454,7 +500,8 @@ public final class TheosferaProxy {
         if (sessionCoordinator == null
                 || releaseService == null
                 || playerDisconnectListener == null
-                || sessionRenewalService == null) {
+                || sessionRenewalService == null
+                || shutdownReleaseService == null) {
             throw new IllegalStateException(
                     "Distributed player session runtime is not initialized"
             );
