@@ -4,11 +4,13 @@ import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.CoordinationStateRegistry;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.ProxyMembershipRenewalScheduler;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
+import org.testcontainers.DockerClientFactory;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import java.time.Clock;
@@ -20,13 +22,38 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
-@Testcontainers
 class RedisCoordinationRuntimeIntegrationTest {
 
-    @Container
-    private static final GenericContainer<?> REDIS =
-            new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine"))
-                    .withExposedPorts(6379);
+    private static final DockerImageName REDIS_IMAGE =
+            DockerImageName.parse("redis:7.4.2-alpine");
+
+    private static GenericContainer<?> redis;
+
+    @BeforeAll
+    static void startRedis() {
+        if (!DockerClientFactory.instance().isDockerAvailable()) {
+            String message =
+                    "Docker is not available for Redis Testcontainers";
+
+            if (RedisTestcontainersSupport
+                    .shouldFailWhenDockerUnavailable()) {
+                throw new IllegalStateException(message);
+            }
+
+            Assumptions.assumeTrue(false, message);
+        }
+
+        redis = new GenericContainer<>(REDIS_IMAGE)
+                .withExposedPorts(6379);
+        redis.start();
+    }
+
+    @AfterAll
+    static void stopRedis() {
+        if (redis != null) {
+            redis.stop();
+        }
+    }
 
     @Test
     void startAcquiresMembershipAndStopReleasesIt() {
@@ -70,8 +97,14 @@ class RedisCoordinationRuntimeIntegrationTest {
     @Test
     void secondIncarnationCannotStartWhileMembershipIsOwned() {
         RedisCoordinationConfig config = config();
-        RedisCoordinationRuntime first = runtime(config, identity("proxy-collision"));
-        RedisCoordinationRuntime second = runtime(config, identity("proxy-collision"));
+        RedisCoordinationRuntime first = runtime(
+                config,
+                identity("proxy-collision")
+        );
+        RedisCoordinationRuntime second = runtime(
+                config,
+                identity("proxy-collision")
+        );
 
         assertTrue(first.start().toCompletableFuture().join());
         assertFalse(second.start().toCompletableFuture().join());
@@ -96,14 +129,20 @@ class RedisCoordinationRuntimeIntegrationTest {
 
     private RedisCoordinationConfig config() {
         return new RedisCoordinationConfig(
-                "redis://" + REDIS.getHost() + ":" + REDIS.getMappedPort(6379),
+                "redis://"
+                        + redis.getHost()
+                        + ":"
+                        + redis.getMappedPort(6379),
                 Duration.ofSeconds(15),
                 Duration.ofSeconds(5)
         );
     }
 
     private ProxyInstanceIdentity identity(String proxyName) {
-        return new ProxyInstanceIdentity(proxyName, UUID.randomUUID());
+        return new ProxyInstanceIdentity(
+                proxyName,
+                UUID.randomUUID()
+        );
     }
 
     private static final class ManualScheduler
