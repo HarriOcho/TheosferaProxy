@@ -15,6 +15,13 @@ public final class CoordinationStateRegistry {
         return state.get();
     }
 
+    public boolean is(CoordinationState expected) {
+        return state.get() == Objects.requireNonNull(
+                expected,
+                "expected cannot be null"
+        );
+    }
+
     public void set(CoordinationState next) {
         CoordinationState nonNullNext = Objects.requireNonNull(
                 next,
