@@ -3209,6 +3209,141 @@ class PlayerSessionLeaseBindingRegistryTest {
     }
 
     @Test
+    void rejectedAcquisitionCleanupBypassesClosedUnknownFloorWithoutAdmittingIt() {
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        System::nanoTime,
+                        16,
+                        60_000L,
+                        60_000L,
+                        8,
+                        1
+                );
+
+        UUID admittedPlayerId =
+                new UUID(0L, 411L);
+        PlayerSessionLease admittedLease =
+                lease(admittedPlayerId, OWNER, 2L);
+        CompletableFuture<Boolean> admittedExternal =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        admittedLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        admittedLease,
+                        admittedExternal
+                )
+        );
+        assertTrue(
+                boundedRegistry.claimReleaseTimeout(
+                        admittedLease,
+                        admittedExternal
+                )
+        );
+
+        UUID rejectedPlayerId =
+                new UUID(0L, 412L);
+        PlayerSessionLease rejectedLease =
+                lease(rejectedPlayerId, OWNER, 3L);
+        CompletableFuture<Boolean> rejectedExternal =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        rejectedLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        rejectedLease,
+                        rejectedExternal
+                )
+        );
+        assertTrue(
+                boundedRegistry.claimReleaseTimeout(
+                        rejectedLease,
+                        rejectedExternal
+                )
+        );
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        lease(new UUID(0L, 413L), OWNER, 4L)
+                )
+        );
+
+        UUID cleanupPlayerId =
+                new UUID(0L, 414L);
+        PlayerSessionLease cleanupLease =
+                lease(cleanupPlayerId, OWNER, 5L);
+        CompletableFuture<Boolean> cleanupExternal =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry
+                        .reserveRejectedAcquisitionReleaseIfUnbound(
+                                cleanupLease
+                        )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        cleanupLease,
+                        cleanupExternal
+                )
+        );
+        assertTrue(
+                boundedRegistry.claimReleaseTimeout(
+                        cleanupLease,
+                        cleanupExternal
+                )
+        );
+
+        assertEquals(
+                1,
+                boundedRegistry.exactQuarantineCount()
+        );
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        lease(cleanupPlayerId, OWNER, 6L)
+                )
+        );
+    }
+
+    @Test
+    void rejectedAcquisitionCleanupCannotReserveLiveBinding() {
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                new PlayerSessionLeaseBindingRegistry(
+                        System::nanoTime,
+                        16,
+                        60_000L,
+                        60_000L,
+                        8,
+                        1
+                );
+        Player player = player(PLAYER_ID);
+        PlayerSessionLease lease = lease(OWNER, 2L);
+
+        bindSuccessful(
+                boundedRegistry,
+                player,
+                ACQUISITION_1,
+                lease.session(),
+                lease,
+                successfulAcknowledgement()
+        );
+
+        assertFalse(
+                boundedRegistry
+                        .reserveRejectedAcquisitionReleaseIfUnbound(
+                                lease
+                        )
+        );
+    }
+
+    @Test
     void watchdogBeforeExternalAttachmentAllowsExactLateAttachmentToQuarantine() {
         Player player = player(PLAYER_ID);
         PlayerSessionLease oldLease = lease(OWNER, 2L);

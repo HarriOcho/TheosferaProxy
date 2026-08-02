@@ -8,6 +8,7 @@ import com.theosfera.proxy.coordination.PlayerSessionAcquireResult;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.PlayerSessionLease;
 import com.theosfera.proxy.coordination.PlayerSessionLeaseRequest;
+import com.theosfera.proxy.coordination.PlayerSessionRenewResult;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
@@ -5668,6 +5669,192 @@ class PlayerAuthenticatedMessageHandlerTest {
     }
 
     @Test
+    void staleBindCleanupBypassesClosedUnknownFencingFloorAdmission() {
+        UUID admittedFloorPlayerId =
+                UUID.fromString(
+                        "2cbca648-acad-45cc-b3d7-80f775898a38"
+                );
+        UUID rejectedFloorPlayerId =
+                UUID.fromString(
+                        "db30eee4-5468-4e76-a537-9d5b1e14ea03"
+                );
+        UUID affectedPlayerId =
+                UUID.fromString(
+                        "72c8ad1f-486e-49bc-a9f6-a12efad21b4e"
+                );
+        UUID gateProbePlayerId =
+                UUID.fromString(
+                        "08b2f433-a1a0-4625-a29d-8418c578f46c"
+                );
+
+        PlayerSessionLeaseBindingRegistry boundedRegistry =
+                spy(boundedLeaseBindingRegistry(1));
+        leaseBindingRegistry = boundedRegistry;
+
+        PlayerSessionLease admittedFloorLease =
+                leaseFor(admittedFloorPlayerId, 11L);
+        CompletableFuture<Boolean> admittedFloorRelease =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        admittedFloorLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        admittedFloorLease,
+                        admittedFloorRelease
+                )
+        );
+        assertTrue(
+                boundedRegistry.claimReleaseTimeout(
+                        admittedFloorLease,
+                        admittedFloorRelease
+                )
+        );
+
+        PlayerSessionLease rejectedFloorLease =
+                leaseFor(rejectedFloorPlayerId, 12L);
+        CompletableFuture<Boolean> rejectedFloorRelease =
+                new CompletableFuture<>();
+
+        assertTrue(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        rejectedFloorLease
+                )
+        );
+        assertTrue(
+                boundedRegistry.attachReleaseCompletion(
+                        rejectedFloorLease,
+                        rejectedFloorRelease
+                )
+        );
+        assertTrue(
+                boundedRegistry
+                        .claimReleaseTimeoutWithEvictions(
+                                rejectedFloorLease,
+                                rejectedFloorRelease
+                        )
+                        .claimed()
+        );
+
+        assertFalse(
+                boundedRegistry.reserveReleaseIfUnbound(
+                        leaseFor(gateProbePlayerId, 13L)
+                )
+        );
+
+        LocalPlayerSessionCoordinator coordinator =
+                spy(new LocalPlayerSessionCoordinator(
+                        sessionRegistry
+                ));
+        AtomicReference<PlayerSessionLease> acquiredLease =
+                new AtomicReference<>();
+        AtomicReference<PlayerSessionLeaseBindingResult> binding =
+                new AtomicReference<>();
+        AtomicReference<Boolean> cleanupReserved =
+                new AtomicReference<>();
+
+        doAnswer(invocation -> {
+            PlayerSessionLease lease =
+                    invocation.getArgument(4);
+            PlayerSessionLeaseBindingResult result =
+                    (PlayerSessionLeaseBindingResult)
+                            invocation.callRealMethod();
+
+            if (lease.session()
+                    .playerId()
+                    .equals(affectedPlayerId)) {
+                acquiredLease.set(lease);
+                binding.set(result);
+            }
+
+            return result;
+        }).when(boundedRegistry)
+                .bind(
+                        any(Player.class),
+                        any(UUID.class),
+                        anyLong(),
+                        any(AuthenticatedPlayerSession.class),
+                        any(PlayerSessionLease.class),
+                        any(TerminalAcknowledgement.class),
+                        any(TerminalAcknowledgement.class)
+                );
+
+        doAnswer(invocation -> {
+            PlayerSessionLease lease =
+                    invocation.getArgument(0);
+            boolean reserved =
+                    (boolean) invocation.callRealMethod();
+
+            if (lease.session()
+                    .playerId()
+                    .equals(affectedPlayerId)) {
+                cleanupReserved.set(reserved);
+            }
+
+            return reserved;
+        }).when(boundedRegistry)
+                .reserveRejectedAcquisitionReleaseIfUnbound(
+                        any(PlayerSessionLease.class)
+                );
+
+        PlayerSessionReleaseService releaseService =
+                releaseService(
+                        coordinator,
+                        explicitNoOpReleaseTimeoutScheduler()
+                );
+        PlayerAuthenticatedMessageHandler boundedHandler =
+                new PlayerAuthenticatedMessageHandler(
+                        coordinator,
+                        boundedRegistry,
+                        PROXY_IDENTITY,
+                        acknowledgementSender,
+                        noOpTimeoutScheduler(),
+                        releaseService,
+                        logger
+                );
+
+        ContextFixture affectedContext =
+                authenticatedContext(
+                        affectedPlayerId,
+                        "HarriOcho",
+                        affectedPlayerId,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                );
+
+        boundedHandler.handle(affectedContext.context());
+
+        PlayerSessionLease orphanedLease =
+                acquiredLease.get();
+
+        assertEquals(PROXY_IDENTITY, orphanedLease.owner());
+        assertEquals(
+                affectedPlayerId,
+                orphanedLease.session().playerId()
+        );
+        assertEquals(
+                PlayerSessionLeaseBindingResult.STALE,
+                binding.get()
+        );
+        assertEquals(Boolean.TRUE, cleanupReserved.get());
+
+        verify(coordinator).releaseIfOwned(orphanedLease);
+
+        PlayerSessionRenewResult orphanProbe =
+                coordinator.renew(orphanedLease)
+                        .toCompletableFuture()
+                        .join();
+
+        assertEquals(
+                PlayerSessionRenewResult.Status.NOT_FOUND,
+                orphanProbe.status()
+        );
+    }
+
+    @Test
     void releasesDeferredOldLeaseWhenNewCoordinationFails() {
         PlayerSessionCoordinator coordinator =
                 mock(PlayerSessionCoordinator.class);
@@ -6006,6 +6193,58 @@ class PlayerAuthenticatedMessageHandlerTest {
                 leaseBindingRegistry,
                 releaseTimeoutScheduler,
                 logger
+        );
+    }
+
+    private PlayerSessionLeaseBindingRegistry boundedLeaseBindingRegistry(
+            int fencingFloorCapacity
+    ) {
+        try {
+            Constructor<PlayerSessionLeaseBindingRegistry>
+                    constructor =
+                    PlayerSessionLeaseBindingRegistry.class
+                            .getDeclaredConstructor(
+                                    java.util.function
+                                            .LongSupplier.class,
+                                    int.class,
+                                    long.class,
+                                    long.class,
+                                    int.class,
+                                    int.class
+                            );
+
+            constructor.setAccessible(true);
+
+            return constructor.newInstance(
+                    (java.util.function.LongSupplier)
+                            System::nanoTime,
+                    16,
+                    60_000_000_000L,
+                    60_000_000_000L,
+                    8,
+                    fencingFloorCapacity
+            );
+        } catch (ReflectiveOperationException exception) {
+            throw new AssertionError(
+                    "registry must expose bounded fencing floor "
+                            + "capacity for causal tests",
+                    exception
+            );
+        }
+    }
+
+    private PlayerSessionLease leaseFor(
+            UUID playerId,
+            long fencingToken
+    ) {
+        return new PlayerSessionLease(
+                new AuthenticatedPlayerSession(
+                        playerId,
+                        "HarriOcho",
+                        AUTHENTICATED_AT
+                ),
+                PROXY_IDENTITY,
+                fencingToken
         );
     }
 

@@ -14,6 +14,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiConsumer;
 
@@ -21,6 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -530,19 +533,239 @@ class PlayerSessionReleaseServiceTest {
 
         scheduler.awaitScheduleEntered();
 
-        releaseService.clear();
-        registry.clear();
+        AtomicBoolean clearReturned =
+                new AtomicBoolean(false);
+        Thread clearThread =
+                new Thread(
+                        () -> {
+                            releaseService.clear();
+                            registry.clear();
+                            clearReturned.set(true);
+                        }
+                );
+        clearThread.start();
+
+        assertFalse(clearReturned.get());
 
         scheduler.releaseBlockedSchedule();
         join(releaseThread);
+        join(clearThread);
 
         assertEquals(1, scheduler.scheduledCount());
         assertTrue(scheduler.scheduled(0).cancelled());
+        assertTrue(clearReturned.get());
 
         scheduler.scheduled(0).fire();
         externalCompletion.complete(true);
 
         assertEquals(0, registry.exactQuarantineCount());
+    }
+
+    @Test
+    void clearReturnsWhileReleaseStartupIsPausedAfterAttachment() {
+        PlayerSessionLease lease =
+                lease(2L);
+        CompletableFuture<Boolean> sharedCompletion =
+                new CompletableFuture<>();
+        PlayerSessionLeaseBindingRegistry blockedRegistry =
+                mock(PlayerSessionLeaseBindingRegistry.class);
+        ManualReleaseTimeoutScheduler scheduler =
+                new ManualReleaseTimeoutScheduler();
+        PlayerSessionReleaseService releaseService =
+                new PlayerSessionReleaseService(
+                        coordinator,
+                        blockedRegistry,
+                        scheduler,
+                        logger
+                );
+        CountDownLatch oldAttached =
+                new CountDownLatch(1);
+        CountDownLatch resumeOld =
+                new CountDownLatch(1);
+        AtomicReference<Boolean> blockFirstAttachment =
+                new AtomicReference<>(true);
+        AtomicReference<Boolean> oldReleaseStarted =
+                new AtomicReference<>();
+        AtomicReference<Boolean> clearReturned =
+                new AtomicReference<>(false);
+
+        when(coordinator.releaseIfOwned(lease))
+                .thenReturn(
+                        sharedCompletion,
+                        sharedCompletion
+                );
+        when(blockedRegistry.reserveReleaseIfUnbound(lease))
+                .thenReturn(true);
+
+        doAnswer(invocation -> {
+            boolean attached = true;
+
+            if (attached
+                    && blockFirstAttachment
+                    .getAndSet(false)) {
+                oldAttached.countDown();
+                await(resumeOld);
+            }
+
+            return attached;
+        }).when(blockedRegistry)
+                .attachReleaseCompletion(
+                        any(PlayerSessionLease.class),
+                        any(CompletableFuture.class)
+                );
+
+        Thread oldRelease =
+                new Thread(
+                        () -> oldReleaseStarted.set(
+                                releaseService.releaseIfUnbound(
+                                        lease,
+                                        new PlayerSessionReleaseService
+                                                .ReleaseCallbacks() {
+                                                }
+                                )
+                        )
+                );
+        oldRelease.start();
+
+        await(oldAttached);
+
+        Thread clearThread =
+                new Thread(
+                        () -> {
+                            invokeServiceClear(releaseService);
+                            clearReturned.set(true);
+                        }
+                );
+        clearThread.start();
+
+        assertFalse(
+                clearReturned.get(),
+                "clear() must wait while old release startup "
+                        + "holds the lifecycle read permit"
+        );
+
+        resumeOld.countDown();
+        join(oldRelease);
+        join(clearThread);
+        blockedRegistry.clear();
+
+        assertTrue(oldReleaseStarted.get());
+        assertEquals(1, scheduler.scheduledCount());
+        assertTrue(clearReturned.get());
+    }
+
+    @Test
+    void clearWaitsForRejectedAcquisitionReleaseStartup() {
+        PlayerSessionLease lease =
+                lease(2L);
+        CompletableFuture<Boolean> sharedCompletion =
+                new CompletableFuture<>();
+        PlayerSessionLeaseBindingRegistry blockedRegistry =
+                mock(PlayerSessionLeaseBindingRegistry.class);
+        ManualReleaseTimeoutScheduler scheduler =
+                new ManualReleaseTimeoutScheduler();
+        PlayerSessionReleaseService releaseService =
+                new PlayerSessionReleaseService(
+                        coordinator,
+                        blockedRegistry,
+                        scheduler,
+                        logger
+                );
+        CountDownLatch oldAttached =
+                new CountDownLatch(1);
+        CountDownLatch resumeOld =
+                new CountDownLatch(1);
+        AtomicReference<Boolean> clearReturned =
+                new AtomicReference<>(false);
+
+        when(coordinator.releaseIfOwned(lease))
+                .thenReturn(sharedCompletion);
+        when(blockedRegistry
+                .reserveRejectedAcquisitionReleaseIfUnbound(lease))
+                .thenReturn(true);
+
+        doAnswer(invocation -> {
+            oldAttached.countDown();
+            await(resumeOld);
+            return true;
+        }).when(blockedRegistry)
+                .attachReleaseCompletion(
+                        any(PlayerSessionLease.class),
+                        any(CompletableFuture.class)
+                );
+
+        Thread oldRelease =
+                new Thread(
+                        () -> releaseService
+                                .releaseRejectedAcquisitionIfUnbound(
+                                        lease,
+                                        new PlayerSessionReleaseService
+                                                .ReleaseCallbacks() {
+                                                }
+                                )
+                );
+        oldRelease.start();
+
+        await(oldAttached);
+
+        Thread clearThread =
+                new Thread(
+                        () -> {
+                            invokeServiceClear(releaseService);
+                            clearReturned.set(true);
+                        }
+                );
+        clearThread.start();
+
+        assertFalse(clearReturned.get());
+
+        resumeOld.countDown();
+        join(oldRelease);
+        join(clearThread);
+
+        assertTrue(clearReturned.get());
+    }
+
+    @Test
+    void alreadyCompletedReleaseStageDoesNotDeadlockStartup() {
+        PlayerSessionLease lease =
+                lease(2L);
+        CompletableFuture<Boolean> completedRelease =
+                CompletableFuture.completedFuture(true);
+        ManualReleaseTimeoutScheduler scheduler =
+                new ManualReleaseTimeoutScheduler();
+        PlayerSessionReleaseService releaseService =
+                new PlayerSessionReleaseService(
+                        coordinator,
+                        registry,
+                        scheduler,
+                        logger
+                );
+        AtomicReference<Boolean> callbackReleased =
+                new AtomicReference<>();
+
+        when(coordinator.releaseIfOwned(lease))
+                .thenReturn(completedRelease);
+
+        assertTrue(
+                releaseService.releaseIfUnbound(
+                        lease,
+                        new PlayerSessionReleaseService
+                                .ReleaseCallbacks() {
+                            @Override
+                            public void onComplete(
+                                    PlayerSessionLease ignored,
+                                    boolean released
+                            ) {
+                                callbackReleased.set(released);
+                            }
+                        }
+                )
+        );
+
+        assertEquals(1, scheduler.scheduledCount());
+        assertTrue(scheduler.scheduled(0).cancelled());
+        assertEquals(Boolean.TRUE, callbackReleased.get());
     }
 
     @Test
@@ -1088,6 +1311,15 @@ class PlayerSessionReleaseServiceTest {
         }
 
         assertFalse(thread.isAlive());
+    }
+
+    private void await(CountDownLatch latch) {
+        try {
+            assertTrue(latch.await(5L, TimeUnit.SECONDS));
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(exception);
+        }
     }
 
     private PlayerSessionLease lease(

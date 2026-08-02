@@ -1121,7 +1121,13 @@ public final class PlayerAuthenticatedMessageHandler
             PlayerSessionLease lease,
             PlayerSessionLeaseBindingResult bindingResult
     ) {
-        releaseService.releaseIfUnbound(
+        PlayerSessionReleaseInvoker releaseInvoker =
+                bindingResult == PlayerSessionLeaseBindingResult.STALE
+                        ? releaseService
+                        ::releaseRejectedAcquisitionIfUnbound
+                        : releaseService::releaseIfUnbound;
+
+        releaseInvoker.release(
                 lease,
                 new PlayerSessionReleaseService.ReleaseCallbacks() {
                     @Override
@@ -1190,6 +1196,15 @@ public final class PlayerAuthenticatedMessageHandler
                         }
                     }
                 }
+        );
+    }
+
+    @FunctionalInterface
+    private interface PlayerSessionReleaseInvoker {
+
+        boolean release(
+                PlayerSessionLease lease,
+                PlayerSessionReleaseService.ReleaseCallbacks callbacks
         );
     }
 

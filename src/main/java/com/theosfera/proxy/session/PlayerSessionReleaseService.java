@@ -95,6 +95,29 @@ public final class PlayerSessionReleaseService {
             PlayerSessionLease lease,
             ReleaseCallbacks callbacks
     ) {
+        return releaseIfUnbound(
+                lease,
+                callbacks,
+                false
+        );
+    }
+
+    public boolean releaseRejectedAcquisitionIfUnbound(
+            PlayerSessionLease lease,
+            ReleaseCallbacks callbacks
+    ) {
+        return releaseIfUnbound(
+                lease,
+                callbacks,
+                true
+        );
+    }
+
+    private boolean releaseIfUnbound(
+            PlayerSessionLease lease,
+            ReleaseCallbacks callbacks,
+            boolean allowClosedUnknownFloorCleanup
+    ) {
         PlayerSessionLease nonNullLease =
                 Objects.requireNonNull(
                         lease,
@@ -107,139 +130,168 @@ public final class PlayerSessionReleaseService {
                         "callbacks cannot be null"
                 );
 
-        boolean releaseReserved =
-                leaseBindingRegistry
-                        .reserveReleaseIfUnbound(nonNullLease);
-
-        if (!releaseReserved) {
-            nonNullCallbacks.onNotReserved(nonNullLease);
-            return false;
-        }
-
-        CompletionStage<Boolean> releaseStage;
-
+        lifecycleLock.readLock().lock();
         try {
-            releaseStage = Objects.requireNonNull(
-                    sessionCoordinator.releaseIfOwned(nonNullLease),
-                    "sessionCoordinator.releaseIfOwned "
-                            + "returned null"
-            );
-        } catch (RuntimeException exception) {
-            leaseBindingRegistry.failReleaseBeforeExternalAttachment(
-                    nonNullLease,
-                    exception
-            );
-            nonNullCallbacks.onStartFailure(
-                    nonNullLease,
-                    exception
-            );
-            return true;
-        }
+            long releaseEpoch = currentLifecycleEpoch();
 
-        boolean releaseAttached =
-                leaseBindingRegistry.attachReleaseCompletion(
-                        nonNullLease,
-                        releaseStage
+            boolean releaseReserved =
+                    allowClosedUnknownFloorCleanup
+                            ? leaseBindingRegistry
+                            .reserveRejectedAcquisitionReleaseIfUnbound(
+                                    nonNullLease
+                            )
+                            : leaseBindingRegistry
+                            .reserveReleaseIfUnbound(nonNullLease);
+
+            if (!releaseReserved) {
+                nonNullCallbacks.onNotReserved(nonNullLease);
+                return false;
+            }
+
+            CompletionStage<Boolean> releaseStage;
+
+            try {
+                releaseStage = Objects.requireNonNull(
+                        sessionCoordinator.releaseIfOwned(nonNullLease),
+                        "sessionCoordinator.releaseIfOwned "
+                                + "returned null"
                 );
+            } catch (RuntimeException exception) {
+                leaseBindingRegistry.failReleaseBeforeExternalAttachment(
+                        nonNullLease,
+                        exception
+                );
+                nonNullCallbacks.onStartFailure(
+                        nonNullLease,
+                        exception
+                );
+                return true;
+            }
 
-        if (!releaseAttached) {
-            IllegalStateException exception =
-                    new IllegalStateException(
-                            "Release completion stage could not be "
-                                    + "attached to the tracked lease"
+            boolean releaseAttached =
+                    leaseBindingRegistry.attachReleaseCompletion(
+                            nonNullLease,
+                            releaseStage
                     );
 
-            leaseBindingRegistry.failReleaseBeforeExternalAttachment(
-                    nonNullLease,
-                    exception
+            if (!releaseAttached) {
+                IllegalStateException exception =
+                        new IllegalStateException(
+                                "Release completion stage could not be "
+                                        + "attached to the tracked lease"
+                        );
+
+                leaseBindingRegistry.failReleaseBeforeExternalAttachment(
+                        nonNullLease,
+                        exception
+                );
+                nonNullCallbacks.onStartFailure(
+                        nonNullLease,
+                        exception
+                );
+                return true;
+            }
+
+            TimeoutIdentity ownedTimeout =
+                    scheduleReleaseTimeout(
+                            nonNullLease,
+                            releaseStage,
+                            releaseEpoch
+                    );
+
+            releaseStage.whenComplete(
+                    (released, failure) ->
+                            handleReleaseCompletion(
+                                    nonNullLease,
+                                    releaseStage,
+                                    releaseEpoch,
+                                    ownedTimeout,
+                                    released,
+                                    failure,
+                                    nonNullCallbacks
+                            )
             );
-            nonNullCallbacks.onStartFailure(
-                    nonNullLease,
-                    exception
-            );
+
             return true;
+        } finally {
+            lifecycleLock.readLock().unlock();
+        }
+    }
+
+    private void handleReleaseCompletion(
+            PlayerSessionLease lease,
+            CompletionStage<Boolean> releaseStage,
+            long releaseEpoch,
+            TimeoutIdentity ownedTimeout,
+            Boolean released,
+            Throwable failure,
+            ReleaseCallbacks callbacks
+    ) {
+        if (ownedTimeout == null) {
+            return;
         }
 
-        long releaseEpoch = currentLifecycleEpoch();
-
-        TimeoutIdentity ownedTimeout =
-                scheduleReleaseTimeout(
-                        nonNullLease,
-                        releaseStage,
-                        releaseEpoch
-                );
-
-        releaseStage.whenComplete(
-                (released, failure) -> {
-                    if (ownedTimeout == null) {
-                        return;
-                    }
-
-                    CallbackAction callbackAction =
-                            withLifecyclePermit(
-                                    releaseEpoch,
-                                    () -> {
-                                        lifecycleProbe
-                                                .afterExternalCallbackAccepted();
-                                        cancelTimeoutSafely(
-                                                ownedTimeout
-                                        );
-
-                                        if (failure != null) {
-                                            cancelRetentionTimeoutSafely(
-                                                    nonNullLease,
-                                                    releaseStage,
-                                                    releaseEpoch
-                                            );
-                                            leaseBindingRegistry
-                                                    .failRelease(
-                                                            nonNullLease,
-                                                            releaseStage,
-                                                            failure
-                                                    );
-                                            return CallbackAction.failed();
-                                        }
-
-                                        boolean releaseSucceeded =
-                                                Boolean.TRUE
-                                                        .equals(released);
-
-                                        cancelRetentionTimeoutSafely(
-                                                nonNullLease,
-                                                releaseStage,
-                                                releaseEpoch
-                                        );
-                                        leaseBindingRegistry
-                                                .completeRelease(
-                                                        nonNullLease,
-                                                        releaseStage,
-                                                        releaseSucceeded
-                                                );
-                                        return CallbackAction.complete(
-                                                releaseSucceeded
-                                        );
-                                    }
+        CallbackAction callbackAction =
+                withLifecyclePermit(
+                        releaseEpoch,
+                        () -> {
+                            lifecycleProbe
+                                    .afterExternalCallbackAccepted();
+                            cancelTimeoutSafely(
+                                    ownedTimeout
                             );
 
-                    if (callbackAction == null) {
-                        return;
-                    }
+                            if (failure != null) {
+                                cancelRetentionTimeoutSafely(
+                                        lease,
+                                        releaseStage,
+                                        releaseEpoch
+                                );
+                                leaseBindingRegistry
+                                        .failRelease(
+                                                lease,
+                                                releaseStage,
+                                                failure
+                                        );
+                                return CallbackAction.failed();
+                            }
 
-                    if (callbackAction.failure()) {
-                        nonNullCallbacks.onFailure(
-                                nonNullLease,
-                                failure
-                        );
-                    } else {
-                        nonNullCallbacks.onComplete(
-                                nonNullLease,
-                                callbackAction.released()
-                        );
-                    }
-                }
-        );
+                            boolean releaseSucceeded =
+                                    Boolean.TRUE
+                                            .equals(released);
 
-        return true;
+                            cancelRetentionTimeoutSafely(
+                                    lease,
+                                    releaseStage,
+                                    releaseEpoch
+                            );
+                            leaseBindingRegistry
+                                    .completeRelease(
+                                            lease,
+                                            releaseStage,
+                                            releaseSucceeded
+                                    );
+                            return CallbackAction.complete(
+                                    releaseSucceeded
+                            );
+                        }
+                );
+
+        if (callbackAction == null) {
+            return;
+        }
+
+        if (callbackAction.failure()) {
+            callbacks.onFailure(
+                    lease,
+                    failure
+            );
+        } else {
+            callbacks.onComplete(
+                    lease,
+                    callbackAction.released()
+            );
+        }
     }
 
     private TimeoutIdentity scheduleReleaseTimeout(

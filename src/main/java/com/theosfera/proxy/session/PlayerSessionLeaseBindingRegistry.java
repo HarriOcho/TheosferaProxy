@@ -1050,6 +1050,26 @@ public final class PlayerSessionLeaseBindingRegistry {
     public synchronized boolean reserveReleaseIfUnbound(
             PlayerSessionLease lease
     ) {
+        return reserveReleaseIfUnbound(
+                lease,
+                false
+        );
+    }
+
+    public synchronized boolean
+    reserveRejectedAcquisitionReleaseIfUnbound(
+            PlayerSessionLease lease
+    ) {
+        return reserveReleaseIfUnbound(
+                lease,
+                true
+        );
+    }
+
+    private boolean reserveReleaseIfUnbound(
+            PlayerSessionLease lease,
+            boolean allowClosedUnknownFloorCleanup
+    ) {
         PlayerSessionLease nonNullLease =
                 Objects.requireNonNull(
                         lease,
@@ -1058,16 +1078,6 @@ public final class PlayerSessionLeaseBindingRegistry {
 
         UUID playerId =
                 nonNullLease.session().playerId();
-
-        if (unknownFencingFloorAdmissionsClosed
-                && !releaseFencingFloors.containsKey(playerId)) {
-            return false;
-        }
-
-        if (nonNullLease.fencingToken()
-                <= fencingFloorFor(playerId)) {
-            return false;
-        }
 
         PlayerState state = states.get(playerId);
 
@@ -1084,6 +1094,17 @@ public final class PlayerSessionLeaseBindingRegistry {
             if (protectedByActiveBinding) {
                 return false;
             }
+        }
+
+        if (unknownFencingFloorAdmissionsClosed
+                && !releaseFencingFloors.containsKey(playerId)
+                && !allowClosedUnknownFloorCleanup) {
+            return false;
+        }
+
+        if (nonNullLease.fencingToken()
+                <= fencingFloorFor(playerId)) {
+            return false;
         }
 
         if (pendingReleases.containsKey(nonNullLease)) {
