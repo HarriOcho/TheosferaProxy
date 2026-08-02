@@ -12,6 +12,7 @@ import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
 import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.session.PlayerSessionRenewalService;
+import com.theosfera.proxy.session.PlayerSessionShutdownReleaseService;
 import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
 import com.velocitypowered.api.event.EventManager;
@@ -313,6 +314,11 @@ class TheosferaProxyLifecycleTest {
                 plugin,
                 "playerDisconnectListener",
                 mock(PlayerDisconnectListener.class)
+        );
+        setField(
+                plugin,
+                "shutdownReleaseService",
+                mock(PlayerSessionShutdownReleaseService.class)
         );
 
         PlayerSessionRenewalService renewalService =
