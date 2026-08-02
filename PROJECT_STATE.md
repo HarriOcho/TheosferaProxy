@@ -2483,3 +2483,13 @@ Punto exacto de reanudación:
     distribuidos.
 
 No introducir parties, amigos o escuadrones en el siguiente incremento.
+
+## 28. Checkpoint vigente de Redis Coordination Runtime
+
+El estado autoritativo posterior a los PR `#50`, `#51` y `#52` está documentado en `docs/REDIS_RUNTIME_CHECKPOINT.md`.
+
+Ese documento supersede las afirmaciones históricas anteriores que indiquen que Redis no está conectado al runtime, que `LocalPlayerSessionCoordinator` sigue siendo la autoridad productiva, que no existe membership distribuida o que no existe renovación runtime de sesiones.
+
+Estado base de este checkpoint: `main` @ `d6095bd` (`feat: activate Redis player session runtime (#52)`).
+
+El siguiente hito es definir con precisión la semántica de `CoordinationMode` y la activación explícita de `DISTRIBUTED_REQUIRED`, manteniendo fuera de scope por ahora presencia, transferencias, capacidad y bootstrap distribuidos.
