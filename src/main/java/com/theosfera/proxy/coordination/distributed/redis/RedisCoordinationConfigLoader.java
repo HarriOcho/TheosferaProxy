@@ -24,6 +24,8 @@ public final class RedisCoordinationConfigLoader {
             "player-session-ttl-seconds";
     private static final String PLAYER_SESSION_RENEW_SECONDS_PROPERTY =
             "player-session-renew-seconds";
+    private static final long DEFAULT_PLAYER_SESSION_TTL_SECONDS = 30L;
+    private static final long DEFAULT_PLAYER_SESSION_RENEW_SECONDS = 10L;
 
     private static final String DEFAULT_CONFIG = """
             # Redis compartido para coordinacion distribuida entre proxies.
@@ -77,13 +79,15 @@ public final class RedisCoordinationConfigLoader {
                 properties,
                 MEMBERSHIP_RENEW_SECONDS_PROPERTY
         );
-        long playerSessionTtlSeconds = positiveLong(
+        long playerSessionTtlSeconds = positiveLongOrDefault(
                 properties,
-                PLAYER_SESSION_TTL_SECONDS_PROPERTY
+                PLAYER_SESSION_TTL_SECONDS_PROPERTY,
+                DEFAULT_PLAYER_SESSION_TTL_SECONDS
         );
-        long playerSessionRenewSeconds = positiveLong(
+        long playerSessionRenewSeconds = positiveLongOrDefault(
                 properties,
-                PLAYER_SESSION_RENEW_SECONDS_PROPERTY
+                PLAYER_SESSION_RENEW_SECONDS_PROPERTY,
+                DEFAULT_PLAYER_SESSION_RENEW_SECONDS
         );
 
         try {
@@ -125,7 +129,22 @@ public final class RedisCoordinationConfigLoader {
     }
 
     private long positiveLong(Properties properties, String key) {
-        String raw = required(properties, key);
+        return parsePositiveLong(required(properties, key), key);
+    }
+
+    private long positiveLongOrDefault(
+            Properties properties,
+            String key,
+            long defaultValue
+    ) {
+        String raw = properties.getProperty(key);
+        if (raw == null) {
+            return defaultValue;
+        }
+        return parsePositiveLong(required(properties, key), key);
+    }
+
+    private long parsePositiveLong(String raw, String key) {
         final long value;
         try {
             value = Long.parseLong(raw);
