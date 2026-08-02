@@ -95,7 +95,15 @@ public final class VelocityRedisCoordinationBootstrap {
         return createdRuntime.start();
     }
 
+    public void beginStopping() {
+        if (admissionRegistered) {
+            stateRegistry.set(CoordinationState.STOPPING);
+        }
+    }
+
     public CompletionStage<Boolean> stop() {
+        beginStopping();
+
         RedisCoordinationRuntime currentRuntime = runtime;
         CompletionStage<Boolean> stopStage = currentRuntime == null
                 ? CompletableFuture.completedFuture(true)
