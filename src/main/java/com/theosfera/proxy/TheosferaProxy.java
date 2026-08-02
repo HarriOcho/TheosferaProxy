@@ -16,6 +16,7 @@ import com.theosfera.proxy.command.LobbyCommandRegistration;
 import com.theosfera.proxy.command.LobbyTransferService;
 import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
+import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentityConfigLoader;
@@ -569,7 +570,10 @@ public final class TheosferaProxy {
                 new ProtocolMessageListener(
                         logger,
                         messageAuthorizer,
-                        dispatcher
+                        dispatcher,
+                        () -> coordinationBootstrap != null
+                                && coordinationBootstrap.state()
+                                == CoordinationState.HEALTHY
                 );
 
         logger.info(
