@@ -313,21 +313,36 @@ Reglas actuales:
 
 ## 12. Sesiones autenticadas
 
-Las sesiones autenticadas están implementadas en memoria.
+Las sesiones autenticadas siguen respaldadas por memoria local del proceso, pero
+el flujo runtime ya pasa por una frontera de coordinación asíncrona antes de
+confirmar la autenticación.
 
 Componentes:
 
 - `AuthenticatedPlayerSession`;
 - `PlayerSessionRegistrationResult`;
 - `AuthenticatedPlayerSessionRegistry`;
+- `PlayerSessionCoordinator`;
+- `LocalPlayerSessionCoordinator`;
+- `ProxyInstanceIdentity`;
+- `PlayerSessionLease`;
+- `PlayerSessionLeaseRequest`;
+- `PlayerSessionAcquireResult`;
+- `PlayerSessionLeaseBindingRegistry`;
+- `PlayerSessionReleaseService`;
 - `PlayerAuthenticatedMessageHandler`.
 
-Flujo:
+Flujo actual:
 
 1. `auth-1` autentica al jugador;
 2. envía `PLAYER_AUTHENTICATED`;
 3. el authorizer confirma que el origen registrado es `AUTH`;
-4. el handler registra la sesión global.
+4. el handler valida que el jugador portador coincide con el UUID y nombre del
+   payload;
+5. el handler inicia una adquisición asíncrona mediante
+   `PlayerSessionCoordinator`;
+6. solo después de obtener un lease compatible intenta vincularlo a la
+   conexión actual y responde el ACK terminal correspondiente.
 
 La sesión contiene:
 
@@ -335,13 +350,47 @@ La sesión contiene:
 - nombre validado;
 - instante de autenticación.
 
-El registro es concurrente y distingue:
+El adaptador runtime actual es `LocalPlayerSessionCoordinator`. Todavía no
+existe `RedisPlayerSessionCoordinator`; por tanto no hay exclusión real entre
+múltiples procesos Proxy.
+
+El registro local histórico distingue:
 
 - `REGISTERED`;
 - `ALREADY_REGISTERED`;
 - `CONFLICT`.
 
 Un conflicto no reemplaza silenciosamente la sesión existente.
+
+La adquisición y el binding actuales añaden protecciones de runtime local:
+
+- ownership exacto ligado al objeto `Player`, conexión, `requestId`,
+  `attemptId`, sesión y lease;
+- generaciones de conexión para distinguir conexiones OLD/NEW del mismo UUID;
+- fencing token y floors históricos para impedir regresiones locales;
+- replay pendiente y replay terminal exacto por identidad de solicitud;
+- ACK terminal cacheado cuando corresponde;
+- replay exitoso condicionado a que el binding vivo siga existiendo;
+- reutilización conflictiva de `requestId` con otro payload falla cerrada;
+- timeouts de adquisición mediante
+  `VelocityPlayerSessionAcquisitionTimeoutScheduler`;
+- cada retry o ronda posterior usa un `attemptId` nuevo;
+- callbacks tardíos o timeouts de intentos anteriores no mutan operaciones
+  posteriores;
+- solicitudes superseded que deben permanecer silenciosas no crean
+  `TerminalRequest` replayable.
+
+La limpieza por desconexión usa binding exacto:
+
+- un disconnect OLD no debe afectar un `Player` NEW con el mismo UUID;
+- la autenticación local se revoca solo cuando coincide la sesión del lease
+  exacto;
+- una conexión NEW pendiente no hereda accidentalmente autenticación por UUID
+  de una conexión OLD;
+- una desconexión OLD tardía no revoca auth de una NEW ya vinculada;
+- el lease exacto puede liberarse aunque la sesión local ya haya sido
+  revocada;
+- un lease stale no puede liberar el lease vigente.
 
 ## 13. Presencia en backends
 
@@ -643,26 +692,56 @@ rechazándose para failover.
 
 `PlayerDisconnectListener` escucha `DisconnectEvent`.
 
-Orden de limpieza:
+Flujo vigente de limpieza local inmediata:
 
-1. eliminar transferencia pendiente;
-2. eliminar presencia del backend;
-3. eliminar sesión autenticada.
+1. obtiene el `Player` y su UUID desde el evento;
+2. elimina una transferencia pendiente mediante
+   `PendingPlayerTransferRegistry.removeByPlayer(...)`;
+3. si existía transferencia pendiente, limpia la reserva de capacidad asociada
+   mediante `BackendCapacityReservationRegistry.removeByRequest(...)` usando el
+   `requestId` de esa transferencia;
+4. elimina la presencia local mediante `PlayerServerPresenceRegistry.remove(...)`;
+5. entra en una sección sincronizada sobre `PlayerSessionLeaseBindingRegistry`;
+6. usa `find(player)` para obtener únicamente el binding exacto de ese objeto
+   `Player`;
+7. ejecuta `removeForDisconnect(player)`;
+8. revoca la autenticación local solo con
+   `AuthenticatedPlayerSessionRegistry.removeIfMatches(ownedLease.session())`
+   cuando el binding exacto encontrado pertenecía a esa sesión.
+
+El disconnect ya no debe describirse como una simple eliminación UUID-level de
+sesión. Un `Player` OLD no debe borrar la autenticación de un `Player` NEW con
+el mismo UUID, y una desconexión OLD tardía no debe revocar una sesión NEW ya
+vinculada.
+
+Liberación asíncrona posterior:
+
+- si `removeForDisconnect(player)` devuelve un lease liberable, el listener
+  llama a `PlayerSessionReleaseService.releaseIfUnbound(...)`;
+- esa liberación es exact-match y asíncrona respecto de la limpieza local;
+- si el lease ya no coincide con la propiedad vigente, no libera el lease
+  actual.
 
 El listener:
 
 - se registra durante `ProxyInitializeEvent`;
 - se desregistra durante `ProxyShutdownEvent`;
-- evita mantener sesiones o presencias fantasma.
+- evita mantener transferencias, reservas, presencias o sesiones locales
+  fantasma sin debilitar el ownership exacto del lease coordinado.
 
 Durante el apagado también se limpian:
 
-1. transferencias pendientes;
-2. presencias;
-3. sesiones;
-4. identidades de backends;
-5. comprobaciones de salud pendientes;
-6. reservas temporales de bootstrap y capacidad.
+1. reservas temporales de bootstrap;
+2. failovers pendientes;
+3. reservas temporales de capacidad;
+4. transferencias pendientes;
+5. presencias;
+6. `PlayerSessionReleaseService`;
+7. bindings de leases de sesión;
+8. sesiones autenticadas;
+9. comprobaciones de salud pendientes;
+10. estado de salud;
+11. identidades de backends.
 
 ## 16. Pruebas confirmadas
 
@@ -724,6 +803,33 @@ Existen pruebas para:
 - redirección únicamente hacia destinos jugables seguros;
 - desconexión fail-closed cuando no existe un destino seguro;
 - conservación de la razón original del kick;
+- contratos de coordinación local de sesión;
+- adquisición asíncrona de sesión autenticada;
+- binding exacto de leases a conexión, `requestId`, `attemptId` y sesión;
+- replay pendiente y replay terminal;
+- conflictos por reutilización de `requestId`;
+- fencing de intentos y callbacks tardíos;
+- generaciones OLD/NEW de conexión;
+- carreras de desconexión OLD/NEW;
+- timeouts de adquisición;
+- release compartido de leases;
+- `RELEASE_PENDING` y retry posterior con `attemptId` nuevo;
+- timeouts propios de release poseído;
+- release exact-match y rechazo de releases stale;
+- quarantines exactas por operación;
+- retención acotada de quarantines;
+- capacidad acotada de estructuras de sesión;
+- cierre fail-closed por capacidad;
+- `PlayerSessionLeaseBindingResult.CAPACITY_EXHAUSTED`;
+- cleanup exacto de leases recién adquiridos pero rechazados;
+- precedencia semántica `STALE` generation > `CAPACITY_EXHAUSTED`;
+- carrera CURRENT→SUPERSEDED antes de terminalizar;
+- `clear()` de lifecycle;
+- scheduler throw/null;
+- cancelación excepcional de scheduler;
+- handles de scheduler retornados tarde;
+- identidad referencial de `CompletionStage` externa donde participa en
+  ownership;
 - lifecycle del plugin;
 - eliminación atómica correlacionada.
 
@@ -767,7 +873,7 @@ BUILD SUCCESSFUL
 La rama `feature/backend-health-checking` alcanzó 318 pruebas automatizadas
 exitosas en su validación histórica confirmada.
 
-Validación automatizada del checkpoint actual:
+Validación automatizada histórica del checkpoint de observabilidad operacional:
 
 ```powershell
 .\gradlew.bat clean test --no-daemon
@@ -781,7 +887,21 @@ BUILD SUCCESSFUL
 416 tests, 0 failures, 0 errors, 0 skipped
 ```
 
-El conteo actual fue calculado desde los XML de `build/test-results/test`.
+Ese conteo fue calculado desde los XML de `build/test-results/test` en el
+checkpoint de observabilidad operacional.
+
+Validación confirmada para el PR `#45`:
+
+- GitHub Actions Build `#101`: `SUCCESS` sobre
+  `ba0ff6eb0dd1e3f5c268faed702313ab961028be`;
+- clean build local final: `BUILD SUCCESSFUL`;
+- `git diff --cached --check` previo al commit final: limpio;
+- fresh review remoto final: sin findings `P0/P1/P2`;
+- todos los review threads quedaron resueltos.
+
+Para el checkpoint posterior a `#45` no se registra un total nuevo de tests en
+este documento. El conteo de `416 tests` queda como evidencia histórica del
+checkpoint anterior, no como conteo total actualizado del PR `#45`.
 
 ## 17. Prueba runtime confirmada
 
@@ -1093,7 +1213,9 @@ Bloques principales fusionados en TheosferaProxy:
 - Capacity-Aware Backend Load Balancing;
 - Alternate Backend Transfer Retry;
 - Proxy Operational Observability;
-- Proxy Status Command Formatting.
+- Proxy Status Command Formatting;
+- Local Player Session Coordination Contracts;
+- Runtime Player Session Coordination.
 
 Bloques de contrato fusionados en TheosferaProtocol:
 
@@ -1137,6 +1259,10 @@ Commits relevantes ya integrados para el circuito Auth→Lobby:
   `6efacee feat: add proxy operational status observability (#40)`;
 - TheosferaProxy:
   `e07eed1 feat: improve proxy status command formatting (#41)`;
+- TheosferaProxy:
+  `7e5bd7a feat: add local player session coordination contracts (#44)`;
+- TheosferaProxy:
+  `87ea7d4 feat: integrate player session coordination at runtime (#45)`;
 - TheosferaAuth:
   `b6ae696 Merge pull request #4 from HarriOcho/fix/auth-transfer-handoff-lifecycle`.
 
@@ -1174,6 +1300,17 @@ Estado Git del checkpoint actual de observabilidad operacional:
   `docs/proxy-operational-observability-checkpoint`;
 - árbol limpio antes de editar `PROJECT_STATE.md`;
 - validación runtime del comando administrativo completada.
+
+Estado Git del checkpoint actual de coordinación runtime de sesiones:
+
+- `main` sincronizada con `origin/main` en `87ea7d4`;
+- base confirmada: `87ea7d4484cac2b31738484e6ab4e403ecdbdbc4`;
+- PR `#45` fusionado en `main` mediante squash;
+- último HEAD de `feature/session-coordination-runtime` antes del squash:
+  `ba0ff6eb0dd1e3f5c268faed702313ab961028be`;
+- working tree limpio antes de crear la rama documental;
+- rama documental actual:
+  `docs/session-coordination-runtime-checkpoint`.
 
 Estado posterior de desarrollo histórico del checkpoint de health checking:
 
@@ -1232,6 +1369,10 @@ Actualmente son únicamente memoria local del proceso:
 
 - identidades de backends;
 - sesiones autenticadas;
+- leases locales de sesión autenticada;
+- bindings locales de lease por conexión;
+- replays temporales de solicitudes de autenticación;
+- quarantines y fencing floors locales de release;
 - presencia de jugadores;
 - transferencias pendientes;
 - estado de salud y frescura de backends;
@@ -1262,9 +1403,16 @@ Limitaciones honestas del checkpoint actual:
   proporcional entre dos instancias activas;
 - `TIMED_OUT` terminal está cubierto por pruebas automatizadas, pero no fue
   provocado deliberadamente en runtime;
-- el estado de salud, reservas, sesiones, presencia y transferencias sigue
-  siendo local al proceso de Proxy;
+- el estado de salud, reservas, sesiones, leases, bindings, replays,
+  quarantines, presencia y transferencias sigue siendo local al proceso de
+  Proxy;
 - no existe Redis ni coordinación entre múltiples proxies;
+- `LocalPlayerSessionCoordinator` es el adaptador runtime actual;
+- `RedisPlayerSessionCoordinator` no existe todavía;
+- `ProxyInstanceIdentity` se crea actualmente con `proxyName`
+  `theosfera-proxy-local` y una `incarnationId` generada mediante
+  `UUID.randomUUID()` al arrancar; esa identidad no es estable ni suficiente
+  para coordinación Redis/multi-proxy;
 - el inventario observado inicialmente en `lobby-2` se debía a que `lobby-2`
   fue clonado desde `lobby-1`; no constituye sincronización cross-server y no
   debe presentarse como evidencia del Proxy.
@@ -1332,6 +1480,9 @@ health checking periódico y correlacionado, la política explícita de frescura
 su integración con `TransferTargetResolver`, el balanceo por capacidad, el
 retry alternativo de destinos, el failover fail-closed ante kicks de backends
 para jugadores autenticados y la observabilidad operacional administrativa.
+La autenticación de jugadores ya no registra directamente la sesión y responde:
+primero adquiere un lease mediante `PlayerSessionCoordinator` y luego vincula
+ese lease a la conexión exacta.
 
 La política fue validada en runtime con pérdida de frescura, exclusión del
 destino como backend jugable normal, resolución `BOOTSTRAP_REQUIRED`, fallo
@@ -1393,6 +1544,9 @@ Limitaciones actuales:
 
 - el estado continúa siendo local al proceso;
 - no existe Redis ni coordinación entre múltiples proxies;
+- `LocalPlayerSessionCoordinator` sigue siendo el adaptador runtime;
+- `ProxyInstanceIdentity` todavía usa una identidad local/no estable:
+  `theosfera-proxy-local` y un UUID aleatorio por arranque;
 - la vista administrativa no es transaccional entre registros;
 - no existen métricas históricas, series temporales ni auditoría durable;
 - el comando no muestra todavía el detalle de cada transferencia pendiente;
@@ -1402,6 +1556,7 @@ Limitaciones actuales:
 
 Trabajo futuro, sin implementar todavía:
 
+- identidad estable y segura de cada instancia Proxy;
 - persistencia o coordinación distribuida del estado temporal;
 - observabilidad detallada de transferencias, métricas e historia;
 - modo mantenimiento.
@@ -1411,15 +1566,22 @@ TheosferaProxy.
 
 Siguiente hito técnico recomendado:
 
-- diseñar, antes de implementar, la frontera de coordinación global
-  distribuida para múltiples proxies;
-- definir propiedad del estado, consistencia, TTL, recuperación, degradación y
-  comportamiento fail-closed ante pérdida de la capa distribuida;
-- decidir posteriormente si Redis será el transporte temporal apropiado.
+1. definir y configurar una identidad estable y segura de cada instancia Proxy;
+2. después, diseñar e implementar `RedisPlayerSessionCoordinator` respetando el
+   contrato `PlayerSessionCoordinator`;
+3. validar atomicidad, TTL, fencing, liberación exact-match e idempotencia;
+4. añadir Redis/Testcontainers, pruebas multi-proxy y escenarios de restart,
+   partition, timeout y callbacks tardíos;
+5. ampliar observabilidad de coordinación distribuida;
+6. retirar sobrecargas legacy cuando sea seguro.
 
-La observabilidad operacional básica ya no es trabajo pendiente. Redis y la
-persistencia temporal continúan sin implementar y requieren planificación
-explícita antes de escribir código.
+La observabilidad operacional básica ya no es trabajo pendiente. La frontera de
+coordinación distribuida ya fue diseñada. PR `#44` introdujo los contratos
+asíncronos y el adaptador local de sesiones; PR `#45` integró esa frontera al
+runtime de autenticación y materializó el hardening de binding, replay,
+release, timeouts, quarantines, capacidad y lifecycle. Redis y la persistencia
+temporal continúan sin implementar y requieren identidad estable de Proxy antes
+de escribir el adaptador distribuido.
 
 No introducir parties, amigos o escuadrones sin definir primero su
 persistencia y consistencia distribuida.
@@ -1690,6 +1852,23 @@ La coordinación futura será independiente del transporte mediante contratos
 asíncronos y adaptadores. La lógica de dominio no dependerá directamente de
 Redis ni de un cliente concreto.
 
+El primer incremento local de esa frontera está repartido entre PR `#44` y PR
+`#45`:
+
+- PR `#44` introdujo `PlayerSessionCoordinator` como contrato asíncrono;
+- PR `#44` introdujo `PlayerSessionLeaseRequest`, `PlayerSessionLease`,
+  `PlayerSessionAcquireResult`, `PlayerSessionRenewResult` y
+  `ProxyInstanceIdentity`;
+- PR `#44` introdujo `LocalPlayerSessionCoordinator` como adaptador local;
+- PR `#44` añadió `CoordinationMode`, `CoordinationState` y
+  `removeIfMatches(...)` para exact-match local;
+- PR `#45` integró esa frontera al runtime: la autenticación adquiere y vincula
+  un lease antes de responder el ACK.
+
+Esto no convierte al runtime en distribuido. `LocalPlayerSessionCoordinator`
+continúa respaldado por memoria local y `RedisPlayerSessionCoordinator` no
+existe todavía.
+
 Modos definidos:
 
 - `LOCAL`;
@@ -1759,7 +1938,7 @@ demostrar:
 
 Redis Pub/Sub por sí solo no cumple la frontera definida.
 
-Primer incremento de implementación recomendado:
+Primer incremento de implementación recomendado en el diseño histórico:
 
 1. introducir contratos de coordinación asíncronos;
 2. añadir adaptadores locales respaldados por los registros actuales;
@@ -1769,6 +1948,153 @@ Primer incremento de implementación recomendado:
 6. crear posteriormente un simulador multi-proxy compartido únicamente para
    pruebas de exclusión, TTL, fencing y degradación.
 
+Estado actual posterior a PR `#45`: PR `#44` materializó los puntos 1, 2 y la
+base de equivalencia local para sesiones autenticadas; PR `#45` conectó esa
+frontera con el flujo runtime y añadió las garantías de coordinación, binding,
+replay, release y lifecycle descritas en este checkpoint. Redis, simulador
+multi-proxy, coordinación global de presencia, transferencia, capacidad y
+bootstrap siguen pendientes.
+
 No introducir parties, amigos, escuadrones ni otras operaciones sociales antes
 de implementar una fuente de verdad persistente y una estrategia distribuida
 coherente con esta frontera.
+
+## 26. Checkpoint de coordinación runtime de sesiones
+
+PR que cierra este checkpoint:
+
+- `87ea7d4 feat: integrate player session coordination at runtime (#45)`.
+
+Antecedente directo ya fusionado:
+
+- `7e5bd7a feat: add local player session coordination contracts (#44)`.
+
+Evidencia del PR `#45`:
+
+- último HEAD de `feature/session-coordination-runtime` antes del squash:
+  `ba0ff6eb0dd1e3f5c268faed702313ab961028be`;
+- GitHub Actions Build `#101`: `SUCCESS` sobre `ba0ff6e`;
+- clean build local final: `BUILD SUCCESSFUL`;
+- `git diff --cached --check` previo al commit final: limpio;
+- fresh review remoto final: sin findings `P0/P1/P2`;
+- todos los review threads del PR quedaron resueltos;
+- PR final antes del squash: 12 commits, 20 archivos modificados, 24096
+  inserciones y 287 eliminaciones.
+
+Arquitectura actual:
+
+- PR `#44` introdujo `PlayerSessionCoordinator` como contrato asíncrono para
+  adquirir, renovar y liberar leases de sesión;
+- PR `#44` introdujo `PlayerSessionLease`, `PlayerSessionLeaseRequest`,
+  `PlayerSessionAcquireResult`, `PlayerSessionRenewResult`,
+  `ProxyInstanceIdentity`, `CoordinationMode` y `CoordinationState`;
+- PR `#44` introdujo `LocalPlayerSessionCoordinator` como adaptador local y
+  `removeIfMatches(...)` para exact-match local;
+- `LocalPlayerSessionCoordinator` sigue siendo el adaptador runtime actual;
+- `PlayerAuthenticatedMessageHandler` coordina/adquiere el lease antes de
+  confirmar autenticación como parte de PR `#45`;
+- PR `#45` añadió el hardening runtime de binding, replay,
+  attempt/generation fencing, disconnect, releases, timeouts, quarantines,
+  capacity fail-closed y lifecycle races;
+- `PlayerSessionLeaseBindingRegistry` vincula el lease exacto a la conexión y
+  a la solicitud;
+- `PlayerSessionReleaseService` centraliza releases exact-match y timeouts de
+  release.
+
+Garantías importantes confirmadas en código:
+
+- binding exacto por `Player`, UUID, sesión, `requestId`, `attemptId`, lease y
+  fencing token;
+- generaciones de conexión para separar OLD/NEW;
+- replay pendiente, replay terminal exacto y ACK terminal cacheado cuando
+  corresponde;
+- replay positivo solo si existe binding vivo;
+- reutilización conflictiva de `requestId` falla cerrada;
+- solicitudes superseded silenciosas no crean `TerminalRequest`;
+- cada retry/ronda usa `attemptId` nuevo y vuelve obsoletos callbacks previos;
+- adquisición asíncrona con timeout mediante
+  `VelocityPlayerSessionAcquisitionTimeoutScheduler`;
+- release exact-match mediante `PlayerSessionReleaseService`;
+- `RELEASE_PENDING` espera la liberación previa y reintenta con `attemptId`
+  nuevo cuando corresponde;
+- watchdog de release independiente mediante
+  `VelocityPlayerSessionReleaseTimeoutScheduler`;
+- quarantines exactas por operación, múltiples por UUID sin reemplazo
+  silencioso, TTL/capacidad y retención acotada;
+- eviction de capacidad falla cerrado;
+- fencing floors históricos monotónicos/no regresivos según el registro local;
+- late completions se reconcilian solo por identidad exacta;
+- `PlayerSessionLeaseBindingResult.CAPACITY_EXHAUSTED` existe y activa cleanup
+  exacto de leases recién adquiridos pero rechazados;
+- una solicitud CURRENT afectada por capacidad recibe failure terminal
+  replayable;
+- una generación realmente STALE permanece silenciosa;
+- precedencia semántica: `STALE` generation > `CAPACITY_EXHAUSTED`;
+- en la carrera CURRENT→SUPERSEDED antes de `completeTerminalRequest`, la OLD
+  no publica ACK terminal, no guarda `TerminalRequest`, elimina su
+  `ActiveRequest` por coincidencia exacta y deja intacta la NEW;
+- `PlayerDisconnectListener` usa binding exacto, revoca auth local solo para el
+  lease/sesión exactos y no permite que un disconnect OLD afecte un `Player`
+  NEW del mismo UUID;
+- un lease exacto puede liberarse aunque la sesión local ya haya sido revocada;
+- un lease stale no puede liberar el lease vigente;
+- `PlayerSessionReleaseService.clear()` usa epoch de lifecycle y
+  `ReentrantReadWriteLock` para impedir que callbacks/timeouts de un lifecycle
+  anterior muten uno nuevo;
+- handles retornados tarde por scheduler se cancelan;
+- `schedule` throw/null y cancel excepcional fallan cerrados;
+- donde el registro compara una `CompletionStage` externa para ownership de
+  release/quarantine, la identidad efectiva es referencial y no depende de
+  `equals()`.
+
+Orden de apagado verificado en `TheosferaProxy.java` para esta parte:
+
+1. se detiene `healthCheckScheduler`;
+2. se desregistran listener de protocolo, comandos y listeners de jugador/kick;
+3. se limpian bootstrap, failover, capacidad, transferencias y presencia;
+4. se ejecuta `releaseService.clear()`;
+5. se ejecuta `sessionLeaseBindingRegistry.clear()`;
+6. se ejecuta `sessionRegistry.clear()`;
+7. se limpian pings, health, identidades y se desregistra el canal.
+
+Validación confirmada por familias de pruebas:
+
+- adquisición, binding y replay;
+- conflictos de `requestId`;
+- attempt fencing y callbacks tardíos;
+- generaciones OLD/NEW;
+- carreras de disconnect/auth;
+- acquisition timeouts;
+- pending release y owned release timeouts;
+- quarantines, retención y capacidad;
+- lifecycle clear;
+- scheduler throw/null y cancel excepcional;
+- exact release;
+- `CAPACITY_EXHAUSTED`;
+- terminalización CURRENT vs SUPERSEDED.
+
+Limitaciones actuales:
+
+- el runtime sigue usando `LocalPlayerSessionCoordinator`;
+- `RedisPlayerSessionCoordinator` no existe todavía;
+- no existe coordinación real entre múltiples procesos Proxy;
+- `ProxyInstanceIdentity` se crea con `proxyName` local
+  `theosfera-proxy-local` y una `incarnationId` aleatoria por arranque, por lo
+  que todavía no es una identidad estable ni adecuada para Redis/multi-proxy;
+- no se implementaron Redis, Testcontainers, simulador multi-proxy ni pruebas
+  runtime de dos proxies;
+- el estado temporal de sesiones sigue siendo local y no persistente.
+
+Punto exacto de reanudación:
+
+1. definir/configurar una identidad estable y segura de cada instancia Proxy;
+2. después diseñar/implementar `RedisPlayerSessionCoordinator` respetando
+   `PlayerSessionCoordinator`;
+3. validar atomicidad, TTL, fencing, exact-match release e idempotencia;
+4. añadir Redis/Testcontainers;
+5. cubrir pruebas multi-proxy;
+6. probar restart, partition, timeout y late callbacks;
+7. añadir observabilidad de coordinación distribuida;
+8. retirar sobrecargas legacy cuando sea seguro.
+
+No implementar Redis dentro de este checkpoint documental.
