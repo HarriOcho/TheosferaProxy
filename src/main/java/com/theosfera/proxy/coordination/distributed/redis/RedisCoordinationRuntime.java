@@ -91,7 +91,7 @@ public final class RedisCoordinationRuntime {
             membershipLifecycle = lifecycle;
         }
 
-        return lifecycle.start(identity).handle((acquired, failure) -> {
+        return lifecycle.start(identity).handleAsync((acquired, failure) -> {
             if (failure != null) {
                 logger.error(
                         "Fallo al adquirir la membresia distribuida del Proxy.",
@@ -132,7 +132,7 @@ public final class RedisCoordinationRuntime {
                 ? CompletableFuture.completedFuture(true)
                 : lifecycle.stop();
 
-        return releaseStage.handle((released, failure) -> {
+        return releaseStage.handleAsync((released, failure) -> {
             if (failure != null) {
                 logger.warn(
                         "No se pudo liberar limpiamente la membresia distribuida del Proxy.",
