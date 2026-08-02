@@ -8,7 +8,9 @@ import java.util.Objects;
 public record RedisCoordinationConfig(
         String redisUri,
         Duration membershipTtl,
-        Duration membershipRenewInterval
+        Duration membershipRenewInterval,
+        Duration playerSessionTtl,
+        Duration playerSessionRenewInterval
 ) {
 
     public RedisCoordinationConfig {
@@ -21,10 +23,38 @@ public record RedisCoordinationConfig(
                 membershipRenewInterval,
                 "membershipRenewInterval"
         );
+        playerSessionTtl = requirePositive(
+                playerSessionTtl,
+                "playerSessionTtl"
+        );
+        playerSessionRenewInterval = requirePositive(
+                playerSessionRenewInterval,
+                "playerSessionRenewInterval"
+        );
 
-        if (membershipRenewInterval.compareTo(membershipTtl) >= 0) {
+        requireRenewShorterThanTtl(
+                membershipRenewInterval,
+                membershipTtl,
+                "membershipRenewInterval",
+                "membershipTtl"
+        );
+        requireRenewShorterThanTtl(
+                playerSessionRenewInterval,
+                playerSessionTtl,
+                "playerSessionRenewInterval",
+                "playerSessionTtl"
+        );
+    }
+
+    private static void requireRenewShorterThanTtl(
+            Duration renewInterval,
+            Duration ttl,
+            String renewName,
+            String ttlName
+    ) {
+        if (renewInterval.compareTo(ttl) >= 0) {
             throw new IllegalArgumentException(
-                    "membershipRenewInterval must be shorter than membershipTtl"
+                    renewName + " must be shorter than " + ttlName
             );
         }
     }
