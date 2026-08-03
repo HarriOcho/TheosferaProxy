@@ -76,17 +76,25 @@ final class DistributedBackendLoadReader {
     private CompletionStage<CandidateLoadRead> readCandidate(
             BackendTargetCandidate candidate
     ) {
-        return occupancyCoordinator.read(candidate.serverName())
-                .thenCombine(
-                        capacityCoordinator.reservedCount(
-                                candidate.serverName()
-                        ),
-                        (occupancy, reservedPlayers) -> toCandidateLoad(
-                                candidate,
-                                occupancy,
-                                reservedPlayers
-                        )
-                );
+        try {
+            CompletionStage<BackendOccupancyReadResult> occupancyStage =
+                    occupancyCoordinator.read(candidate.serverName());
+            CompletionStage<Integer> reservationsStage =
+                    capacityCoordinator.reservedCount(
+                            candidate.serverName()
+                    );
+
+            return occupancyStage.thenCombine(
+                    reservationsStage,
+                    (occupancy, reservedPlayers) -> toCandidateLoad(
+                            candidate,
+                            occupancy,
+                            reservedPlayers
+                    )
+            );
+        } catch (RuntimeException exception) {
+            return CompletableFuture.failedFuture(exception);
+        }
     }
 
     private CandidateLoadRead toCandidateLoad(
