@@ -1,6 +1,8 @@
 package com.theosfera.proxy.coordination.distributed.redis;
 
+import com.theosfera.proxy.coordination.BackendCapacityReserveRequest;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
+import com.theosfera.proxy.coordination.PlayerSessionLease;
 import com.theosfera.proxy.transfer.BackendCapacityReservation;
 import io.lettuce.core.ScriptOutputType;
 import io.lettuce.core.api.async.RedisScriptingAsyncCommands;
@@ -18,16 +20,61 @@ final class LettuceRedisBackendCapacityStore
             local occupancyKey = KEYS[1]
             local reservationsKey = KEYS[2]
             local reservationKey = KEYS[3]
+            local sessionKey = KEYS[4]
 
             local requestId = ARGV[1]
             local playerId = ARGV[2]
             local backendName = ARGV[3]
             local capacity = tonumber(ARGV[4])
             local ttlMillis = tonumber(ARGV[5])
+            local playerName = ARGV[6]
+            local authenticatedAt = ARGV[7]
+            local proxyName = ARGV[8]
+            local incarnationId = ARGV[9]
+            local fencingToken = ARGV[10]
 
             if capacity == nil or capacity <= 0
                     or ttlMillis == nil or ttlMillis <= 0 then
                 return {'CORRUPT'}
+            end
+
+            if redis.call('EXISTS', sessionKey) == 0 then
+                return {'SESSION_NOT_FOUND'}
+            end
+
+            local sessionType = redis.call('TYPE', sessionKey)
+            if type(sessionType) == 'table' then
+                sessionType = sessionType['ok']
+            end
+            if sessionType ~= 'hash' or redis.call('PTTL', sessionKey) <= 0 then
+                return {'CORRUPT'}
+            end
+
+            local sessionValues = redis.call(
+                'HMGET', sessionKey,
+                'player-id',
+                'player-name',
+                'authenticated-at',
+                'proxy-name',
+                'incarnation-id',
+                'fencing-token'
+            )
+            if sessionValues[1] == false
+                    or sessionValues[2] == false
+                    or sessionValues[3] == false
+                    or sessionValues[4] == false
+                    or sessionValues[5] == false
+                    or sessionValues[6] == false
+                    or sessionValues[1] ~= playerId then
+                return {'CORRUPT'}
+            end
+
+            if sessionValues[2] ~= playerName
+                    or sessionValues[3] ~= authenticatedAt
+                    or sessionValues[4] ~= proxyName
+                    or sessionValues[5] ~= incarnationId
+                    or sessionValues[6] ~= fencingToken then
+                return {'NOT_SESSION_OWNER'}
             end
 
             local time = redis.call('TIME')
@@ -49,14 +96,27 @@ final class LettuceRedisBackendCapacityStore
 
                 local values = redis.call(
                     'HMGET', reservationKey,
-                    'request-id', 'player-id', 'backend-name'
+                    'request-id',
+                    'player-id',
+                    'backend-name',
+                    'proxy-name',
+                    'incarnation-id',
+                    'session-fencing-token'
                 )
-                if values[1] == false or values[2] == false or values[3] == false then
+                if values[1] == false
+                        or values[2] == false
+                        or values[3] == false
+                        or values[4] == false
+                        or values[5] == false
+                        or values[6] == false then
                     return {'CORRUPT'}
                 end
                 if values[1] == requestId
                         and values[2] == playerId
-                        and values[3] == backendName then
+                        and values[3] == backendName
+                        and values[4] == proxyName
+                        and values[5] == incarnationId
+                        and values[6] == fencingToken then
                     redis.call('PEXPIRE', reservationKey, ttlMillis)
                     redis.call('ZADD', reservationsKey, expiresAt, requestId)
                     return {'ALREADY_RESERVED'}
@@ -74,7 +134,10 @@ final class LettuceRedisBackendCapacityStore
                 'HSET', reservationKey,
                 'request-id', requestId,
                 'player-id', playerId,
-                'backend-name', backendName
+                'backend-name', backendName,
+                'proxy-name', proxyName,
+                'incarnation-id', incarnationId,
+                'session-fencing-token', fencingToken
             )
             redis.call('PEXPIRE', reservationKey, ttlMillis)
             redis.call('ZADD', reservationsKey, expiresAt, requestId)
@@ -88,6 +151,9 @@ final class LettuceRedisBackendCapacityStore
             local requestId = ARGV[1]
             local playerId = ARGV[2]
             local backendName = ARGV[3]
+            local proxyName = ARGV[4]
+            local incarnationId = ARGV[5]
+            local fencingToken = ARGV[6]
 
             if redis.call('EXISTS', reservationKey) == 0 then
                 return {'NOT_FOUND'}
@@ -103,14 +169,27 @@ final class LettuceRedisBackendCapacityStore
 
             local values = redis.call(
                 'HMGET', reservationKey,
-                'request-id', 'player-id', 'backend-name'
+                'request-id',
+                'player-id',
+                'backend-name',
+                'proxy-name',
+                'incarnation-id',
+                'session-fencing-token'
             )
-            if values[1] == false or values[2] == false or values[3] == false then
+            if values[1] == false
+                    or values[2] == false
+                    or values[3] == false
+                    or values[4] == false
+                    or values[5] == false
+                    or values[6] == false then
                 return {'CORRUPT'}
             end
             if values[1] ~= requestId
                     or values[2] ~= playerId
-                    or values[3] ~= backendName then
+                    or values[3] ~= backendName
+                    or values[4] ~= proxyName
+                    or values[5] ~= incarnationId
+                    or values[6] ~= fencingToken then
                 return {'NOT_OWNER'}
             end
 
@@ -131,11 +210,26 @@ final class LettuceRedisBackendCapacityStore
     private final RedisScriptingAsyncCommands<String, String> commands;
     private final RedisBackendOccupancyKeyspace occupancyKeyspace;
     private final RedisBackendCapacityKeyspace capacityKeyspace;
+    private final RedisPlayerSessionKeyspace sessionKeyspace;
 
     LettuceRedisBackendCapacityStore(
             RedisScriptingAsyncCommands<String, String> commands,
             RedisBackendOccupancyKeyspace occupancyKeyspace,
             RedisBackendCapacityKeyspace capacityKeyspace
+    ) {
+        this(
+                commands,
+                occupancyKeyspace,
+                capacityKeyspace,
+                RedisPlayerSessionKeyspace.defaultKeyspace()
+        );
+    }
+
+    LettuceRedisBackendCapacityStore(
+            RedisScriptingAsyncCommands<String, String> commands,
+            RedisBackendOccupancyKeyspace occupancyKeyspace,
+            RedisBackendCapacityKeyspace capacityKeyspace,
+            RedisPlayerSessionKeyspace sessionKeyspace
     ) {
         this.commands = Objects.requireNonNull(commands, "commands cannot be null");
         this.occupancyKeyspace = Objects.requireNonNull(
@@ -146,16 +240,23 @@ final class LettuceRedisBackendCapacityStore
                 capacityKeyspace,
                 "capacityKeyspace cannot be null"
         );
+        this.sessionKeyspace = Objects.requireNonNull(
+                sessionKeyspace,
+                "sessionKeyspace cannot be null"
+        );
     }
 
     @Override
     public CompletionStage<BackendCapacityReserveResult> reserve(
-            BackendCapacityReservation reservation,
+            BackendCapacityReserveRequest request,
             int capacity,
             Duration ttl
     ) {
-        BackendCapacityReservation nonNullReservation =
-                Objects.requireNonNull(reservation, "reservation cannot be null");
+        BackendCapacityReserveRequest nonNullRequest =
+                Objects.requireNonNull(request, "request cannot be null");
+        BackendCapacityReservation reservation = nonNullRequest.reservation();
+        PlayerSessionLease lease = nonNullRequest.sessionLease();
+
         if (capacity <= 0) {
             throw new IllegalArgumentException("capacity must be positive");
         }
@@ -166,44 +267,57 @@ final class LettuceRedisBackendCapacityStore
                 ScriptOutputType.MULTI,
                 new String[]{
                         occupancyKeyspace.backendPresenceIndexKey(
-                                nonNullReservation.backendName()
+                                reservation.backendName()
                         ),
                         capacityKeyspace.backendReservationsKey(
-                                nonNullReservation.backendName()
+                                reservation.backendName()
                         ),
                         capacityKeyspace.reservationKey(
-                                nonNullReservation.requestId()
+                                reservation.requestId()
+                        ),
+                        sessionKeyspace.playerSessionKey(
+                                reservation.playerId()
                         )
                 },
-                nonNullReservation.requestId().toString(),
-                nonNullReservation.playerId().toString(),
-                nonNullReservation.backendName(),
+                reservation.requestId().toString(),
+                reservation.playerId().toString(),
+                reservation.backendName(),
                 Integer.toString(capacity),
-                Long.toString(nonNullTtl.toMillis())
-        ).thenApply(response -> mapReserve(nonNullReservation, requireList(response)));
+                Long.toString(nonNullTtl.toMillis()),
+                lease.session().playerName(),
+                Long.toString(lease.session().authenticatedAt()),
+                lease.owner().proxyName(),
+                lease.owner().incarnationId().toString(),
+                Long.toString(lease.fencingToken())
+        ).thenApply(response -> mapReserve(reservation, requireList(response)));
     }
 
     @Override
     public CompletionStage<Boolean> releaseIfOwned(
-            BackendCapacityReservation expected
+            BackendCapacityReserveRequest expected
     ) {
-        BackendCapacityReservation nonNullExpected =
+        BackendCapacityReserveRequest nonNullExpected =
                 Objects.requireNonNull(expected, "expected cannot be null");
+        BackendCapacityReservation reservation = nonNullExpected.reservation();
+        PlayerSessionLease lease = nonNullExpected.sessionLease();
 
         return commands.eval(
                 RELEASE_SCRIPT,
                 ScriptOutputType.MULTI,
                 new String[]{
                         capacityKeyspace.backendReservationsKey(
-                                nonNullExpected.backendName()
+                                reservation.backendName()
                         ),
                         capacityKeyspace.reservationKey(
-                                nonNullExpected.requestId()
+                                reservation.requestId()
                         )
                 },
-                nonNullExpected.requestId().toString(),
-                nonNullExpected.playerId().toString(),
-                nonNullExpected.backendName()
+                reservation.requestId().toString(),
+                reservation.playerId().toString(),
+                reservation.backendName(),
+                lease.owner().proxyName(),
+                lease.owner().incarnationId().toString(),
+                Long.toString(lease.fencingToken())
         ).thenApply(response -> mapRelease(requireList(response)));
     }
 
@@ -239,6 +353,12 @@ final class LettuceRedisBackendCapacityStore
             case "NO_CAPACITY" -> BackendCapacityReserveResult.withoutReservation(
                     BackendCapacityReserveResult.Status.NO_CAPACITY
             );
+            case "SESSION_NOT_FOUND" -> BackendCapacityReserveResult.withoutReservation(
+                    BackendCapacityReserveResult.Status.SESSION_NOT_FOUND
+            );
+            case "NOT_SESSION_OWNER" -> BackendCapacityReserveResult.withoutReservation(
+                    BackendCapacityReserveResult.Status.NOT_SESSION_OWNER
+            );
             case "CORRUPT" -> throw invalidState();
             default -> throw new RedisBackendCapacityInvalidStateException(
                     "Redis backend capacity reserve returned unknown status"
@@ -262,8 +382,12 @@ final class LettuceRedisBackendCapacityStore
 
     private Duration requirePositiveTtl(Duration ttl) {
         Duration nonNullTtl = Objects.requireNonNull(ttl, "ttl cannot be null");
-        if (nonNullTtl.isZero() || nonNullTtl.isNegative()) {
-            throw new IllegalArgumentException("ttl must be positive");
+        if (nonNullTtl.isZero()
+                || nonNullTtl.isNegative()
+                || nonNullTtl.toMillis() <= 0) {
+            throw new IllegalArgumentException(
+                    "ttl must be positive and at least one millisecond"
+            );
         }
         return nonNullTtl;
     }
