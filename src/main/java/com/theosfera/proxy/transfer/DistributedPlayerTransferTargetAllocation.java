@@ -28,10 +28,7 @@ public record DistributedPlayerTransferTargetAllocation(
                     registrationResult,
                     capacityStatus
             );
-            return;
-        }
-
-        if (registrationResult != null) {
+        } else if (registrationResult != null) {
             if (registrationResult
                     == PlayerTransferRegistrationResult.REGISTERED) {
                 throw new IllegalArgumentException(
@@ -45,10 +42,7 @@ public record DistributedPlayerTransferTargetAllocation(
                     null,
                     capacityStatus
             );
-            return;
-        }
-
-        if (transfer != null || capacityRequest != null) {
+        } else if (transfer != null || capacityRequest != null) {
             requireTarget(targetResolution);
             Objects.requireNonNull(
                     transfer,
@@ -84,10 +78,7 @@ public record DistributedPlayerTransferTargetAllocation(
                         "capacity request must match transfer"
                 );
             }
-            return;
-        }
-
-        if (capacityStatus != null) {
+        } else if (capacityStatus != null) {
             if (capacityStatus
                     == BackendCapacityReserveResult.Status.RESERVED
                     || capacityStatus
@@ -96,10 +87,7 @@ public record DistributedPlayerTransferTargetAllocation(
                         "successful capacity status requires allocation artifacts"
                 );
             }
-            return;
-        }
-
-        if (targetResolution.resolvedTarget().isPresent()) {
+        } else if (targetResolution.resolvedTarget().isPresent()) {
             throw new IllegalArgumentException(
                     "target resolution requires an allocation outcome"
             );
