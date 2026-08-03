@@ -5,15 +5,12 @@ import com.theosfera.proxy.coordination.BackendCapacityCoordinator;
 import com.theosfera.proxy.coordination.BackendCapacityReserveRequest;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.coordination.BackendOccupancyCoordinator;
-import com.theosfera.proxy.coordination.BackendOccupancyReadResult;
 import com.theosfera.proxy.coordination.PlayerSessionLease;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 
-import java.util.ArrayList;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -26,9 +23,9 @@ public final class DistributedPlayerTransferTargetAllocationService {
     private final TransferTargetResolver targetResolver;
     private final PendingPlayerTransferRegistry transferRegistry;
     private final PlayerSessionLeaseBindingRegistry sessionLeaseBindings;
-    private final BackendOccupancyCoordinator occupancyCoordinator;
     private final BackendCapacityCoordinator capacityCoordinator;
     private final BackendLoadSelector loadSelector;
+    private final DistributedBackendLoadReader loadReader;
 
     public DistributedPlayerTransferTargetAllocationService(
             TransferTargetResolver targetResolver,
@@ -41,9 +38,12 @@ public final class DistributedPlayerTransferTargetAllocationService {
                 targetResolver,
                 transferRegistry,
                 sessionLeaseBindings,
-                occupancyCoordinator,
                 capacityCoordinator,
-                new BackendLoadSelector()
+                new BackendLoadSelector(),
+                new DistributedBackendLoadReader(
+                        occupancyCoordinator,
+                        capacityCoordinator
+                )
         );
     }
 
@@ -51,9 +51,9 @@ public final class DistributedPlayerTransferTargetAllocationService {
             TransferTargetResolver targetResolver,
             PendingPlayerTransferRegistry transferRegistry,
             PlayerSessionLeaseBindingRegistry sessionLeaseBindings,
-            BackendOccupancyCoordinator occupancyCoordinator,
             BackendCapacityCoordinator capacityCoordinator,
-            BackendLoadSelector loadSelector
+            BackendLoadSelector loadSelector,
+            DistributedBackendLoadReader loadReader
     ) {
         this.targetResolver = Objects.requireNonNull(
                 targetResolver,
@@ -67,10 +67,6 @@ public final class DistributedPlayerTransferTargetAllocationService {
                 sessionLeaseBindings,
                 "sessionLeaseBindings cannot be null"
         );
-        this.occupancyCoordinator = Objects.requireNonNull(
-                occupancyCoordinator,
-                "occupancyCoordinator cannot be null"
-        );
         this.capacityCoordinator = Objects.requireNonNull(
                 capacityCoordinator,
                 "capacityCoordinator cannot be null"
@@ -78,6 +74,10 @@ public final class DistributedPlayerTransferTargetAllocationService {
         this.loadSelector = Objects.requireNonNull(
                 loadSelector,
                 "loadSelector cannot be null"
+        );
+        this.loadReader = Objects.requireNonNull(
+                loadReader,
+                "loadReader cannot be null"
         );
     }
 
@@ -158,63 +158,44 @@ public final class DistributedPlayerTransferTargetAllocationService {
         );
 
         if (!candidates.configured()) {
-            if (capacityRejected) {
-                return completed(
-                        DistributedPlayerTransferTargetAllocation
-                                .capacityRejected(
-                                        TransferTargetResolution.noCapacity(),
-                                        BackendCapacityReserveResult.Status
-                                                .NO_CAPACITY
-                                )
-                );
-            }
-            return completed(
-                    DistributedPlayerTransferTargetAllocation.unavailable(
-                            TransferTargetResolution.notConfigured()
-                    )
-            );
+            return capacityRejected
+                    ? noCapacity()
+                    : completed(
+                            DistributedPlayerTransferTargetAllocation
+                                    .unavailable(
+                                            TransferTargetResolution
+                                                    .notConfigured()
+                                    )
+                    );
         }
 
         if (candidates.activeCandidates().isEmpty()) {
             if (!candidates.coldCandidates().isEmpty()) {
-                BackendTargetCandidate coldTarget =
-                        candidates.coldCandidates().getFirst();
-                return reserveTarget(
+                return reserveColdTarget(
                         player,
                         requestId,
                         sourceBackendName,
                         targetBackendType,
                         requestedAt,
                         exclusions,
-                        capacityRejected,
-                        coldTarget,
-                        TransferTargetResolution.bootstrapRequired(
-                                coldTarget.server()
-                        )
+                        candidates.coldCandidates().getFirst()
                 );
             }
 
-            if (capacityRejected) {
-                return completed(
-                        DistributedPlayerTransferTargetAllocation
-                                .capacityRejected(
-                                        TransferTargetResolution.noCapacity(),
-                                        BackendCapacityReserveResult.Status
-                                                .NO_CAPACITY
-                                )
-                );
-            }
-
-            return completed(
-                    DistributedPlayerTransferTargetAllocation.unavailable(
-                            TransferTargetResolution.notAuthenticated()
-                    )
-            );
+            return capacityRejected
+                    ? noCapacity()
+                    : completed(
+                            DistributedPlayerTransferTargetAllocation
+                                    .unavailable(
+                                            TransferTargetResolution
+                                                    .notAuthenticated()
+                                    )
+                    );
         }
 
-        return readGlobalLoads(candidates.activeCandidates())
+        return loadReader.read(candidates.activeCandidates())
                 .thenCompose(loads -> {
-                    if (loads.failureStatus() != null) {
+                    if (!loads.isAvailable()) {
                         return completed(
                                 DistributedPlayerTransferTargetAllocation
                                         .capacityRejected(
@@ -229,23 +210,10 @@ public final class DistributedPlayerTransferTargetAllocationService {
                             loadSelector.select(loads.candidates());
 
                     if (selectedServer.isPresent()) {
-                        String selectedName = selectedServer
-                                .orElseThrow()
-                                .getServerInfo()
-                                .getName();
-                        BackendTargetCandidate selected =
-                                candidates.activeCandidates()
-                                        .stream()
-                                        .filter(candidate ->
-                                                candidate.serverName()
-                                                        .equals(selectedName)
-                                        )
-                                        .findFirst()
-                                        .orElseThrow(() ->
-                                                new TransferTargetResolutionContractViolationException(
-                                                        "load selector returned an unknown candidate"
-                                                ));
-
+                        BackendTargetCandidate selected = findSelectedCandidate(
+                                candidates,
+                                selectedServer.orElseThrow()
+                        );
                         return reserveTarget(
                                 player,
                                 requestId,
@@ -253,7 +221,6 @@ public final class DistributedPlayerTransferTargetAllocationService {
                                 targetBackendType,
                                 requestedAt,
                                 exclusions,
-                                capacityRejected,
                                 selected,
                                 TransferTargetResolution.resolved(
                                         selected.server()
@@ -262,33 +229,63 @@ public final class DistributedPlayerTransferTargetAllocationService {
                     }
 
                     if (!candidates.coldCandidates().isEmpty()) {
-                        BackendTargetCandidate coldTarget =
-                                candidates.coldCandidates().getFirst();
-                        return reserveTarget(
+                        return reserveColdTarget(
                                 player,
                                 requestId,
                                 sourceBackendName,
                                 targetBackendType,
                                 requestedAt,
                                 exclusions,
-                                capacityRejected,
-                                coldTarget,
-                                TransferTargetResolution.bootstrapRequired(
-                                        coldTarget.server()
-                                )
+                                candidates.coldCandidates().getFirst()
                         );
                     }
 
-                    return completed(
-                            DistributedPlayerTransferTargetAllocation
-                                    .capacityRejected(
-                                            TransferTargetResolution
-                                                    .noCapacity(),
-                                            BackendCapacityReserveResult.Status
-                                                    .NO_CAPACITY
-                                    )
-                    );
+                    return noCapacity();
                 });
+    }
+
+    private CompletionStage<DistributedPlayerTransferTargetAllocation>
+    reserveColdTarget(
+            Player player,
+            UUID requestId,
+            String sourceBackendName,
+            BackendType targetBackendType,
+            long requestedAt,
+            Set<String> exclusions,
+            BackendTargetCandidate coldTarget
+    ) {
+        return reserveTarget(
+                player,
+                requestId,
+                sourceBackendName,
+                targetBackendType,
+                requestedAt,
+                exclusions,
+                coldTarget,
+                TransferTargetResolution.bootstrapRequired(
+                        coldTarget.server()
+                )
+        );
+    }
+
+    private BackendTargetCandidate findSelectedCandidate(
+            TransferTargetCandidates candidates,
+            RegisteredServer selectedServer
+    ) {
+        String selectedName = selectedServer
+                .getServerInfo()
+                .getName();
+
+        return candidates.activeCandidates()
+                .stream()
+                .filter(candidate ->
+                        candidate.serverName().equals(selectedName)
+                )
+                .findFirst()
+                .orElseThrow(() ->
+                        new TransferTargetResolutionContractViolationException(
+                                "load selector returned an unknown candidate"
+                        ));
     }
 
     private CompletionStage<DistributedPlayerTransferTargetAllocation>
@@ -299,7 +296,6 @@ public final class DistributedPlayerTransferTargetAllocationService {
             BackendType targetBackendType,
             long requestedAt,
             Set<String> exclusions,
-            boolean capacityRejected,
             BackendTargetCandidate target,
             TransferTargetResolution resolution
     ) {
@@ -319,9 +315,7 @@ public final class DistributedPlayerTransferTargetAllocationService {
             );
         }
 
-        Optional<PlayerSessionLease> lease =
-                sessionLeaseBindings.find(player);
-
+        Optional<PlayerSessionLease> lease = sessionLeaseBindings.find(player);
         if (lease.isEmpty()) {
             return completed(
                     DistributedPlayerTransferTargetAllocation
@@ -354,15 +348,13 @@ public final class DistributedPlayerTransferTargetAllocationService {
             );
         }
 
-        BackendCapacityReservation reservation =
-                new BackendCapacityReservation(
-                        requestId,
-                        player.getUniqueId(),
-                        target.serverName()
-                );
         BackendCapacityReserveRequest capacityRequest =
                 new BackendCapacityReserveRequest(
-                        reservation,
+                        new BackendCapacityReservation(
+                                requestId,
+                                player.getUniqueId(),
+                                target.serverName()
+                        ),
                         lease.orElseThrow()
                 );
 
@@ -399,7 +391,6 @@ public final class DistributedPlayerTransferTargetAllocationService {
                             targetBackendType,
                             requestedAt,
                             exclusions,
-                            capacityRejected,
                             target,
                             resolution,
                             transfer,
@@ -418,7 +409,6 @@ public final class DistributedPlayerTransferTargetAllocationService {
             BackendType targetBackendType,
             long requestedAt,
             Set<String> exclusions,
-            boolean capacityRejected,
             BackendTargetCandidate target,
             TransferTargetResolution resolution,
             PendingPlayerTransfer transfer,
@@ -426,30 +416,12 @@ public final class DistributedPlayerTransferTargetAllocationService {
             BackendCapacityReserveResult result
     ) {
         return switch (result.status()) {
-            case RESERVED, ALREADY_RESERVED -> {
-                BackendCapacityReservation returnedReservation =
-                        result.reservedCapacity().orElseThrow();
-
-                if (!returnedReservation.equals(
-                        capacityRequest.reservation()
-                )) {
-                    transferRegistry.removeIfMatches(transfer);
-                    yield CompletableFuture.failedFuture(
-                            new TransferTargetResolutionContractViolationException(
-                                    "capacity coordinator returned a different reservation"
-                            )
-                    );
-                }
-
-                yield completed(
-                        DistributedPlayerTransferTargetAllocation.allocated(
-                                resolution,
-                                transfer,
-                                capacityRequest,
-                                result.status()
-                        )
-                );
-            }
+            case RESERVED, ALREADY_RESERVED -> successfulReservation(
+                    resolution,
+                    transfer,
+                    capacityRequest,
+                    result
+            );
             case NO_CAPACITY -> {
                 transferRegistry.removeIfMatches(transfer);
                 Set<String> nextExclusions = new HashSet<>(exclusions);
@@ -481,143 +453,47 @@ public final class DistributedPlayerTransferTargetAllocationService {
         };
     }
 
-    private CompletionStage<GlobalLoadRead> readGlobalLoads(
-            List<BackendTargetCandidate> candidates
+    private CompletionStage<DistributedPlayerTransferTargetAllocation>
+    successfulReservation(
+            TransferTargetResolution resolution,
+            PendingPlayerTransfer transfer,
+            BackendCapacityReserveRequest capacityRequest,
+            BackendCapacityReserveResult result
     ) {
-        List<CompletableFuture<CandidateLoadRead>> reads =
-                candidates.stream()
-                        .map(this::readGlobalLoad)
-                        .map(CompletionStage::toCompletableFuture)
-                        .toList();
+        BackendCapacityReservation returnedReservation =
+                result.reservedCapacity().orElseThrow();
 
-        CompletableFuture<Void> allReads = CompletableFuture.allOf(
-                reads.toArray(CompletableFuture[]::new)
+        if (!returnedReservation.equals(capacityRequest.reservation())) {
+            transferRegistry.removeIfMatches(transfer);
+            return CompletableFuture.failedFuture(
+                    new TransferTargetResolutionContractViolationException(
+                            "capacity coordinator returned a different reservation"
+                    )
+            );
+        }
+
+        return completed(
+                DistributedPlayerTransferTargetAllocation.allocated(
+                        resolution,
+                        transfer,
+                        capacityRequest,
+                        result.status()
+                )
         );
-
-        return allReads.handle((ignored, failure) -> {
-            if (failure != null) {
-                return GlobalLoadRead.failed(
-                        BackendCapacityReserveResult.Status
-                                .COORDINATION_UNAVAILABLE
-                );
-            }
-
-            List<BackendLoadCandidate> loaded = new ArrayList<>();
-            for (CompletableFuture<CandidateLoadRead> future : reads) {
-                CandidateLoadRead read = future.join();
-                if (read.failureStatus() != null) {
-                    return GlobalLoadRead.failed(read.failureStatus());
-                }
-                loaded.add(read.candidate());
-            }
-
-            return GlobalLoadRead.available(loaded);
-        });
     }
 
-    private CompletionStage<CandidateLoadRead> readGlobalLoad(
-            BackendTargetCandidate candidate
-    ) {
-        return occupancyCoordinator.read(candidate.serverName())
-                .thenCombine(
-                        capacityCoordinator.reservedCount(
-                                candidate.serverName()
-                        ),
-                        (occupancy, reservedPlayers) -> {
-                            if (occupancy == null
-                                    || reservedPlayers == null) {
-                                return CandidateLoadRead.failed(
-                                        BackendCapacityReserveResult.Status
-                                                .COORDINATION_UNAVAILABLE
-                                );
-                            }
-
-                            if (occupancy.status()
-                                    == BackendOccupancyReadResult.Status
-                                    .COORDINATION_UNAVAILABLE) {
-                                return CandidateLoadRead.failed(
-                                        BackendCapacityReserveResult.Status
-                                                .COORDINATION_UNAVAILABLE
-                                );
-                            }
-
-                            if (occupancy.status()
-                                    == BackendOccupancyReadResult.Status
-                                    .BACKEND_NOT_FOUND) {
-                                return CandidateLoadRead.failed(
-                                        BackendCapacityReserveResult.Status
-                                                .OCCUPANCY_UNAVAILABLE
-                                );
-                            }
-
-                            int connectedPlayers = occupancy
-                                    .occupancy()
-                                    .orElseThrow();
-
-                            return CandidateLoadRead.available(
-                                    new BackendLoadCandidate(
-                                            candidate.serverName(),
-                                            candidate.server(),
-                                            candidate.policyEntry(),
-                                            connectedPlayers,
-                                            reservedPlayers
-                                    )
-                            );
-                        }
-                );
+    private static CompletionStage<DistributedPlayerTransferTargetAllocation>
+    noCapacity() {
+        return completed(
+                DistributedPlayerTransferTargetAllocation.capacityRejected(
+                        TransferTargetResolution.noCapacity(),
+                        BackendCapacityReserveResult.Status.NO_CAPACITY
+                )
+        );
     }
 
     private static CompletionStage<DistributedPlayerTransferTargetAllocation>
     completed(DistributedPlayerTransferTargetAllocation allocation) {
         return CompletableFuture.completedFuture(allocation);
-    }
-
-    private record CandidateLoadRead(
-            BackendLoadCandidate candidate,
-            BackendCapacityReserveResult.Status failureStatus
-    ) {
-        private static CandidateLoadRead available(
-                BackendLoadCandidate candidate
-        ) {
-            return new CandidateLoadRead(
-                    Objects.requireNonNull(candidate),
-                    null
-            );
-        }
-
-        private static CandidateLoadRead failed(
-                BackendCapacityReserveResult.Status status
-        ) {
-            return new CandidateLoadRead(
-                    null,
-                    Objects.requireNonNull(status)
-            );
-        }
-    }
-
-    private record GlobalLoadRead(
-            List<BackendLoadCandidate> candidates,
-            BackendCapacityReserveResult.Status failureStatus
-    ) {
-        private GlobalLoadRead {
-            candidates = List.copyOf(
-                    Objects.requireNonNull(candidates)
-            );
-        }
-
-        private static GlobalLoadRead available(
-                List<BackendLoadCandidate> candidates
-        ) {
-            return new GlobalLoadRead(candidates, null);
-        }
-
-        private static GlobalLoadRead failed(
-                BackendCapacityReserveResult.Status status
-        ) {
-            return new GlobalLoadRead(
-                    List.of(),
-                    Objects.requireNonNull(status)
-            );
-        }
     }
 }
