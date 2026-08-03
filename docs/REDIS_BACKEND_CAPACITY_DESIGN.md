@@ -51,11 +51,11 @@ Un backend con cero jugadores sigue siendo una lectura `AVAILABLE(0)`. No se deb
 
 ## Ocupación global
 
-La presencia Redis actual permite `find(playerId)`, pero todavía no ofrece una consulta o índice por backend. Cada presencia se almacena por jugador y los scripts actuales validan sesión, fencing token, secuencia y ownership antes de escribir o eliminar.
+La presencia Redis actual permite `find(playerId)`, pero no ofrece una consulta por backend. Cada presencia se almacena por jugador y los scripts validan sesión, fencing token, secuencia y ownership antes de escribir o eliminar.
 
 Para capacidad distribuida se introduce una lectura agregada separada mediante `BackendOccupancyCoordinator`. La implementación Redis utiliza un índice por backend y no escanea claves de jugadores.
 
-El índice debe respetar estas transiciones:
+El índice respeta estas transiciones:
 
 ```text
 sin presencia -> backend A        : añadir/refrescar miembro en A
@@ -76,7 +76,7 @@ theosfera:coordination:backend-presence:<backendName>
 - miembro: `playerId`;
 - score: timestamp absoluto `expiresAt` en milisegundos calculado con `Redis TIME`;
 - el score se refresca en publish/renew exitoso;
-- un movimiento elimina primero el miembro del backend anterior y lo añade al nuevo dentro de la misma decisión Lua;
+- un movimiento elimina el miembro del backend anterior y lo añade al nuevo dentro de la misma decisión Lua;
 - un remove exitoso elimina el miembro del backend correspondiente.
 
 La lectura de ocupación ejecuta atómicamente:
@@ -91,23 +91,63 @@ Así, una presencia cuyo hash expire por TTL puede dejar temporalmente un miembr
 
 Un ZSET inexistente para un backend configurado representa `AVAILABLE(0)`. `BACKEND_NOT_FOUND` se resuelve contra la política/configuración de backends, no por existencia de la clave Redis.
 
-No se utilizará `SCAN` ni una suma de `RegisteredServer.getPlayersConnected().size()` de un único Proxy como fuente productiva de ocupación global.
+## Reserva Redis concreta
 
-## Semántica Redis prevista para reservas
-
-La reserva productiva deberá ejecutar una operación atómica equivalente a:
+Cada reserva mantiene:
 
 ```text
-validate exact request identity
-prune expired occupancy members
-prune/ignore expired reservations
-read authoritative present-player count for backend
-read live distributed reservations for backend
-if present + reservations >= capacity -> NO_CAPACITY
-else create reservation with TTL -> RESERVED
+theosfera:coordination:backend-capacity-reservation:<requestId>
+theosfera:coordination:backend-capacity:<backendName>
 ```
 
-La implementación concreta puede usar Lua u otra primitiva Redis atómica, pero no una secuencia cliente `GET -> check -> SET`.
+La primera clave es un hash con identidad exacta y TTL. La segunda es un sorted set por backend con `requestId` como miembro y `expiresAt` como score.
+
+La reserva ejecuta en una sola operación Lua:
+
+```text
+Redis TIME
+prune occupancy expirado
+prune reservations expiradas
+validar requestId existente e idempotencia
+contar occupancy + reservations
+comparar contra capacity
+crear hash con TTL + ZADD reservation
+```
+
+El release valida `requestId`, `playerId` y `backendName` antes de borrar el hash y retirar el miembro del índice. `reservedCount()` poda miembros vencidos antes de contar.
+
+`RedisBackendCapacityCoordinator` conserva fail-closed: fallos operativos al reservar producen `COORDINATION_UNAVAILABLE`; un release no confirmado devuelve `false`; un conteo no demostrable falla en lugar de devolver cero.
+
+## Factories runtime sin activación productiva
+
+`RedisCoordinationRuntime` y `VelocityRedisCoordinationBootstrap` exponen factories para:
+
+- `RedisBackendOccupancyCoordinator`, recibiendo el conjunto explícito de backends configurados;
+- `RedisBackendCapacityCoordinator`, recibiendo un `reservationTtl` explícito.
+
+Ambos reutilizan la conexión Lettuce existente y requieren runtime Redis saludable.
+
+No se añadió todavía una propiedad arbitraria de TTL a `redis-coordination.properties`. La política temporal de reservas debe definirse explícitamente cuando se diseñe el wiring productivo.
+
+## Barrera de rollout
+
+El índice de ocupación se introduce después de que ya existían presencias Redis por jugador. Durante un rolling upgrade, un Proxy con código antiguo puede seguir renovando su presencia sin mantener el nuevo sorted set por backend.
+
+Por tanto, **no se debe activar capacidad distribuida en `TransferTargetResolver` en el mismo rollout que introduce el índice**.
+
+Secuencia segura:
+
+```text
+1. desplegar/fusionar foundation de índice + scripts de presencia actualizados
+2. permitir que todos los proxies ejecuten el código nuevo
+3. dejar que las renovaciones de presencia refresquen/pueblen el índice global
+4. validar ocupación agregada
+5. en un milestone posterior, activar reservas distribuidas en el resolver
+```
+
+La renovación idempotente de presencia refresca el índice, por lo que las presencias activas terminan incorporándose sin una migración por `SCAN`.
+
+Hasta completar esta barrera, `BackendCapacityReservationRegistry` continúa siendo la ruta productiva local y el nuevo coordinator Redis permanece sin consumidores de transferencia.
 
 ## Estados de resultado de capacidad
 
@@ -118,30 +158,32 @@ La implementación concreta puede usar Lua u otra primitiva Redis atómica, pero
 - `OCCUPANCY_UNAVAILABLE`;
 - `COORDINATION_UNAVAILABLE`.
 
-Los dos últimos estados existen para mantener fail-closed cuando no se puede demostrar capacidad disponible.
+Los estados de indisponibilidad mantienen fail-closed cuando no se puede demostrar capacidad disponible.
 
-## Scope alcanzado hasta ahora
+## Scope alcanzado
 
 Incluye:
 
-- contrato `BackendCapacityCoordinator`;
-- resultado distribuido explícito;
-- contrato `BackendOccupancyCoordinator`;
-- resultado de lectura agregada con fail-closed;
-- `RedisBackendOccupancyKeyspace`;
-- lectura Redis agregada con pruning por timestamp;
+- `BackendCapacityCoordinator` y resultado distribuido;
+- `BackendOccupancyCoordinator` y lectura agregada fail-closed;
+- índice Redis de presencia por backend con pruning temporal;
+- mantenimiento atómico del índice desde publish/update/remove fenced de presencia;
 - `RedisBackendOccupancyCoordinator`;
-- tests de contratos, keyspace y fail-closed.
+- `RedisBackendCapacityCoordinator` y store Lua atómico;
+- keyspaces de ocupación y reservas;
+- factories runtime/bootstrap que reutilizan la conexión Redis existente;
+- tests de contratos, keyspaces, coordinators y fail-closed;
+- estrategia de rollout por fases.
 
 No incluye todavía:
 
 - wiring de `TransferTargetResolver`;
-- mantenimiento del índice desde los scripts fenced de presencia;
-- implementación Redis de `BackendCapacityCoordinator`;
-- migración de `BackendCapacityReservationRegistry`;
+- migración del flujo productivo desde `BackendCapacityReservationRegistry`;
+- política/configuración final de `reservationTtl`;
+- validación runtime multi-proxy del índice ya calentado;
 - transfer coordination;
 - backend bootstrap coordination.
 
 ## Siguiente paso
 
-Extender los scripts fenced de presencia para mantener el sorted set por backend en publish/update/remove, con pruebas específicas de creación, renovación, movimiento, stale/conflict y cleanup. Después, construir `RedisBackendCapacityCoordinator` sobre esa fuente antes de cualquier wiring productivo.
+Ejecutar gates completos sobre este foundation y auditar el diff. Si queda limpio, fusionarlo antes del wiring productivo para permitir que el índice global de ocupación se caliente en todos los proxies. El milestone posterior podrá definir TTL, estrategia de activación y migración de `TransferTargetResolver` hacia `BackendCapacityCoordinator`.
