@@ -18,7 +18,34 @@ Con múltiples proxies, dos procesos pueden observar simultáneamente el mismo �
 - liberar una reserva exacta;
 - consultar reservas distribuidas por backend.
 
-La operación `reserve(reservation, capacity)` no recibe `connectedPlayers` desde el caller. La implementación debe resolver la ocupación usando una fuente autoritativa compatible con su modo de coordinación.
+La operación `reserve(request, capacity)` recibe un `BackendCapacityReserveRequest` que une la reserva con el `PlayerSessionLease` exacto que la autoriza. No recibe `connectedPlayers` desde el caller. La implementación debe validar ownership de sesión y resolver ocupación usando una fuente autoritativa compatible con su modo de coordinación.
+
+## Fencing de sesión
+
+Una reserva distribuida no puede depender únicamente de `playerId` y `requestId`: un Proxy stale que haya perdido el lease del jugador no debe poder consumir capacidad nueva.
+
+`BackendCapacityReserveRequest` exige:
+
+- `BackendCapacityReservation`;
+- `PlayerSessionLease`;
+- coincidencia exacta entre `reservation.playerId()` y `sessionLease.session().playerId()`.
+
+El Lua de reserva valida la sesión Redis antes de crear o renovar capacidad:
+
+```text
+session exists
+session is a live hash
+player-id matches
+player-name matches
+authenticated-at matches
+proxy-name matches
+incarnation-id matches
+fencing-token matches
+```
+
+Si la sesión no existe se devuelve `SESSION_NOT_FOUND`; si existe pero pertenece a otro owner/fencing token se devuelve `NOT_SESSION_OWNER`. Un estado Redis estructuralmente corrupto sigue siendo error duro.
+
+La identidad almacenada de la reserva incluye además `proxy-name`, `incarnation-id` y `session-fencing-token`. `releaseIfOwned()` compara esa identidad exacta, por lo que solo puede retirar la reserva que corresponde al request/lease esperado, sin requerir que la sesión siga viva al momento del cleanup.
 
 ## Frontera de ocupación
 
@@ -32,22 +59,23 @@ Su contrato devuelve `BackendOccupancyReadResult` con estados:
 
 Un backend con cero jugadores sigue siendo una lectura `AVAILABLE(0)`. No se debe confundir ausencia de jugadores con imposibilidad de demostrar el estado global.
 
-`BackendCapacityCoordinator` puede consumir esta frontera, pero el caller productivo no debe suministrar un conteo local como sustituto.
+`BackendCapacityCoordinator` puede consumir esta frontera conceptualmente, pero la implementación Redis de reserva lee el mismo índice directamente dentro del Lua para conservar atomicidad; el caller productivo nunca suministra un conteo local como sustituto.
 
 ## Invariantes obligatorios
 
-1. Una reserva se identifica exactamente por `requestId`, `playerId` y `backendName`.
-2. Repetir exactamente la misma reserva es idempotente.
-3. Reutilizar un `requestId` con otro payload falla cerrado.
-4. La decisión de capacidad no puede basarse únicamente en el conteo local de jugadores de un Proxy cuando el runtime sea distribuido.
-5. La comprobación de ocupación y la creación de la reserva deben formar una única decisión atómica en Redis.
-6. Un fallo de Redis no debe degradar silenciosamente hacia una reserva local.
-7. La liberación debe ser condicional sobre la identidad exacta esperada.
-8. Las reservas distribuidas deben expirar mediante TTL para recuperar capacidad después de crash o pérdida de conexión.
-9. El adapter Redis debe reutilizar la conexión Lettuce existente del runtime de coordinación.
-10. El resolver de destinos no debe conocer detalles de claves, Lua ni comandos Redis.
-11. La ocupación global no puede calcularse mediante `SCAN` de todas las claves de presencia por jugador.
-12. El índice de ocupación debe mantenerse dentro de la misma decisión fenced que publica, mueve o elimina presencia, evitando doble conteo y pérdidas de conteo.
+1. Una reserva se identifica por `requestId`, `playerId`, `backendName` y el ownership/fencing del `PlayerSessionLease` que la creó.
+2. Repetir exactamente la misma reserva con el mismo lease es idempotente.
+3. Reutilizar un `requestId` con otro payload o lease falla cerrado.
+4. Un Proxy que ya no posee la sesión del jugador no puede crear ni renovar una reserva.
+5. La decisión de capacidad no puede basarse únicamente en el conteo local de jugadores de un Proxy cuando el runtime sea distribuido.
+6. La comprobación de ocupación y la creación de la reserva deben formar una única decisión atómica en Redis.
+7. Un fallo de Redis no debe degradar silenciosamente hacia una reserva local.
+8. La liberación debe ser condicional sobre la identidad exacta esperada.
+9. Las reservas distribuidas deben expirar mediante TTL para recuperar capacidad después de crash o pérdida de conexión.
+10. El adapter Redis debe reutilizar la conexión Lettuce existente del runtime de coordinación.
+11. El resolver de destinos no debe conocer detalles de claves, Lua ni comandos Redis.
+12. La ocupación global no puede calcularse mediante `SCAN` de todas las claves de presencia por jugador.
+13. El índice de ocupación debe mantenerse dentro de la misma decisión fenced que publica, mueve o elimina presencia, evitando doble conteo y pérdidas de conteo.
 
 ## Ocupación global
 
@@ -105,6 +133,7 @@ La primera clave es un hash con identidad exacta y TTL. La segunda es un sorted 
 La reserva ejecuta en una sola operación Lua:
 
 ```text
+validar PlayerSessionLease exacto contra Redis
 Redis TIME
 prune occupancy expirado
 prune reservations expiradas
@@ -114,9 +143,11 @@ comparar contra capacity
 crear hash con TTL + ZADD reservation
 ```
 
-El release valida `requestId`, `playerId` y `backendName` antes de borrar el hash y retirar el miembro del índice. `reservedCount()` poda miembros vencidos antes de contar.
+El hash de reserva almacena `request-id`, `player-id`, `backend-name`, `proxy-name`, `incarnation-id` y `session-fencing-token`.
 
-`RedisBackendCapacityCoordinator` conserva fail-closed: fallos operativos al reservar producen `COORDINATION_UNAVAILABLE`; un release no confirmado devuelve `false`; un conteo no demostrable falla en lugar de devolver cero.
+El release valida esa identidad exacta antes de borrar el hash y retirar el miembro del índice. `reservedCount()` poda miembros vencidos antes de contar.
+
+`RedisBackendCapacityCoordinator` conserva fail-closed: fallos operativos al reservar producen `COORDINATION_UNAVAILABLE`; un release no confirmado devuelve `false`; un conteo no demostrable falla en lugar de devolver cero. TTLs menores a un milisegundo se rechazan para impedir expiraciones efectivamente nulas.
 
 ## Factories runtime sin activación productiva
 
@@ -155,16 +186,19 @@ Hasta completar esta barrera, `BackendCapacityReservationRegistry` continúa sie
 - `ALREADY_RESERVED`;
 - `REQUEST_ID_CONFLICT`;
 - `NO_CAPACITY`;
+- `SESSION_NOT_FOUND`;
+- `NOT_SESSION_OWNER`;
 - `OCCUPANCY_UNAVAILABLE`;
 - `COORDINATION_UNAVAILABLE`.
 
-Los estados de indisponibilidad mantienen fail-closed cuando no se puede demostrar capacidad disponible.
+Los estados de ownership e indisponibilidad mantienen fail-closed cuando no se puede demostrar autoridad o capacidad disponible.
 
 ## Scope alcanzado
 
 Incluye:
 
-- `BackendCapacityCoordinator` y resultado distribuido;
+- `BackendCapacityCoordinator`, `BackendCapacityReserveRequest` y resultado distribuido;
+- fencing de reservas contra el `PlayerSessionLease` exacto;
 - `BackendOccupancyCoordinator` y lectura agregada fail-closed;
 - índice Redis de presencia por backend con pruning temporal;
 - mantenimiento atómico del índice desde publish/update/remove fenced de presencia;
@@ -172,7 +206,7 @@ Incluye:
 - `RedisBackendCapacityCoordinator` y store Lua atómico;
 - keyspaces de ocupación y reservas;
 - factories runtime/bootstrap que reutilizan la conexión Redis existente;
-- tests de contratos, keyspaces, coordinators y fail-closed;
+- tests de contratos, keyspaces, coordinators, ownership y fail-closed;
 - estrategia de rollout por fases.
 
 No incluye todavía:
