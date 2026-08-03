@@ -84,7 +84,7 @@ public final class PlayerServerReadyMessageHandler
                         context.source().getPlayer(),
                         presence
                 )
-                : legacyPresenceRegistry.record(presence);
+                : legacyPresenceRegistry.update(presence);
 
         switch (result) {
             case RECORDED, UPDATED -> logger.info(
