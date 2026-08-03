@@ -8,6 +8,17 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class RedisBackendOccupancyKeyspaceTest {
 
     @Test
+    void buildsBackendPresenceIndexPrefix() {
+        RedisBackendOccupancyKeyspace keyspace =
+                new RedisBackendOccupancyKeyspace("theosfera:test");
+
+        assertEquals(
+                "theosfera:test:backend-presence:",
+                keyspace.backendPresenceIndexPrefix()
+        );
+    }
+
+    @Test
     void buildsBackendPresenceIndexKey() {
         RedisBackendOccupancyKeyspace keyspace =
                 new RedisBackendOccupancyKeyspace("theosfera:test");
