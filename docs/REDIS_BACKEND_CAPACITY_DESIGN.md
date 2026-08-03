@@ -53,29 +53,45 @@ Un backend con cero jugadores sigue siendo una lectura `AVAILABLE(0)`. No se deb
 
 La presencia Redis actual permite `find(playerId)`, pero todavía no ofrece una consulta o índice por backend. Cada presencia se almacena por jugador y los scripts actuales validan sesión, fencing token, secuencia y ownership antes de escribir o eliminar.
 
-Para capacidad distribuida se introducirá un índice agregado por backend mantenido desde esos mismos caminos fenced.
+Para capacidad distribuida se introduce una lectura agregada separada mediante `BackendOccupancyCoordinator`. La implementación Redis utiliza un índice por backend y no escanea claves de jugadores.
 
 El índice debe respetar estas transiciones:
 
 ```text
-sin presencia -> backend A        : +1 en A
-backend A -> backend A            :  0
-backend A -> backend B            : -1 en A, +1 en B
-backend A -> sin presencia        : -1 en A
-stale / conflict / invalid owner  :  0
+sin presencia -> backend A        : añadir/refrescar miembro en A
+backend A -> backend A            : refrescar expiración en A
+backend A -> backend B            : eliminar de A, añadir a B
+backend A -> sin presencia        : eliminar de A
+stale / conflict / invalid owner  : no mutar índice
 ```
 
-La renovación idempotente de presencia no debe cambiar el conteo.
+## Representación Redis concreta
+
+Cada backend tiene un sorted set:
+
+```text
+theosfera:coordination:backend-presence:<backendName>
+```
+
+- miembro: `playerId`;
+- score: timestamp absoluto `expiresAt` en milisegundos calculado con `Redis TIME`;
+- el score se refresca en publish/renew exitoso;
+- un movimiento elimina primero el miembro del backend anterior y lo añade al nuevo dentro de la misma decisión Lua;
+- un remove exitoso elimina el miembro del backend correspondiente.
+
+La lectura de ocupación ejecuta atómicamente:
+
+```text
+Redis TIME
+ZREMRANGEBYSCORE backend-index -inf nowMillis
+ZCARD backend-index
+```
+
+Así, una presencia cuyo hash expire por TTL puede dejar temporalmente un miembro vencido, pero la siguiente lectura lo poda antes de contar. No se depende de keyspace notifications ni de un contador eterno susceptible a drift.
+
+Un ZSET inexistente para un backend configurado representa `AVAILABLE(0)`. `BACKEND_NOT_FOUND` se resuelve contra la política/configuración de backends, no por existencia de la clave Redis.
 
 No se utilizará `SCAN` ni una suma de `RegisteredServer.getPlayersConnected().size()` de un único Proxy como fuente productiva de ocupación global.
-
-## Índice Redis previsto
-
-La forma concreta de claves se decidirá en el adapter Redis, pero debe existir una entrada agregada por backend que pueda leerse en O(1) o costo equivalente acotado.
-
-El mantenimiento del índice debe ocurrir en los scripts fenced de presencia o en una primitiva Redis igualmente atómica con la escritura por jugador. No es aceptable publicar presencia y después incrementar/decrementar el índice desde una segunda llamada cliente independiente.
-
-El TTL de la presencia por jugador introduce una consideración adicional: si Redis elimina una presencia únicamente por expiración, el índice agregado no se decrementa automáticamente. Por ello, antes del wiring productivo se debe definir una estrategia consistente de reconciliación/expiración del índice, por ejemplo mediante membresía indexada con timestamps y pruning atómico, no mediante un contador eterno susceptible de drift.
 
 ## Semántica Redis prevista para reservas
 
@@ -83,7 +99,8 @@ La reserva productiva deberá ejecutar una operación atómica equivalente a:
 
 ```text
 validate exact request identity
-prune/ignore expired occupancy members and reservations
+prune expired occupancy members
+prune/ignore expired reservations
 read authoritative present-player count for backend
 read live distributed reservations for backend
 if present + reservations >= capacity -> NO_CAPACITY
@@ -111,14 +128,15 @@ Incluye:
 - resultado distribuido explícito;
 - contrato `BackendOccupancyCoordinator`;
 - resultado de lectura agregada con fail-closed;
-- definición de invariantes y semántica del futuro índice global;
-- tests de invariantes de los resultados.
+- `RedisBackendOccupancyKeyspace`;
+- lectura Redis agregada con pruning por timestamp;
+- `RedisBackendOccupancyCoordinator`;
+- tests de contratos, keyspace y fail-closed.
 
 No incluye todavía:
 
 - wiring de `TransferTargetResolver`;
-- scripts Redis del índice;
-- implementación Redis de `BackendOccupancyCoordinator`;
+- mantenimiento del índice desde los scripts fenced de presencia;
 - implementación Redis de `BackendCapacityCoordinator`;
 - migración de `BackendCapacityReservationRegistry`;
 - transfer coordination;
@@ -126,4 +144,4 @@ No incluye todavía:
 
 ## Siguiente paso
 
-Diseñar la representación Redis concreta del índice de presencia por backend con expiración segura y sin drift. Después, extender los scripts fenced de presencia para mantener ese índice atómicamente, implementar su lectura agregada y solo entonces construir `RedisBackendCapacityCoordinator` sobre esa fuente.
+Extender los scripts fenced de presencia para mantener el sorted set por backend en publish/update/remove, con pruebas específicas de creación, renovación, movimiento, stale/conflict y cleanup. Después, construir `RedisBackendCapacityCoordinator` sobre esa fuente antes de cualquier wiring productivo.
