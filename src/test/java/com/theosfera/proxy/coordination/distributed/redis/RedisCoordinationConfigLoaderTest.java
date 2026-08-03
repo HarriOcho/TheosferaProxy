@@ -33,6 +33,10 @@ class RedisCoordinationConfigLoaderTest {
                 Duration.ofSeconds(10),
                 config.playerSessionRenewInterval()
         );
+        assertEquals(
+                Duration.ofSeconds(20),
+                config.backendCapacityReservationTtl()
+        );
     }
 
     @Test
@@ -57,6 +61,10 @@ class RedisCoordinationConfigLoaderTest {
         assertEquals(
                 Duration.ofSeconds(10),
                 config.playerSessionRenewInterval()
+        );
+        assertEquals(
+                Duration.ofSeconds(20),
+                config.backendCapacityReservationTtl()
         );
     }
 
@@ -117,6 +125,78 @@ class RedisCoordinationConfigLoaderTest {
                 membership-ttl-seconds=15
                 membership-renew-seconds=5
                 player-session-ttl-seconds=0
+                """
+        );
+
+        RedisCoordinationConfigLoader loader =
+                new RedisCoordinationConfigLoader(tempDirectory);
+
+        assertThrows(IllegalStateException.class, loader::load);
+    }
+
+    @Test
+    void rejectsBlankOptionalBackendCapacityReservationTtl()
+            throws Exception {
+        Path configFile = tempDirectory.resolve(
+                RedisCoordinationConfigLoader.FILE_NAME
+        );
+        Files.writeString(
+                configFile,
+                """
+                redis-uri=redis://127.0.0.1:6379
+                membership-ttl-seconds=15
+                membership-renew-seconds=5
+                player-session-ttl-seconds=30
+                player-session-renew-seconds=10
+                backend-capacity-reservation-ttl-seconds=
+                """
+        );
+
+        RedisCoordinationConfigLoader loader =
+                new RedisCoordinationConfigLoader(tempDirectory);
+
+        assertThrows(IllegalStateException.class, loader::load);
+    }
+
+    @Test
+    void rejectsNonNumericOptionalBackendCapacityReservationTtl()
+            throws Exception {
+        Path configFile = tempDirectory.resolve(
+                RedisCoordinationConfigLoader.FILE_NAME
+        );
+        Files.writeString(
+                configFile,
+                """
+                redis-uri=redis://127.0.0.1:6379
+                membership-ttl-seconds=15
+                membership-renew-seconds=5
+                player-session-ttl-seconds=30
+                player-session-renew-seconds=10
+                backend-capacity-reservation-ttl-seconds=twenty
+                """
+        );
+
+        RedisCoordinationConfigLoader loader =
+                new RedisCoordinationConfigLoader(tempDirectory);
+
+        assertThrows(IllegalStateException.class, loader::load);
+    }
+
+    @Test
+    void rejectsNonPositiveOptionalBackendCapacityReservationTtl()
+            throws Exception {
+        Path configFile = tempDirectory.resolve(
+                RedisCoordinationConfigLoader.FILE_NAME
+        );
+        Files.writeString(
+                configFile,
+                """
+                redis-uri=redis://127.0.0.1:6379
+                membership-ttl-seconds=15
+                membership-renew-seconds=5
+                player-session-ttl-seconds=30
+                player-session-renew-seconds=10
+                backend-capacity-reservation-ttl-seconds=0
                 """
         );
 
