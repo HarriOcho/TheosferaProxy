@@ -18,25 +18,23 @@ record DistributedBackendLoadRead(
                 )
         );
 
-        if (failureStatus == null) {
-            return;
-        }
+        if (failureStatus != null) {
+            if (!candidates.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "failed load read cannot contain candidates"
+                );
+            }
 
-        if (!candidates.isEmpty()) {
-            throw new IllegalArgumentException(
-                    "failed load read cannot contain candidates"
-            );
-        }
-
-        if (failureStatus
-                != BackendCapacityReserveResult.Status
-                .OCCUPANCY_UNAVAILABLE
-                && failureStatus
-                != BackendCapacityReserveResult.Status
-                .COORDINATION_UNAVAILABLE) {
-            throw new IllegalArgumentException(
-                    "invalid distributed load failure status"
-            );
+            if (failureStatus
+                    != BackendCapacityReserveResult.Status
+                    .OCCUPANCY_UNAVAILABLE
+                    && failureStatus
+                    != BackendCapacityReserveResult.Status
+                    .COORDINATION_UNAVAILABLE) {
+                throw new IllegalArgumentException(
+                        "invalid distributed load failure status"
+                );
+            }
         }
     }
 
