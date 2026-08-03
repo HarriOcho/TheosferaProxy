@@ -2,6 +2,7 @@ package com.theosfera.proxy;
 
 import com.theosfera.proxy.command.LobbyCommand;
 import com.theosfera.proxy.command.ProxyStatusCommand;
+import com.theosfera.proxy.coordination.PlayerPresenceCoordinator;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
@@ -10,6 +11,7 @@ import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
+import com.theosfera.proxy.session.PlayerPresenceRuntimeService;
 import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.session.PlayerSessionRenewalService;
 import com.theosfera.proxy.session.PlayerSessionShutdownReleaseService;
@@ -48,130 +50,69 @@ class TheosferaProxyLifecycleTest {
 
     @Test
     void registersAndUnregistersCommandsInLifecycle() throws Exception {
-        ProxyServer proxyServer =
-                mock(ProxyServer.class);
+        ProxyServer proxyServer = mock(ProxyServer.class);
+        ChannelRegistrar channelRegistrar = mock(ChannelRegistrar.class);
+        EventManager eventManager = mock(EventManager.class);
+        CommandManager commandManager = mock(CommandManager.class);
+        CommandMeta.Builder lobbyBuilder = mock(CommandMeta.Builder.class);
+        CommandMeta lobbyCommandMeta = mock(CommandMeta.class);
+        CommandMeta.Builder proxyStatusBuilder = mock(CommandMeta.Builder.class);
+        CommandMeta proxyStatusCommandMeta = mock(CommandMeta.class);
+        Scheduler velocityScheduler = mock(Scheduler.class);
+        Scheduler.TaskBuilder taskBuilder = mock(Scheduler.TaskBuilder.class);
+        ScheduledTask scheduledTask = mock(ScheduledTask.class);
 
-        ChannelRegistrar channelRegistrar =
-                mock(ChannelRegistrar.class);
-
-        EventManager eventManager =
-                mock(EventManager.class);
-
-        CommandManager commandManager =
-                mock(CommandManager.class);
-
-        CommandMeta.Builder lobbyBuilder =
-                mock(CommandMeta.Builder.class);
-
-        CommandMeta lobbyCommandMeta =
-                mock(CommandMeta.class);
-
-        CommandMeta.Builder proxyStatusBuilder =
-                mock(CommandMeta.Builder.class);
-
-        CommandMeta proxyStatusCommandMeta =
-                mock(CommandMeta.class);
-
-        Scheduler velocityScheduler =
-                mock(Scheduler.class);
-
-        Scheduler.TaskBuilder taskBuilder =
-                mock(Scheduler.TaskBuilder.class);
-
-        ScheduledTask scheduledTask =
-                mock(ScheduledTask.class);
-
-        when(proxyServer.getChannelRegistrar())
-                .thenReturn(channelRegistrar);
-
-        when(proxyServer.getEventManager())
-                .thenReturn(eventManager);
-
-        when(proxyServer.getCommandManager())
-                .thenReturn(commandManager);
-
-        when(proxyServer.getScheduler())
-                .thenReturn(velocityScheduler);
-
-        when(velocityScheduler.buildTask(
-                any(),
-                any(Runnable.class)
-        )).thenReturn(taskBuilder);
-
-        when(taskBuilder.repeat(any()))
+        when(proxyServer.getChannelRegistrar()).thenReturn(channelRegistrar);
+        when(proxyServer.getEventManager()).thenReturn(eventManager);
+        when(proxyServer.getCommandManager()).thenReturn(commandManager);
+        when(proxyServer.getScheduler()).thenReturn(velocityScheduler);
+        when(velocityScheduler.buildTask(any(), any(Runnable.class)))
                 .thenReturn(taskBuilder);
-
-        when(taskBuilder.schedule())
-                .thenReturn(scheduledTask);
-
-        when(commandManager.metaBuilder("hub"))
-                .thenReturn(lobbyBuilder);
-
-        when(lobbyBuilder.aliases("lobby"))
-                .thenReturn(lobbyBuilder);
-
-        when(lobbyBuilder.plugin(any()))
-                .thenReturn(lobbyBuilder);
-
-        when(lobbyBuilder.build())
-                .thenReturn(lobbyCommandMeta);
-
-        when(commandManager.metaBuilder(
-                "theosferaproxy"
-        )).thenReturn(proxyStatusBuilder);
-
-        when(proxyStatusBuilder.plugin(any()))
+        when(taskBuilder.repeat(any())).thenReturn(taskBuilder);
+        when(taskBuilder.schedule()).thenReturn(scheduledTask);
+        when(commandManager.metaBuilder("hub")).thenReturn(lobbyBuilder);
+        when(lobbyBuilder.aliases("lobby")).thenReturn(lobbyBuilder);
+        when(lobbyBuilder.plugin(any())).thenReturn(lobbyBuilder);
+        when(lobbyBuilder.build()).thenReturn(lobbyCommandMeta);
+        when(commandManager.metaBuilder("theosferaproxy"))
                 .thenReturn(proxyStatusBuilder);
+        when(proxyStatusBuilder.plugin(any())).thenReturn(proxyStatusBuilder);
+        when(proxyStatusBuilder.build()).thenReturn(proxyStatusCommandMeta);
 
-        when(proxyStatusBuilder.build())
-                .thenReturn(proxyStatusCommandMeta);
+        TheosferaProxy plugin = new TheosferaProxy(
+                proxyServer,
+                mock(Logger.class),
+                temporaryDirectory
+        );
 
-        TheosferaProxy plugin =
-                new TheosferaProxy(
-                        proxyServer,
-                        mock(Logger.class),
-                        temporaryDirectory
-                );
-
-        PlayerSessionRenewalService renewalService =
-                prepareSessionRuntime(plugin);
+        RuntimeFixture fixture = prepareSessionRuntime(plugin);
         invokeNoArg(plugin, "initializeProxyInstanceIdentity");
         invokeNoArg(plugin, "initializeProtocolMessaging");
         invokeNoArg(plugin, "activateOperationalSurface");
 
-        verify(renewalService).start();
+        verify(fixture.sessionRenewalService()).start();
+        verify(fixture.presenceRuntimeService()).start();
 
         verify(commandManager).register(
                 eq(lobbyCommandMeta),
                 any(LobbyCommand.class)
         );
-
         verify(commandManager).register(
                 eq(proxyStatusCommandMeta),
                 any(ProxyStatusCommand.class)
         );
 
         ArgumentCaptor<BackendKickFailoverListener> listenerCaptor =
-                ArgumentCaptor.forClass(
-                        BackendKickFailoverListener.class
-                );
-
-        verify(eventManager).register(
-                eq(plugin),
-                listenerCaptor.capture()
-        );
-
-        BackendKickFailoverListener registeredListener =
-                listenerCaptor.getValue();
+                ArgumentCaptor.forClass(BackendKickFailoverListener.class);
+        verify(eventManager).register(eq(plugin), listenerCaptor.capture());
+        BackendKickFailoverListener registeredListener = listenerCaptor.getValue();
 
         invokeNoArg(plugin, "deactivateOperationalSurface");
 
-        verify(renewalService).stop();
+        verify(fixture.presenceRuntimeService()).stop();
+        verify(fixture.sessionRenewalService()).stop();
         verify(commandManager).unregister(lobbyCommandMeta);
-        verify(commandManager).unregister(
-                proxyStatusCommandMeta
-        );
-
+        verify(commandManager).unregister(proxyStatusCommandMeta);
         verify(eventManager).unregisterListener(
                 eq(plugin),
                 same(registeredListener)
@@ -179,131 +120,73 @@ class TheosferaProxyLifecycleTest {
     }
 
     @Test
-    void lifecycleUsesConfiguredProxyInstanceIdentity()
-            throws Exception {
+    void lifecycleUsesConfiguredProxyInstanceIdentity() throws Exception {
         Files.writeString(
-                temporaryDirectory.resolve(
-                        "proxy-instance.properties"
-                ),
+                temporaryDirectory.resolve("proxy-instance.properties"),
                 "proxy-name=proxy-configured",
                 StandardCharsets.UTF_8
         );
 
-        ProxyServer proxyServer =
-                mock(ProxyServer.class);
+        ProxyServer proxyServer = mock(ProxyServer.class);
+        ChannelRegistrar channelRegistrar = mock(ChannelRegistrar.class);
+        EventManager eventManager = mock(EventManager.class);
+        CommandManager commandManager = mock(CommandManager.class);
+        CommandMeta.Builder lobbyBuilder = mock(CommandMeta.Builder.class);
+        CommandMeta lobbyCommandMeta = mock(CommandMeta.class);
+        CommandMeta.Builder proxyStatusBuilder = mock(CommandMeta.Builder.class);
+        CommandMeta proxyStatusCommandMeta = mock(CommandMeta.class);
+        Scheduler velocityScheduler = mock(Scheduler.class);
+        Scheduler.TaskBuilder taskBuilder = mock(Scheduler.TaskBuilder.class);
+        ScheduledTask scheduledTask = mock(ScheduledTask.class);
 
-        ChannelRegistrar channelRegistrar =
-                mock(ChannelRegistrar.class);
-
-        EventManager eventManager =
-                mock(EventManager.class);
-
-        CommandManager commandManager =
-                mock(CommandManager.class);
-
-        CommandMeta.Builder lobbyBuilder =
-                mock(CommandMeta.Builder.class);
-
-        CommandMeta lobbyCommandMeta =
-                mock(CommandMeta.class);
-
-        CommandMeta.Builder proxyStatusBuilder =
-                mock(CommandMeta.Builder.class);
-
-        CommandMeta proxyStatusCommandMeta =
-                mock(CommandMeta.class);
-
-        Scheduler velocityScheduler =
-                mock(Scheduler.class);
-
-        Scheduler.TaskBuilder taskBuilder =
-                mock(Scheduler.TaskBuilder.class);
-
-        ScheduledTask scheduledTask =
-                mock(ScheduledTask.class);
-
-        when(proxyServer.getChannelRegistrar())
-                .thenReturn(channelRegistrar);
-
-        when(proxyServer.getEventManager())
-                .thenReturn(eventManager);
-
-        when(proxyServer.getCommandManager())
-                .thenReturn(commandManager);
-
-        when(proxyServer.getScheduler())
-                .thenReturn(velocityScheduler);
-
-        when(velocityScheduler.buildTask(
-                any(),
-                any(Runnable.class)
-        )).thenReturn(taskBuilder);
-
-        when(taskBuilder.repeat(any()))
+        when(proxyServer.getChannelRegistrar()).thenReturn(channelRegistrar);
+        when(proxyServer.getEventManager()).thenReturn(eventManager);
+        when(proxyServer.getCommandManager()).thenReturn(commandManager);
+        when(proxyServer.getScheduler()).thenReturn(velocityScheduler);
+        when(velocityScheduler.buildTask(any(), any(Runnable.class)))
                 .thenReturn(taskBuilder);
-
-        when(taskBuilder.schedule())
-                .thenReturn(scheduledTask);
-
-        when(commandManager.metaBuilder("hub"))
-                .thenReturn(lobbyBuilder);
-
-        when(lobbyBuilder.aliases("lobby"))
-                .thenReturn(lobbyBuilder);
-
-        when(lobbyBuilder.plugin(any()))
-                .thenReturn(lobbyBuilder);
-
-        when(lobbyBuilder.build())
-                .thenReturn(lobbyCommandMeta);
-
-        when(commandManager.metaBuilder(
-                "theosferaproxy"
-        )).thenReturn(proxyStatusBuilder);
-
-        when(proxyStatusBuilder.plugin(any()))
+        when(taskBuilder.repeat(any())).thenReturn(taskBuilder);
+        when(taskBuilder.schedule()).thenReturn(scheduledTask);
+        when(commandManager.metaBuilder("hub")).thenReturn(lobbyBuilder);
+        when(lobbyBuilder.aliases("lobby")).thenReturn(lobbyBuilder);
+        when(lobbyBuilder.plugin(any())).thenReturn(lobbyBuilder);
+        when(lobbyBuilder.build()).thenReturn(lobbyCommandMeta);
+        when(commandManager.metaBuilder("theosferaproxy"))
                 .thenReturn(proxyStatusBuilder);
+        when(proxyStatusBuilder.plugin(any())).thenReturn(proxyStatusBuilder);
+        when(proxyStatusBuilder.build()).thenReturn(proxyStatusCommandMeta);
 
-        when(proxyStatusBuilder.build())
-                .thenReturn(proxyStatusCommandMeta);
-
-        TheosferaProxy plugin =
-                new TheosferaProxy(
-                        proxyServer,
-                        mock(Logger.class),
-                        temporaryDirectory
-                );
+        TheosferaProxy plugin = new TheosferaProxy(
+                proxyServer,
+                mock(Logger.class),
+                temporaryDirectory
+        );
 
         prepareSessionRuntime(plugin);
         invokeNoArg(plugin, "initializeProxyInstanceIdentity");
         invokeNoArg(plugin, "initializeProtocolMessaging");
 
-        ProtocolMessageListener listener =
-                protocolMessageListenerFrom(plugin);
-
+        ProtocolMessageListener listener = protocolMessageListenerFrom(plugin);
         PlayerAuthenticatedMessageHandler handler =
                 playerAuthenticatedHandlerFrom(listener);
+        ProxyInstanceIdentity identity = proxyIdentityFrom(handler);
 
-        ProxyInstanceIdentity identity =
-                proxyIdentityFrom(handler);
-
-        assertEquals(
-                "proxy-configured",
-                identity.proxyName()
-        );
-        assertNotEquals(
-                "theosfera-proxy-local",
-                identity.proxyName()
-        );
+        assertEquals("proxy-configured", identity.proxyName());
+        assertNotEquals("theosfera-proxy-local", identity.proxyName());
     }
 
-    private PlayerSessionRenewalService prepareSessionRuntime(
+    private RuntimeFixture prepareSessionRuntime(
             TheosferaProxy plugin
     ) throws ReflectiveOperationException {
         setField(
                 plugin,
                 "sessionCoordinator",
                 mock(PlayerSessionCoordinator.class)
+        );
+        setField(
+                plugin,
+                "presenceCoordinator",
+                mock(PlayerPresenceCoordinator.class)
         );
         setField(
                 plugin,
@@ -323,12 +206,13 @@ class TheosferaProxyLifecycleTest {
 
         PlayerSessionRenewalService renewalService =
                 mock(PlayerSessionRenewalService.class);
-        setField(
-                plugin,
-                "sessionRenewalService",
-                renewalService
-        );
-        return renewalService;
+        setField(plugin, "sessionRenewalService", renewalService);
+
+        PlayerPresenceRuntimeService presenceRuntimeService =
+                mock(PlayerPresenceRuntimeService.class);
+        setField(plugin, "presenceRuntimeService", presenceRuntimeService);
+
+        return new RuntimeFixture(renewalService, presenceRuntimeService);
     }
 
     private void setField(
@@ -359,28 +243,23 @@ class TheosferaProxyLifecycleTest {
         return (ProtocolMessageListener) listenerField.get(plugin);
     }
 
-    private PlayerAuthenticatedMessageHandler
-    playerAuthenticatedHandlerFrom(
+    private PlayerAuthenticatedMessageHandler playerAuthenticatedHandlerFrom(
             ProtocolMessageListener listener
     ) throws ReflectiveOperationException {
-        Field dispatcherField =
-                ProtocolMessageListener.class
-                        .getDeclaredField("dispatcher");
+        Field dispatcherField = ProtocolMessageListener.class
+                .getDeclaredField("dispatcher");
         dispatcherField.setAccessible(true);
 
         ProtocolMessageDispatcher dispatcher =
-                (ProtocolMessageDispatcher)
-                        dispatcherField.get(listener);
+                (ProtocolMessageDispatcher) dispatcherField.get(listener);
 
-        Field handlersField =
-                ProtocolMessageDispatcher.class
-                        .getDeclaredField("handlers");
+        Field handlersField = ProtocolMessageDispatcher.class
+                .getDeclaredField("handlers");
         handlersField.setAccessible(true);
 
         @SuppressWarnings("unchecked")
         Map<String, ProtocolMessageHandler> handlers =
-                (Map<String, ProtocolMessageHandler>)
-                        handlersField.get(dispatcher);
+                (Map<String, ProtocolMessageHandler>) handlersField.get(dispatcher);
 
         return (PlayerAuthenticatedMessageHandler)
                 handlers.get("PLAYER_AUTHENTICATED");
@@ -389,12 +268,15 @@ class TheosferaProxyLifecycleTest {
     private ProxyInstanceIdentity proxyIdentityFrom(
             PlayerAuthenticatedMessageHandler handler
     ) throws ReflectiveOperationException {
-        Field identityField =
-                PlayerAuthenticatedMessageHandler.class
-                        .getDeclaredField("proxyIdentity");
+        Field identityField = PlayerAuthenticatedMessageHandler.class
+                .getDeclaredField("proxyIdentity");
         identityField.setAccessible(true);
+        return (ProxyInstanceIdentity) identityField.get(handler);
+    }
 
-        return (ProxyInstanceIdentity)
-                identityField.get(handler);
+    private record RuntimeFixture(
+            PlayerSessionRenewalService sessionRenewalService,
+            PlayerPresenceRuntimeService presenceRuntimeService
+    ) {
     }
 }
