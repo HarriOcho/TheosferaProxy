@@ -2494,8 +2494,35 @@ Estado base de este checkpoint: `main` @ `d6095bd` (`feat: activate Redis player
 
 El siguiente hito es definir con precisión la semántica de `CoordinationMode` y la activación explícita de `DISTRIBUTED_REQUIRED`, manteniendo fuera de scope por ahora presencia, transferencias, capacidad y bootstrap distribuidos.
 
-## 29. WIP vigente - Redis Player Presence Runtime
+## 29. Checkpoint final - Redis Player Presence Runtime
 
-El estado de trabajo en curso est� documentado en docs/PLAYER_PRESENCE_RUNTIME_WIP.md.
-Este checkpoint WIP parte de main @ d9e65dd y contin�a en feature/redis-player-presence-runtime.
-El siguiente paso es a�adir cobertura espec�fica del runtime de presencia antes del gate final y PR.
+El runtime distribuido de presencia de jugadores quedó completado y fusionado mediante el PR `#57` (`feat: integrate Redis player presence runtime`).
+
+El checkpoint autoritativo está documentado en `docs/PLAYER_PRESENCE_RUNTIME_WIP.md`, cerrado como Final Checkpoint.
+
+Estado post-merge: `main` @ `18a7713`.
+
+Estado confirmado:
+
+- `RedisCoordinationRuntime` expone `RedisPlayerPresenceCoordinator` reutilizando la conexión Lettuce existente;
+- `PLAYER_SERVER_READY` publica presencia distribuida usando el `PlayerSessionLease` exacto de la conexión y su fencing token;
+- `PlayerPresenceRuntimeService` centraliza publicación, renovación y retirada;
+- existe renovación periódica de presencia;
+- disconnect ejecuta retirada de presencia antes de liberar el lease de sesión;
+- shutdown drena presencia antes de liberar sesiones;
+- TTL permanece como fallback cuando Redis no puede confirmar la retirada;
+- la política general continúa siendo fail-closed;
+- el lifecycle operacional exige runtime distribuido de sesiones y presencia.
+
+Validación final:
+
+- `723` tests ejecutados, `22` skipped y `0` fallos;
+- `./gradlew.bat clean build --no-daemon` -> `BUILD SUCCESSFUL`;
+- `git diff main...HEAD --check` limpio;
+- GitHub Actions `Gradle Build` del PR `#57` -> `success`.
+
+La presencia utiliza actualmente `playerSessionTtl` y `playerSessionRenewInterval` como política temporal. Separar TTL e intervalo propios de presencia queda como mejora futura y no constituye deuda bloqueante.
+
+Transferencias, capacidad/reservas y bootstrap distribuidos continúan fuera de scope y deben abordarse como fronteras independientes.
+
+El siguiente hito es decidir explícitamente cuál de esas fronteras distribuidas debe implementarse primero, manteniendo arquitectura modular, ownership explícito y política fail-closed.
