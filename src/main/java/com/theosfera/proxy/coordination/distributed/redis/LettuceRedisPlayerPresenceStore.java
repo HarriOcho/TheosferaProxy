@@ -34,6 +34,27 @@ public final class LettuceRedisPlayerPresenceStore
             local sequence = ARGV[8]
             local observedAt = ARGV[9]
             local ttlMillis = ARGV[10]
+            local occupancyPrefix = ARGV[11]
+
+            local time = redis.call('TIME')
+            local nowMillis = tonumber(time[1]) * 1000
+                    + math.floor(tonumber(time[2]) / 1000)
+            local expiresAt = nowMillis + tonumber(ttlMillis)
+
+            local function occupancyKey(name)
+                return occupancyPrefix .. name
+            end
+
+            local function refreshOccupancy(name)
+                redis.call('ZADD', occupancyKey(name), expiresAt, playerId)
+            end
+
+            local function moveOccupancy(previousBackend, nextBackend)
+                if previousBackend ~= nextBackend then
+                    redis.call('ZREM', occupancyKey(previousBackend), playerId)
+                end
+                refreshOccupancy(nextBackend)
+            end
 
             if redis.call('EXISTS', sessionKey) == 0 then
                 return {'SESSION_NOT_FOUND'}
@@ -95,6 +116,7 @@ public final class LettuceRedisPlayerPresenceStore
                     'observed-at', observedAt
                 )
                 redis.call('PEXPIRE', presenceKey, ttlMillis)
+                refreshOccupancy(backendName)
                 return {'RECORDED'}
             end
 
@@ -156,6 +178,7 @@ public final class LettuceRedisPlayerPresenceStore
             end
 
             if storedToken < incomingToken then
+                local previousBackend = values[2]
                 redis.call(
                     'HSET',
                     presenceKey,
@@ -167,6 +190,7 @@ public final class LettuceRedisPlayerPresenceStore
                     'observed-at', observedAt
                 )
                 redis.call('PEXPIRE', presenceKey, ttlMillis)
+                moveOccupancy(previousBackend, backendName)
                 return {'UPDATED'}
             end
 
@@ -179,6 +203,7 @@ public final class LettuceRedisPlayerPresenceStore
             end
 
             if incomingSequence > storedSequence then
+                local previousBackend = values[2]
                 redis.call(
                     'HSET',
                     presenceKey,
@@ -187,11 +212,13 @@ public final class LettuceRedisPlayerPresenceStore
                     'observed-at', observedAt
                 )
                 redis.call('PEXPIRE', presenceKey, ttlMillis)
+                moveOccupancy(previousBackend, backendName)
                 return {'UPDATED'}
             end
 
             if values[2] == backendName and values[7] == observedAt then
                 redis.call('PEXPIRE', presenceKey, ttlMillis)
+                refreshOccupancy(backendName)
                 return {'ALREADY_RECORDED'}
             end
 
@@ -262,6 +289,7 @@ public final class LettuceRedisPlayerPresenceStore
             local sessionFencingToken = ARGV[6]
             local backendName = ARGV[7]
             local sequence = ARGV[8]
+            local occupancyPrefix = ARGV[9]
 
             if redis.call('EXISTS', sessionKey) == 0 then
                 return {'SESSION_NOT_FOUND'}
@@ -374,17 +402,33 @@ public final class LettuceRedisPlayerPresenceStore
             end
 
             redis.call('DEL', presenceKey)
+            redis.call('ZREM', occupancyPrefix .. backendName, playerId)
             return {'REMOVED'}
             """;
 
     private final RedisScriptingAsyncCommands<String, String> commands;
     private final RedisPlayerPresenceKeyspace presenceKeyspace;
     private final RedisPlayerSessionKeyspace sessionKeyspace;
+    private final RedisBackendOccupancyKeyspace occupancyKeyspace;
 
     public LettuceRedisPlayerPresenceStore(
             RedisScriptingAsyncCommands<String, String> commands,
             RedisPlayerPresenceKeyspace presenceKeyspace,
             RedisPlayerSessionKeyspace sessionKeyspace
+    ) {
+        this(
+                commands,
+                presenceKeyspace,
+                sessionKeyspace,
+                RedisBackendOccupancyKeyspace.defaultKeyspace()
+        );
+    }
+
+    public LettuceRedisPlayerPresenceStore(
+            RedisScriptingAsyncCommands<String, String> commands,
+            RedisPlayerPresenceKeyspace presenceKeyspace,
+            RedisPlayerSessionKeyspace sessionKeyspace,
+            RedisBackendOccupancyKeyspace occupancyKeyspace
     ) {
         this.commands = Objects.requireNonNull(
                 commands,
@@ -397,6 +441,10 @@ public final class LettuceRedisPlayerPresenceStore
         this.sessionKeyspace = Objects.requireNonNull(
                 sessionKeyspace,
                 "sessionKeyspace cannot be null"
+        );
+        this.occupancyKeyspace = Objects.requireNonNull(
+                occupancyKeyspace,
+                "occupancyKeyspace cannot be null"
         );
     }
 
@@ -599,7 +647,8 @@ public final class LettuceRedisPlayerPresenceStore
                 presence.backendName(),
                 Long.toString(presence.sequence()),
                 Long.toString(presence.observedAt()),
-                Long.toString(ttl.toMillis())
+                Long.toString(ttl.toMillis()),
+                occupancyKeyspace.backendPresenceIndexPrefix()
         };
     }
 
@@ -613,7 +662,8 @@ public final class LettuceRedisPlayerPresenceStore
                 lease.owner().incarnationId().toString(),
                 Long.toString(lease.fencingToken()),
                 request.backendName(),
-                Long.toString(request.sequence())
+                Long.toString(request.sequence()),
+                occupancyKeyspace.backendPresenceIndexPrefix()
         };
     }
 
