@@ -15,6 +15,8 @@ public record BackendCapacityReserveResult(
         ALREADY_RESERVED,
         REQUEST_ID_CONFLICT,
         NO_CAPACITY,
+        SESSION_NOT_FOUND,
+        NOT_SESSION_OWNER,
         OCCUPANCY_UNAVAILABLE,
         COORDINATION_UNAVAILABLE
     }
