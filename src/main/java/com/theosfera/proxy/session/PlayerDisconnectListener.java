@@ -160,7 +160,7 @@ public final class PlayerDisconnectListener {
             ).whenComplete((result, failure) -> {
                 if (failure != null) {
                     logger.warn(
-                            "No se pudo retirar la presencia Redis de {} antes de liberar su sesion.",
+                            "No se pudo retirar la presencia Redis de {} antes de liberar su sesión.",
                             playerId,
                             failure
                     );
@@ -168,7 +168,7 @@ public final class PlayerDisconnectListener {
                         == com.theosfera.proxy.coordination.PlayerPresenceRemoveResult.Status
                         .COORDINATION_UNAVAILABLE) {
                     logger.warn(
-                            "La presencia Redis de {} no pudo retirarse durante disconnect; TTL actuara como fallback.",
+                            "La presencia Redis de {} no pudo retirarse durante disconnect; TTL actuará como fallback.",
                             playerId
                     );
                 }
@@ -205,7 +205,7 @@ public final class PlayerDisconnectListener {
                             RuntimeException failure
                     ) {
                         logger.error(
-                                "No se pudo iniciar la liberacion del lease de sesion para {}.",
+                                "No se pudo iniciar la liberación del lease de sesión para {}.",
                                 playerId,
                                 failure
                         );
@@ -220,7 +220,7 @@ public final class PlayerDisconnectListener {
                             Throwable failure
                     ) {
                         logger.error(
-                                "No se pudo liberar el lease de sesion para {}.",
+                                "No se pudo liberar el lease de sesión para {}.",
                                 playerId,
                                 failure
                         );
@@ -236,7 +236,7 @@ public final class PlayerDisconnectListener {
                     ) {
                         if (!released) {
                             logger.debug(
-                                    "El lease de sesion para {} ya no coincidia con la propiedad vigente.",
+                                    "El lease de sesión para {} ya no coincidía con la propiedad vigente.",
                                     playerId
                             );
                         }
@@ -250,7 +250,7 @@ public final class PlayerDisconnectListener {
 
     private void logStateRemoval(UUID playerId) {
         logger.debug(
-                "Estado de sesion eliminado para {} al desconectarse del proxy.",
+                "Estado de sesión eliminado para {} al desconectarse del proxy.",
                 playerId
         );
     }
