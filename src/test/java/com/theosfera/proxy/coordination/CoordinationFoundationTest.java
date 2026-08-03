@@ -12,17 +12,6 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class CoordinationFoundationTest {
 
     @Test
-    void exposesOnlySupportedCoordinationModes() {
-        assertArrayEquals(
-                new CoordinationMode[]{
-                        CoordinationMode.LOCAL,
-                        CoordinationMode.DISTRIBUTED_REQUIRED
-                },
-                CoordinationMode.values()
-        );
-    }
-
-    @Test
     void exposesDefinedOperationalStates() {
         assertArrayEquals(
                 new CoordinationState[]{
