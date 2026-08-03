@@ -6,6 +6,7 @@ import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfig;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfigLoader;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationRuntime;
+import com.theosfera.proxy.coordination.distributed.redis.RedisPlayerPresenceCoordinator;
 import com.theosfera.proxy.coordination.distributed.redis.RedisPlayerSessionCoordinator;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -39,36 +40,20 @@ public final class VelocityRedisCoordinationBootstrap {
             Logger logger,
             Clock clock
     ) {
-        this.proxyServer = Objects.requireNonNull(
-                proxyServer,
-                "proxyServer cannot be null"
-        );
+        this.proxyServer = Objects.requireNonNull(proxyServer, "proxyServer cannot be null");
         this.plugin = Objects.requireNonNull(plugin, "plugin cannot be null");
-        this.dataDirectory = Objects.requireNonNull(
-                dataDirectory,
-                "dataDirectory cannot be null"
-        );
-        this.identity = Objects.requireNonNull(
-                identity,
-                "identity cannot be null"
-        );
+        this.dataDirectory = Objects.requireNonNull(dataDirectory, "dataDirectory cannot be null");
+        this.identity = Objects.requireNonNull(identity, "identity cannot be null");
         this.logger = Objects.requireNonNull(logger, "logger cannot be null");
         this.clock = Objects.requireNonNull(clock, "clock cannot be null");
         this.stateRegistry = new CoordinationStateRegistry();
-        this.admissionListener = new VelocityCoordinationAdmissionListener(
-                proxyServer,
-                stateRegistry,
-                logger
-        );
+        this.admissionListener = new VelocityCoordinationAdmissionListener(proxyServer, stateRegistry, logger);
     }
 
     public CompletionStage<Boolean> start() {
         if (runtime != null || admissionRegistered) {
-            throw new IllegalStateException(
-                    "Redis coordination bootstrap cannot be started again"
-            );
+            throw new IllegalStateException("Redis coordination bootstrap cannot be started again");
         }
-
         stateRegistry.addListener(admissionListener);
         proxyServer.getEventManager().register(plugin, admissionListener);
         admissionRegistered = true;
@@ -84,42 +69,27 @@ public final class VelocityRedisCoordinationBootstrap {
         RedisCoordinationRuntime createdRuntime = new RedisCoordinationRuntime(
                 config,
                 identity,
-                new VelocityProxyMembershipRenewalScheduler(
-                        proxyServer,
-                        plugin
-                ),
+                new VelocityProxyMembershipRenewalScheduler(proxyServer, plugin),
                 stateRegistry,
                 clock,
                 logger
         );
         runtime = createdRuntime;
-
         return createdRuntime.start();
     }
 
     public RedisPlayerSessionCoordinator createPlayerSessionCoordinator(
             AuthenticatedPlayerSessionRegistry sessionRegistry
     ) {
-        RedisCoordinationRuntime currentRuntime = runtime;
-        if (currentRuntime == null) {
-            throw new IllegalStateException(
-                    "Redis coordination bootstrap is not running"
-            );
-        }
+        return requireRuntime().createPlayerSessionCoordinator(sessionRegistry);
+    }
 
-        return currentRuntime.createPlayerSessionCoordinator(
-                sessionRegistry
-        );
+    public RedisPlayerPresenceCoordinator createPlayerPresenceCoordinator() {
+        return requireRuntime().createPlayerPresenceCoordinator();
     }
 
     public RedisCoordinationConfig config() {
-        RedisCoordinationRuntime currentRuntime = runtime;
-        if (currentRuntime == null) {
-            throw new IllegalStateException(
-                    "Redis coordination bootstrap is not running"
-            );
-        }
-        return currentRuntime.config();
+        return requireRuntime().config();
     }
 
     public void beginStopping() {
@@ -130,7 +100,6 @@ public final class VelocityRedisCoordinationBootstrap {
 
     public CompletionStage<Boolean> stop() {
         beginStopping();
-
         RedisCoordinationRuntime currentRuntime = runtime;
         CompletionStage<Boolean> stopStage = currentRuntime == null
                 ? CompletableFuture.completedFuture(true)
@@ -139,12 +108,8 @@ public final class VelocityRedisCoordinationBootstrap {
         return stopStage.handle((released, failure) -> {
             unregisterAdmission();
             runtime = null;
-
             if (failure != null) {
-                throw new RuntimeException(
-                        "Could not stop Redis coordination runtime",
-                        failure
-                );
+                throw new RuntimeException("Could not stop Redis coordination runtime", failure);
             }
             return Boolean.TRUE.equals(released);
         });
@@ -154,15 +119,19 @@ public final class VelocityRedisCoordinationBootstrap {
         return stateRegistry.get();
     }
 
+    private RedisCoordinationRuntime requireRuntime() {
+        RedisCoordinationRuntime currentRuntime = runtime;
+        if (currentRuntime == null) {
+            throw new IllegalStateException("Redis coordination bootstrap is not running");
+        }
+        return currentRuntime;
+    }
+
     private void unregisterAdmission() {
         if (!admissionRegistered) {
             return;
         }
-
-        proxyServer.getEventManager().unregisterListener(
-                plugin,
-                admissionListener
-        );
+        proxyServer.getEventManager().unregisterListener(plugin, admissionListener);
         stateRegistry.removeListener(admissionListener);
         admissionRegistered = false;
     }

@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
@@ -17,12 +18,32 @@ public final class PlayerSessionShutdownReleaseService {
     private final ProxyServer proxyServer;
     private final PlayerSessionCoordinator coordinator;
     private final PlayerSessionLeaseBindingRegistry bindingRegistry;
+    private final PlayerServerPresenceRegistry presenceRegistry;
+    private final PlayerPresenceRuntimeService presenceRuntimeService;
     private final Logger logger;
 
     public PlayerSessionShutdownReleaseService(
             ProxyServer proxyServer,
             PlayerSessionCoordinator coordinator,
             PlayerSessionLeaseBindingRegistry bindingRegistry,
+            Logger logger
+    ) {
+        this(
+                proxyServer,
+                coordinator,
+                bindingRegistry,
+                null,
+                null,
+                logger
+        );
+    }
+
+    public PlayerSessionShutdownReleaseService(
+            ProxyServer proxyServer,
+            PlayerSessionCoordinator coordinator,
+            PlayerSessionLeaseBindingRegistry bindingRegistry,
+            PlayerServerPresenceRegistry presenceRegistry,
+            PlayerPresenceRuntimeService presenceRuntimeService,
             Logger logger
     ) {
         this.proxyServer = Objects.requireNonNull(
@@ -37,6 +58,8 @@ public final class PlayerSessionShutdownReleaseService {
                 bindingRegistry,
                 "bindingRegistry cannot be null"
         );
+        this.presenceRegistry = presenceRegistry;
+        this.presenceRuntimeService = presenceRuntimeService;
         this.logger = Objects.requireNonNull(
                 logger,
                 "logger cannot be null"
@@ -44,11 +67,11 @@ public final class PlayerSessionShutdownReleaseService {
     }
 
     public CompletionStage<ReleaseSummary> releaseBoundSessions() {
-        List<PlayerSessionLease> leases = snapshotAndFenceBindings();
+        List<OwnedSessionState> states = snapshotAndFenceBindings();
         List<CompletableFuture<Boolean>> releases = new ArrayList<>();
 
-        for (PlayerSessionLease lease : leases) {
-            releases.add(startRelease(lease));
+        for (OwnedSessionState state : states) {
+            releases.add(startRelease(state));
         }
 
         if (releases.isEmpty()) {
@@ -72,29 +95,69 @@ public final class PlayerSessionShutdownReleaseService {
         });
     }
 
-    private List<PlayerSessionLease> snapshotAndFenceBindings() {
+    private List<OwnedSessionState> snapshotAndFenceBindings() {
         synchronized (bindingRegistry) {
-            List<PlayerSessionLease> leases = new ArrayList<>();
+            List<OwnedSessionState> states = new ArrayList<>();
 
             for (Player player : proxyServer.getAllPlayers()) {
-                bindingRegistry.find(player).ifPresent(leases::add);
+                bindingRegistry.find(player).ifPresent(lease ->
+                        states.add(
+                                new OwnedSessionState(
+                                        lease,
+                                        presenceRegistry == null
+                                                ? Optional.empty()
+                                                : presenceRegistry.find(
+                                                        lease.session().playerId()
+                                                )
+                                )
+                        )
+                );
             }
 
-            /*
-             * This clear is deliberately performed while holding the same
-             * monitor used by the registry's synchronized acquisition/binding
-             * methods. Once it completes, an acquisition callback that was
-             * already in flight can no longer claim or bind its result. The
-             * existing handler then treats a successful late result as
-             * unclaimed and releases that lease explicitly.
-             */
             bindingRegistry.clear();
-
-            return List.copyOf(leases);
+            return List.copyOf(states);
         }
     }
 
     private CompletableFuture<Boolean> startRelease(
+            OwnedSessionState state
+    ) {
+        if (presenceRuntimeService == null || state.presence().isEmpty()) {
+            return startSessionRelease(state.lease());
+        }
+
+        final CompletionStage<?> presenceStage;
+        try {
+            presenceStage = Objects.requireNonNull(
+                    presenceRuntimeService.removeIfOwned(
+                            state.lease(),
+                            state.presence().orElseThrow()
+                    ),
+                    "presenceRuntimeService.removeIfOwned returned null"
+            );
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudo iniciar la retirada de presencia durante shutdown para {}.",
+                    state.lease().session().playerId(),
+                    exception
+            );
+            return startSessionRelease(state.lease());
+        }
+
+        return presenceStage.handle((result, failure) -> {
+            if (failure != null) {
+                logger.warn(
+                        "Fallo al retirar la presencia durante shutdown para {}.",
+                        state.lease().session().playerId(),
+                        failure
+                );
+            }
+            return null;
+        }).thenCompose(ignored -> startSessionRelease(state.lease()))
+                .toCompletableFuture();
+    }
+
+    private CompletableFuture<Boolean> startSessionRelease(
             PlayerSessionLease lease
     ) {
         final CompletionStage<Boolean> stage;
@@ -125,6 +188,16 @@ public final class PlayerSessionShutdownReleaseService {
             }
             return Boolean.TRUE.equals(released);
         }).toCompletableFuture();
+    }
+
+    private record OwnedSessionState(
+            PlayerSessionLease lease,
+            Optional<PlayerServerPresence> presence
+    ) {
+        private OwnedSessionState {
+            Objects.requireNonNull(lease, "lease cannot be null");
+            Objects.requireNonNull(presence, "presence cannot be null");
+        }
     }
 
     public record ReleaseSummary(int attempted, int released) {
