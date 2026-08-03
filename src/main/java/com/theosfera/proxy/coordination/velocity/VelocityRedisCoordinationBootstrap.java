@@ -3,6 +3,8 @@ package com.theosfera.proxy.coordination.velocity;
 import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.CoordinationStateRegistry;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
+import com.theosfera.proxy.coordination.distributed.redis.RedisBackendCapacityCoordinator;
+import com.theosfera.proxy.coordination.distributed.redis.RedisBackendOccupancyCoordinator;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfig;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfigLoader;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationRuntime;
@@ -14,7 +16,9 @@ import org.slf4j.Logger;
 
 import java.nio.file.Path;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
@@ -86,6 +90,18 @@ public final class VelocityRedisCoordinationBootstrap {
 
     public RedisPlayerPresenceCoordinator createPlayerPresenceCoordinator() {
         return requireRuntime().createPlayerPresenceCoordinator();
+    }
+
+    public RedisBackendOccupancyCoordinator createBackendOccupancyCoordinator(
+            Set<String> configuredBackends
+    ) {
+        return requireRuntime().createBackendOccupancyCoordinator(configuredBackends);
+    }
+
+    public RedisBackendCapacityCoordinator createBackendCapacityCoordinator(
+            Duration reservationTtl
+    ) {
+        return requireRuntime().createBackendCapacityCoordinator(reservationTtl);
     }
 
     public RedisCoordinationConfig config() {
