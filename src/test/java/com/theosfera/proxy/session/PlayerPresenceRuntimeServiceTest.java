@@ -36,21 +36,16 @@ import static org.mockito.Mockito.when;
 
 class PlayerPresenceRuntimeServiceTest {
 
-    private static final UUID PLAYER_ID =
-            UUID.fromString(
-                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-            );
-
-    private static final UUID INCARNATION_ID =
-            UUID.fromString(
-                    "11111111-2222-3333-4444-555555555555"
-            );
-
+    private static final UUID PLAYER_ID = UUID.fromString(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    );
+    private static final UUID INCARNATION_ID = UUID.fromString(
+            "11111111-2222-3333-4444-555555555555"
+    );
     private static final long AUTHENTICATED_AT = 1_000L;
     private static final long READY_AT = 2_000L;
     private static final long FENCING_TOKEN = 7L;
-    private static final Duration RENEW_INTERVAL =
-            Duration.ofSeconds(10);
+    private static final Duration RENEW_INTERVAL = Duration.ofSeconds(10);
 
     private ProxyServer proxyServer;
     private PlayerPresenceCoordinator coordinator;
@@ -75,19 +70,15 @@ class PlayerPresenceRuntimeServiceTest {
 
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
 
-        AuthenticatedPlayerSession session =
-                new AuthenticatedPlayerSession(
-                        PLAYER_ID,
-                        "HarriOcho",
-                        AUTHENTICATED_AT
-                );
+        AuthenticatedPlayerSession session = new AuthenticatedPlayerSession(
+                PLAYER_ID,
+                "HarriOcho",
+                AUTHENTICATED_AT
+        );
 
         lease = new PlayerSessionLease(
                 session,
-                new ProxyInstanceIdentity(
-                        "proxy-1",
-                        INCARNATION_ID
-                ),
+                new ProxyInstanceIdentity("proxy-1", INCARNATION_ID),
                 FENCING_TOKEN
         );
 
@@ -114,16 +105,12 @@ class PlayerPresenceRuntimeServiceTest {
         PlayerPresenceRenewalScheduler.Handle handle =
                 () -> cancelled.set(true);
 
-        when(scheduler.schedule(any(), any()))
-                .thenReturn(handle);
+        when(scheduler.schedule(any(), any())).thenReturn(handle);
 
         service.start();
 
         verify(scheduler).schedule(any(), RENEW_INTERVAL);
-        assertThrows(
-                IllegalStateException.class,
-                service::start
-        );
+        assertThrows(IllegalStateException.class, service::start);
 
         service.stop();
 
@@ -134,37 +121,30 @@ class PlayerPresenceRuntimeServiceTest {
     void publishReadyUsesExactBoundLeaseAndPresenceFenceData() {
         when(localRegistry.update(presence))
                 .thenReturn(PlayerPresenceUpdateResult.RECORDED);
-        when(bindingRegistry.find(player))
-                .thenReturn(Optional.of(lease));
-        when(coordinator.publish(any()))
-                .thenAnswer(invocation -> {
-                    PlayerPresencePublishRequest request =
-                            invocation.getArgument(
-                                    0,
-                                    PlayerPresencePublishRequest.class
-                            );
-                    DistributedPlayerPresence published =
-                            request.presence();
-                    return CompletableFuture.completedFuture(
-                            PlayerPresencePublishResult.withPresence(
-                                    PlayerPresencePublishResult.Status.RECORDED,
-                                    published
-                            )
-                    );
-                });
+        when(bindingRegistry.find(player)).thenReturn(Optional.of(lease));
+        when(coordinator.publish(any())).thenAnswer(invocation -> {
+            PlayerPresencePublishRequest request = invocation.getArgument(
+                    0,
+                    PlayerPresencePublishRequest.class
+            );
+            DistributedPlayerPresence published = request.presence();
+            return CompletableFuture.completedFuture(
+                    PlayerPresencePublishResult.withPresence(
+                            PlayerPresencePublishResult.Status.RECORDED,
+                            published
+                    )
+            );
+        });
 
-        PlayerPresenceUpdateResult result =
-                service.publishReady(player, presence);
-
-        assertEquals(
-                PlayerPresenceUpdateResult.RECORDED,
-                result
+        PlayerPresenceUpdateResult result = service.publishReady(
+                player,
+                presence
         );
 
+        assertEquals(PlayerPresenceUpdateResult.RECORDED, result);
+
         ArgumentCaptor<PlayerPresencePublishRequest> captor =
-                ArgumentCaptor.forClass(
-                        PlayerPresencePublishRequest.class
-                );
+                ArgumentCaptor.forClass(PlayerPresencePublishRequest.class);
         verify(coordinator).publish(captor.capture());
 
         PlayerPresencePublishRequest request = captor.getValue();
@@ -172,27 +152,25 @@ class PlayerPresenceRuntimeServiceTest {
         assertEquals("lobby-1", request.backendName());
         assertEquals(READY_AT, request.sequence());
         assertEquals(READY_AT, request.observedAt());
-        assertEquals(FENCING_TOKEN, request.presence().fencingToken());
         assertEquals(
-                lease.owner(),
-                request.presence().owner()
+                FENCING_TOKEN,
+                request.presence().sessionFencingToken()
         );
+        assertEquals(lease.owner(), request.presence().owner());
     }
 
     @Test
     void publishReadyKeepsLocalPresenceWhenLeaseIsMissing() {
         when(localRegistry.update(presence))
                 .thenReturn(PlayerPresenceUpdateResult.RECORDED);
-        when(bindingRegistry.find(player))
-                .thenReturn(Optional.empty());
+        when(bindingRegistry.find(player)).thenReturn(Optional.empty());
 
-        PlayerPresenceUpdateResult result =
-                service.publishReady(player, presence);
-
-        assertEquals(
-                PlayerPresenceUpdateResult.RECORDED,
-                result
+        PlayerPresenceUpdateResult result = service.publishReady(
+                player,
+                presence
         );
+
+        assertEquals(PlayerPresenceUpdateResult.RECORDED, result);
         verify(coordinator, never()).publish(any());
         verify(logger).warn(
                 "Presencia local para {} no se publico en Redis porque no existe un lease de sesion vinculado.",
@@ -205,8 +183,10 @@ class PlayerPresenceRuntimeServiceTest {
         when(localRegistry.update(presence))
                 .thenReturn(PlayerPresenceUpdateResult.STALE);
 
-        PlayerPresenceUpdateResult result =
-                service.publishReady(player, presence);
+        PlayerPresenceUpdateResult result = service.publishReady(
+                player,
+                presence
+        );
 
         assertEquals(PlayerPresenceUpdateResult.STALE, result);
         verify(bindingRegistry, never()).find(any(Player.class));
@@ -215,94 +195,77 @@ class PlayerPresenceRuntimeServiceTest {
 
     @Test
     void renewalPublishesSnapshotWithCurrentExactBinding() {
-        AtomicReference<Runnable> scheduledTask =
-                new AtomicReference<>();
+        AtomicReference<Runnable> scheduledTask = new AtomicReference<>();
+        PlayerPresenceRenewalScheduler.Handle handle = () -> {
+        };
 
-        when(scheduler.schedule(any(), any()))
-                .thenAnswer(invocation -> {
-                    scheduledTask.set(
-                            invocation.getArgument(0, Runnable.class)
-                    );
-                    return () -> {
-                    };
-                });
+        when(scheduler.schedule(any(), any())).thenAnswer(invocation -> {
+            scheduledTask.set(invocation.getArgument(0, Runnable.class));
+            return handle;
+        });
         when(localRegistry.snapshot())
                 .thenReturn(Map.of(PLAYER_ID, presence));
         when(proxyServer.getPlayer(PLAYER_ID))
                 .thenReturn(Optional.of(player));
-        when(bindingRegistry.find(player))
-                .thenReturn(Optional.of(lease));
-        when(coordinator.publish(any()))
-                .thenAnswer(invocation -> {
-                    PlayerPresencePublishRequest request =
-                            invocation.getArgument(
-                                    0,
-                                    PlayerPresencePublishRequest.class
-                            );
-                    return CompletableFuture.completedFuture(
-                            PlayerPresencePublishResult.withPresence(
-                                    PlayerPresencePublishResult.Status
-                                            .ALREADY_RECORDED,
-                                    request.presence()
-                            )
-                    );
-                });
+        when(bindingRegistry.find(player)).thenReturn(Optional.of(lease));
+        when(coordinator.publish(any())).thenAnswer(invocation -> {
+            PlayerPresencePublishRequest request = invocation.getArgument(
+                    0,
+                    PlayerPresencePublishRequest.class
+            );
+            return CompletableFuture.completedFuture(
+                    PlayerPresencePublishResult.withPresence(
+                            PlayerPresencePublishResult.Status.ALREADY_RECORDED,
+                            request.presence()
+                    )
+            );
+        });
 
         service.start();
         scheduledTask.get().run();
 
         ArgumentCaptor<PlayerPresencePublishRequest> captor =
-                ArgumentCaptor.forClass(
-                        PlayerPresencePublishRequest.class
-                );
+                ArgumentCaptor.forClass(PlayerPresencePublishRequest.class);
         verify(coordinator).publish(captor.capture());
         assertSame(lease, captor.getValue().sessionLease());
         assertEquals(
                 FENCING_TOKEN,
-                captor.getValue().presence().fencingToken()
+                captor.getValue().presence().sessionFencingToken()
         );
     }
 
     @Test
     void renewalSkipsDisconnectedPlayersAndMissingBindings() {
-        UUID otherPlayerId =
-                UUID.fromString(
-                        "99999999-8888-7777-6666-555555555555"
-                );
+        UUID otherPlayerId = UUID.fromString(
+                "99999999-8888-7777-6666-555555555555"
+        );
         Player otherPlayer = mock(Player.class);
-        PlayerServerPresence otherPresence =
-                new PlayerServerPresence(
+        PlayerServerPresence otherPresence = new PlayerServerPresence(
+                otherPlayerId,
+                "skyblock-1",
+                READY_AT + 1
+        );
+
+        AtomicReference<Runnable> scheduledTask = new AtomicReference<>();
+        PlayerPresenceRenewalScheduler.Handle handle = () -> {
+        };
+
+        when(scheduler.schedule(any(), any())).thenAnswer(invocation -> {
+            scheduledTask.set(invocation.getArgument(0, Runnable.class));
+            return handle;
+        });
+        when(localRegistry.snapshot()).thenReturn(
+                Map.of(
+                        PLAYER_ID,
+                        presence,
                         otherPlayerId,
-                        "skyblock-1",
-                        READY_AT + 1
-                );
-
-        AtomicReference<Runnable> scheduledTask =
-                new AtomicReference<>();
-
-        when(scheduler.schedule(any(), any()))
-                .thenAnswer(invocation -> {
-                    scheduledTask.set(
-                            invocation.getArgument(0, Runnable.class)
-                    );
-                    return () -> {
-                    };
-                });
-        when(localRegistry.snapshot())
-                .thenReturn(
-                        Map.of(
-                                PLAYER_ID,
-                                presence,
-                                otherPlayerId,
-                                otherPresence
-                        )
-                );
-        when(proxyServer.getPlayer(PLAYER_ID))
-                .thenReturn(Optional.empty());
+                        otherPresence
+                )
+        );
+        when(proxyServer.getPlayer(PLAYER_ID)).thenReturn(Optional.empty());
         when(proxyServer.getPlayer(otherPlayerId))
                 .thenReturn(Optional.of(otherPlayer));
-        when(bindingRegistry.find(otherPlayer))
-                .thenReturn(Optional.empty());
+        when(bindingRegistry.find(otherPlayer)).thenReturn(Optional.empty());
 
         service.start();
         scheduledTask.get().run();
@@ -317,10 +280,8 @@ class PlayerPresenceRuntimeServiceTest {
 
         when(localRegistry.update(presence))
                 .thenReturn(PlayerPresenceUpdateResult.RECORDED);
-        when(bindingRegistry.find(player))
-                .thenReturn(Optional.of(lease));
-        when(coordinator.publish(any()))
-                .thenReturn(pending);
+        when(bindingRegistry.find(player)).thenReturn(Optional.of(lease));
+        when(coordinator.publish(any())).thenReturn(pending);
 
         service.publishReady(player, presence);
 
@@ -340,15 +301,13 @@ class PlayerPresenceRuntimeServiceTest {
 
     @Test
     void removeIfOwnedUsesExactLeaseBackendAndReadySequence() {
-        PlayerPresenceRemoveResult removed =
-                new PlayerPresenceRemoveResult(
-                        PlayerPresenceRemoveResult.Status.REMOVED
-                );
+        PlayerPresenceRemoveResult removed = new PlayerPresenceRemoveResult(
+                PlayerPresenceRemoveResult.Status.REMOVED
+        );
         CompletionStage<PlayerPresenceRemoveResult> completion =
                 CompletableFuture.completedFuture(removed);
 
-        when(coordinator.removeIfOwned(any()))
-                .thenReturn(completion);
+        when(coordinator.removeIfOwned(any())).thenReturn(completion);
 
         CompletionStage<PlayerPresenceRemoveResult> result =
                 service.removeIfOwned(lease, presence);
@@ -356,9 +315,7 @@ class PlayerPresenceRuntimeServiceTest {
         assertSame(completion, result);
 
         ArgumentCaptor<PlayerPresenceRemoveRequest> captor =
-                ArgumentCaptor.forClass(
-                        PlayerPresenceRemoveRequest.class
-                );
+                ArgumentCaptor.forClass(PlayerPresenceRemoveRequest.class);
         verify(coordinator).removeIfOwned(captor.capture());
 
         PlayerPresenceRemoveRequest request = captor.getValue();
@@ -370,20 +327,18 @@ class PlayerPresenceRuntimeServiceTest {
     @Test
     void rejectsMismatchedPlayerAndLeaseIdentities() {
         Player wrongPlayer = mock(Player.class);
-        when(wrongPlayer.getUniqueId())
-                .thenReturn(UUID.randomUUID());
+        when(wrongPlayer.getUniqueId()).thenReturn(UUID.randomUUID());
 
         assertThrows(
                 IllegalArgumentException.class,
                 () -> service.publishReady(wrongPlayer, presence)
         );
 
-        PlayerServerPresence wrongPresence =
-                new PlayerServerPresence(
-                        UUID.randomUUID(),
-                        "lobby-1",
-                        READY_AT
-                );
+        PlayerServerPresence wrongPresence = new PlayerServerPresence(
+                UUID.randomUUID(),
+                "lobby-1",
+                READY_AT
+        );
 
         assertThrows(
                 IllegalArgumentException.class,
