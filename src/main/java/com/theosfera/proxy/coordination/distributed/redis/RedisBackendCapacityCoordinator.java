@@ -1,8 +1,8 @@
 package com.theosfera.proxy.coordination.distributed.redis;
 
 import com.theosfera.proxy.coordination.BackendCapacityCoordinator;
+import com.theosfera.proxy.coordination.BackendCapacityReserveRequest;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
-import com.theosfera.proxy.transfer.BackendCapacityReservation;
 import io.lettuce.core.api.async.RedisScriptingAsyncCommands;
 
 import java.time.Duration;
@@ -25,7 +25,8 @@ public final class RedisBackendCapacityCoordinator
                 new LettuceRedisBackendCapacityStore(
                         commands,
                         RedisBackendOccupancyKeyspace.defaultKeyspace(),
-                        RedisBackendCapacityKeyspace.defaultKeyspace()
+                        RedisBackendCapacityKeyspace.defaultKeyspace(),
+                        RedisPlayerSessionKeyspace.defaultKeyspace()
                 ),
                 reservationTtl
         );
@@ -41,18 +42,18 @@ public final class RedisBackendCapacityCoordinator
 
     @Override
     public CompletionStage<BackendCapacityReserveResult> reserve(
-            BackendCapacityReservation reservation,
+            BackendCapacityReserveRequest request,
             int capacity
     ) {
-        BackendCapacityReservation nonNullReservation = Objects.requireNonNull(
-                reservation,
-                "reservation cannot be null"
+        BackendCapacityReserveRequest nonNullRequest = Objects.requireNonNull(
+                request,
+                "request cannot be null"
         );
         if (capacity <= 0) {
             throw new IllegalArgumentException("capacity must be positive");
         }
 
-        return store.reserve(nonNullReservation, capacity, reservationTtl)
+        return store.reserve(nonNullRequest, capacity, reservationTtl)
                 .handle((result, failure) -> {
                     if (failure == null) {
                         return completed(result);
@@ -74,9 +75,9 @@ public final class RedisBackendCapacityCoordinator
 
     @Override
     public CompletionStage<Boolean> releaseIfOwned(
-            BackendCapacityReservation expected
+            BackendCapacityReserveRequest expected
     ) {
-        BackendCapacityReservation nonNullExpected = Objects.requireNonNull(
+        BackendCapacityReserveRequest nonNullExpected = Objects.requireNonNull(
                 expected,
                 "expected cannot be null"
         );
@@ -123,9 +124,11 @@ public final class RedisBackendCapacityCoordinator
                 ttl,
                 "reservationTtl cannot be null"
         );
-        if (nonNullTtl.isZero() || nonNullTtl.isNegative()) {
+        if (nonNullTtl.isZero()
+                || nonNullTtl.isNegative()
+                || nonNullTtl.toMillis() <= 0) {
             throw new IllegalArgumentException(
-                    "reservationTtl must be positive"
+                    "reservationTtl must be positive and at least one millisecond"
             );
         }
         return nonNullTtl;
