@@ -26,6 +26,10 @@ public final class RedisBackendOccupancyKeyspace {
         return new RedisBackendOccupancyKeyspace(DEFAULT_NAMESPACE);
     }
 
+    public String backendPresenceIndexPrefix() {
+        return namespace + ":backend-presence:";
+    }
+
     public String backendPresenceIndexKey(String backendName) {
         String normalized = Objects.requireNonNull(
                 backendName,
@@ -38,6 +42,6 @@ public final class RedisBackendOccupancyKeyspace {
             );
         }
 
-        return namespace + ":backend-presence:" + normalized;
+        return backendPresenceIndexPrefix() + normalized;
     }
 }
