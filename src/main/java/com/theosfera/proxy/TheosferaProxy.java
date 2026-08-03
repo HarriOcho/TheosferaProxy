@@ -17,6 +17,7 @@ import com.theosfera.proxy.command.LobbyTransferService;
 import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
 import com.theosfera.proxy.coordination.CoordinationState;
+import com.theosfera.proxy.coordination.PlayerPresenceCoordinator;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentityConfigLoader;
@@ -40,11 +41,13 @@ import com.theosfera.proxy.observability.BackendOperationalSnapshotService;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerAuthenticationAckSender;
 import com.theosfera.proxy.session.PlayerDisconnectListener;
+import com.theosfera.proxy.session.PlayerPresenceRuntimeService;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.session.PlayerSessionRenewalService;
 import com.theosfera.proxy.session.PlayerSessionShutdownReleaseService;
+import com.theosfera.proxy.session.velocity.VelocityPlayerPresenceRenewalScheduler;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionAcquisitionTimeoutScheduler;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionReleaseTimeoutScheduler;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionRenewalScheduler;
@@ -87,20 +90,20 @@ public final class TheosferaProxy {
     private final ProtocolChannelRegistration channelRegistration;
     private final BackendIdentityRegistry identityRegistry;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
-    private final PlayerSessionLeaseBindingRegistry
-            sessionLeaseBindingRegistry;
+    private final PlayerSessionLeaseBindingRegistry sessionLeaseBindingRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
     private final BackendCapacityReservationRegistry capacityRegistry;
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final PendingPlayerFailoverRegistry failoverRegistry;
     private final UUID incarnationId;
-    private final VelocityPlayerSessionReleaseTimeoutScheduler
-            releaseTimeoutScheduler;
+    private final VelocityPlayerSessionReleaseTimeoutScheduler releaseTimeoutScheduler;
     private final BackendHealthRegistry healthRegistry;
     private final PendingBackendPingRegistry pendingPingRegistry;
 
     private PlayerSessionCoordinator sessionCoordinator;
+    private PlayerPresenceCoordinator presenceCoordinator;
+    private PlayerPresenceRuntimeService presenceRuntimeService;
     private PlayerDisconnectListener playerDisconnectListener;
     private PlayerSessionReleaseService releaseService;
     private PlayerSessionRenewalService sessionRenewalService;
@@ -109,8 +112,7 @@ public final class TheosferaProxy {
     private ProxyInstanceIdentity proxyInstanceIdentity;
     private BackendKickFailoverListener backendKickFailoverListener;
     private LobbyCommandRegistration lobbyCommandRegistration;
-    private ProxyStatusCommandRegistration
-            proxyStatusCommandRegistration;
+    private ProxyStatusCommandRegistration proxyStatusCommandRegistration;
     private BackendHealthCheckScheduler healthCheckScheduler;
     private VelocityRedisCoordinationBootstrap coordinationBootstrap;
     private boolean operationalSurfaceActive;
@@ -124,65 +126,25 @@ public final class TheosferaProxy {
         this.proxyServer = proxyServer;
         this.logger = logger;
         this.dataDirectory = dataDirectory;
-
-        this.channelRegistration =
-                new ProtocolChannelRegistration(
-                        proxyServer.getChannelRegistrar()
-                );
-
-        this.identityRegistry =
-                new BackendIdentityRegistry();
-
-        this.sessionRegistry =
-                new AuthenticatedPlayerSessionRegistry();
-
-        this.sessionLeaseBindingRegistry =
-                new PlayerSessionLeaseBindingRegistry();
-
-        this.presenceRegistry =
-                new PlayerServerPresenceRegistry(
-                        sessionRegistry
-                );
-
-        this.transferRegistry =
-                new PendingPlayerTransferRegistry();
-
-        this.capacityRegistry =
-                new BackendCapacityReservationRegistry();
-
-        this.bootstrapRegistry =
-                new BackendBootstrapRegistry();
-
-        this.failoverRegistry =
-                new PendingPlayerFailoverRegistry();
+        this.channelRegistration = new ProtocolChannelRegistration(proxyServer.getChannelRegistrar());
+        this.identityRegistry = new BackendIdentityRegistry();
+        this.sessionRegistry = new AuthenticatedPlayerSessionRegistry();
+        this.sessionLeaseBindingRegistry = new PlayerSessionLeaseBindingRegistry();
+        this.presenceRegistry = new PlayerServerPresenceRegistry(sessionRegistry);
+        this.transferRegistry = new PendingPlayerTransferRegistry();
+        this.capacityRegistry = new BackendCapacityReservationRegistry();
+        this.bootstrapRegistry = new BackendBootstrapRegistry();
+        this.failoverRegistry = new PendingPlayerFailoverRegistry();
 
         Clock clock = Clock.systemUTC();
-
-        this.healthRegistry =
-                new BackendHealthRegistry(
-                        clock,
-                        Duration.ofSeconds(15)
-                );
-
-        this.pendingPingRegistry =
-                new PendingBackendPingRegistry(
-                        clock,
-                        Duration.ofSeconds(10)
-                );
-
+        this.healthRegistry = new BackendHealthRegistry(clock, Duration.ofSeconds(15));
+        this.pendingPingRegistry = new PendingBackendPingRegistry(clock, Duration.ofSeconds(10));
         this.incarnationId = UUID.randomUUID();
-
-        this.releaseTimeoutScheduler =
-                new VelocityPlayerSessionReleaseTimeoutScheduler(
-                        proxyServer,
-                        this
-                );
+        this.releaseTimeoutScheduler = new VelocityPlayerSessionReleaseTimeoutScheduler(proxyServer, this);
     }
 
     @Subscribe
-    public void onProxyInitialization(
-            final ProxyInitializeEvent event
-    ) {
+    public void onProxyInitialization(final ProxyInitializeEvent event) {
         initializeProxyInstanceIdentity();
 
         coordinationBootstrap = new VelocityRedisCoordinationBootstrap(
@@ -196,10 +158,7 @@ public final class TheosferaProxy {
 
         final boolean coordinationReady;
         try {
-            coordinationReady = coordinationBootstrap
-                    .start()
-                    .toCompletableFuture()
-                    .join();
+            coordinationReady = coordinationBootstrap.start().toCompletableFuture().join();
         } catch (RuntimeException exception) {
             logger.error(
                     "TheosferaProxy quedara cerrado porque la coordinacion Redis no pudo inicializarse.",
@@ -231,20 +190,14 @@ public final class TheosferaProxy {
             throw exception;
         }
 
+        logger.info("Canal de protocolo registrado: {}.", ProtocolChannel.IDENTIFIER.getId());
         logger.info(
-                "Canal de protocolo registrado: {}.",
-                ProtocolChannel.IDENTIFIER.getId()
-        );
-
-        logger.info(
-                "TheosferaProxy iniciado correctamente con membership y sesiones Redis autoritativas."
+                "TheosferaProxy iniciado correctamente con membership, sesiones y presencia Redis autoritativas."
         );
     }
 
     @Subscribe
-    public void onProxyShutdown(
-            final ProxyShutdownEvent event
-    ) {
+    public void onProxyShutdown(final ProxyShutdownEvent event) {
         if (coordinationBootstrap != null) {
             coordinationBootstrap.beginStopping();
         }
@@ -255,117 +208,108 @@ public final class TheosferaProxy {
 
         if (coordinationBootstrap != null) {
             try {
-                boolean released = coordinationBootstrap
-                        .stop()
-                        .toCompletableFuture()
-                        .join();
+                boolean released = coordinationBootstrap.stop().toCompletableFuture().join();
                 if (!released) {
                     logger.warn(
                             "El Proxy se apago sin confirmar la liberacion exacta de membership Redis."
                     );
                 }
             } catch (RuntimeException exception) {
-                logger.warn(
-                        "Fallo durante el cierre de la coordinacion Redis.",
-                        exception
-                );
+                logger.warn("Fallo durante el cierre de la coordinacion Redis.", exception);
             }
         }
 
-        logger.info(
-                "TheosferaProxy apagado correctamente."
-        );
+        logger.info("TheosferaProxy apagado correctamente.");
     }
 
     private void initializeProxyInstanceIdentity() {
         if (proxyInstanceIdentity != null) {
-            throw new IllegalStateException(
-                    "Proxy instance identity is already initialized"
-            );
+            throw new IllegalStateException("Proxy instance identity is already initialized");
         }
-
-        proxyInstanceIdentity =
-                new ProxyInstanceIdentity(
-                        new ProxyInstanceIdentityConfigLoader(
-                                dataDirectory
-                        ).loadProxyName(),
-                        incarnationId
-                );
+        proxyInstanceIdentity = new ProxyInstanceIdentity(
+                new ProxyInstanceIdentityConfigLoader(dataDirectory).loadProxyName(),
+                incarnationId
+        );
     }
 
     private void initializeDistributedPlayerSessions() {
         if (coordinationBootstrap == null
-                || coordinationBootstrap.state()
-                != CoordinationState.HEALTHY) {
+                || coordinationBootstrap.state() != CoordinationState.HEALTHY) {
             throw new IllegalStateException(
                     "Distributed player sessions require healthy Redis coordination"
             );
         }
 
         if (sessionCoordinator != null
+                || presenceCoordinator != null
+                || presenceRuntimeService != null
                 || releaseService != null
                 || playerDisconnectListener != null
                 || sessionRenewalService != null
                 || shutdownReleaseService != null) {
             throw new IllegalStateException(
-                    "Distributed player sessions are already initialized"
+                    "Distributed player session runtime is already initialized"
             );
         }
 
         RedisCoordinationConfig config = coordinationBootstrap.config();
 
-        sessionCoordinator = coordinationBootstrap
-                .createPlayerSessionCoordinator(sessionRegistry);
+        sessionCoordinator = coordinationBootstrap.createPlayerSessionCoordinator(sessionRegistry);
+        presenceCoordinator = coordinationBootstrap.createPlayerPresenceCoordinator();
 
-        releaseService =
-                new PlayerSessionReleaseService(
-                        sessionCoordinator,
-                        sessionLeaseBindingRegistry,
-                        releaseTimeoutScheduler,
-                        logger
-                );
+        releaseService = new PlayerSessionReleaseService(
+                sessionCoordinator,
+                sessionLeaseBindingRegistry,
+                releaseTimeoutScheduler,
+                logger
+        );
 
-        playerDisconnectListener =
-                new PlayerDisconnectListener(
-                        sessionLeaseBindingRegistry,
-                        presenceRegistry,
-                        transferRegistry,
-                        capacityRegistry,
-                        sessionRegistry,
-                        releaseService,
-                        logger
-                );
+        presenceRuntimeService = new PlayerPresenceRuntimeService(
+                proxyServer,
+                presenceCoordinator,
+                sessionLeaseBindingRegistry,
+                presenceRegistry,
+                new VelocityPlayerPresenceRenewalScheduler(proxyServer, this),
+                config.playerSessionRenewInterval(),
+                logger
+        );
 
-        sessionRenewalService =
-                new PlayerSessionRenewalService(
-                        proxyServer,
-                        sessionCoordinator,
-                        sessionLeaseBindingRegistry,
-                        sessionRegistry,
-                        new VelocityPlayerSessionRenewalScheduler(
-                                proxyServer,
-                                this
-                        ),
-                        Clock.systemUTC(),
-                        config.playerSessionTtl(),
-                        config.playerSessionRenewInterval(),
-                        logger
-                );
+        playerDisconnectListener = new PlayerDisconnectListener(
+                sessionLeaseBindingRegistry,
+                presenceRegistry,
+                transferRegistry,
+                capacityRegistry,
+                sessionRegistry,
+                releaseService,
+                presenceRuntimeService,
+                logger
+        );
 
-        shutdownReleaseService =
-                new PlayerSessionShutdownReleaseService(
-                        proxyServer,
-                        sessionCoordinator,
-                        sessionLeaseBindingRegistry,
-                        logger
-                );
+        sessionRenewalService = new PlayerSessionRenewalService(
+                proxyServer,
+                sessionCoordinator,
+                sessionLeaseBindingRegistry,
+                sessionRegistry,
+                new VelocityPlayerSessionRenewalScheduler(proxyServer, this),
+                Clock.systemUTC(),
+                config.playerSessionTtl(),
+                config.playerSessionRenewInterval(),
+                logger
+        );
+
+        shutdownReleaseService = new PlayerSessionShutdownReleaseService(
+                proxyServer,
+                sessionCoordinator,
+                sessionLeaseBindingRegistry,
+                presenceRegistry,
+                presenceRuntimeService,
+                logger
+        );
     }
 
     private void activateOperationalSurface() {
         if (operationalSurfaceActive) {
-            throw new IllegalStateException(
-                    "Proxy operational surface is already active"
-            );
+            throw new IllegalStateException("Proxy operational surface is already active");
         }
 
         requireOperationalSessionRuntime();
@@ -374,27 +318,16 @@ public final class TheosferaProxy {
         channelRegistration.register();
         lobbyCommandRegistration.register();
         proxyStatusCommandRegistration.register();
-
-        proxyServer.getEventManager().register(
-                this,
-                protocolMessageListener
-        );
-
-        proxyServer.getEventManager().register(
-                this,
-                playerDisconnectListener
-        );
-
-        proxyServer.getEventManager().register(
-                this,
-                backendKickFailoverListener
-        );
+        proxyServer.getEventManager().register(this, protocolMessageListener);
+        proxyServer.getEventManager().register(this, playerDisconnectListener);
+        proxyServer.getEventManager().register(this, backendKickFailoverListener);
 
         if (healthCheckScheduler != null) {
             healthCheckScheduler.start();
         }
 
         sessionRenewalService.start();
+        presenceRuntimeService.start();
     }
 
     private void deactivateOperationalSurface() {
@@ -404,49 +337,33 @@ public final class TheosferaProxy {
 
         operationalSurfaceActive = false;
 
+        if (presenceRuntimeService != null) {
+            presenceRuntimeService.stop();
+        }
         if (sessionRenewalService != null) {
             sessionRenewalService.stop();
         }
-
         if (healthCheckScheduler != null) {
             healthCheckScheduler.stop();
         }
-
         if (protocolMessageListener != null) {
-            proxyServer.getEventManager().unregisterListener(
-                    this,
-                    protocolMessageListener
-            );
+            proxyServer.getEventManager().unregisterListener(this, protocolMessageListener);
         }
-
         if (lobbyCommandRegistration != null) {
             lobbyCommandRegistration.unregister();
         }
-
         if (proxyStatusCommandRegistration != null) {
             proxyStatusCommandRegistration.unregister();
         }
-
         if (playerDisconnectListener != null) {
-            proxyServer.getEventManager().unregisterListener(
-                    this,
-                    playerDisconnectListener
-            );
+            proxyServer.getEventManager().unregisterListener(this, playerDisconnectListener);
         }
-
         if (backendKickFailoverListener != null) {
-            proxyServer.getEventManager().unregisterListener(
-                    this,
-                    backendKickFailoverListener
-            );
+            proxyServer.getEventManager().unregisterListener(this, backendKickFailoverListener);
         }
 
         channelRegistration.unregister();
-
-        logger.info(
-                "Canal de protocolo desregistrado: {}.",
-                ProtocolChannel.IDENTIFIER.getId()
-        );
+        logger.info("Canal de protocolo desregistrado: {}.", ProtocolChannel.IDENTIFIER.getId());
     }
 
     private void releaseBoundPlayerSessionsBeforeShutdown() {
@@ -455,15 +372,11 @@ public final class TheosferaProxy {
         }
 
         try {
-            PlayerSessionShutdownReleaseService.ReleaseSummary summary =
-                    shutdownReleaseService
-                            .releaseBoundSessions()
-                            .toCompletableFuture()
-                            .orTimeout(
-                                    SHUTDOWN_SESSION_RELEASE_TIMEOUT_SECONDS,
-                                    TimeUnit.SECONDS
-                            )
-                            .join();
+            PlayerSessionShutdownReleaseService.ReleaseSummary summary = shutdownReleaseService
+                    .releaseBoundSessions()
+                    .toCompletableFuture()
+                    .orTimeout(SHUTDOWN_SESSION_RELEASE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .join();
 
             if (!summary.complete()) {
                 logger.warn(
@@ -498,135 +411,90 @@ public final class TheosferaProxy {
 
     private void requireOperationalSessionRuntime() {
         if (sessionCoordinator == null
+                || presenceCoordinator == null
+                || presenceRuntimeService == null
                 || releaseService == null
                 || playerDisconnectListener == null
                 || sessionRenewalService == null
                 || shutdownReleaseService == null) {
             throw new IllegalStateException(
-                    "Distributed player session runtime is not initialized"
+                    "Distributed player session and presence runtime is not initialized"
             );
         }
     }
 
     private void initializeProtocolMessaging() {
         if (protocolMessageListener != null) {
-            throw new IllegalStateException(
-                    "Protocol messaging is already initialized"
-            );
+            throw new IllegalStateException("Protocol messaging is already initialized");
         }
-
         if (proxyInstanceIdentity == null) {
-            throw new IllegalStateException(
-                    "Proxy instance identity must be initialized first"
-            );
+            throw new IllegalStateException("Proxy instance identity must be initialized first");
         }
 
         requireOperationalSessionRuntime();
 
         BackendAuthorizationPolicy authorizationPolicy =
-                new BackendPolicyConfigLoader(
-                        dataDirectory
-                ).load();
+                new BackendPolicyConfigLoader(dataDirectory).load();
+        BackendMessageAuthorizer messageAuthorizer = new BackendMessageAuthorizer(identityRegistry);
+        ProtocolMessageSender messageSender = new ProtocolMessageSender();
+        BackendPingConnectionResolver pingConnectionResolver = new BackendPingConnectionResolver(proxyServer);
+        BackendPingEmitter pingEmitter = new BackendPingEmitter(
+                Clock.systemUTC(),
+                UUID::randomUUID,
+                pendingPingRegistry,
+                pingConnectionResolver,
+                messageSender,
+                logger
+        );
+        BackendHealthCheckTask healthCheckTask = new BackendHealthCheckTask(
+                authorizationPolicy,
+                pingEmitter,
+                logger
+        );
+        healthCheckScheduler = new BackendHealthCheckScheduler(
+                proxyServer,
+                this,
+                healthCheckTask,
+                logger
+        );
 
-        BackendMessageAuthorizer messageAuthorizer =
-                new BackendMessageAuthorizer(
-                        identityRegistry
-                );
+        PlayerAuthenticationAckSender authenticationAckSender =
+                new PlayerAuthenticationAckSender(messageSender, logger);
+        VelocityPlayerSessionAcquisitionTimeoutScheduler acquisitionTimeoutScheduler =
+                new VelocityPlayerSessionAcquisitionTimeoutScheduler(proxyServer, this);
+        TransferTargetResolver targetResolver = new TransferTargetResolver(
+                proxyServer,
+                authorizationPolicy,
+                identityRegistry,
+                healthRegistry,
+                capacityRegistry
+        );
+        PlayerTransferExecutor transferExecutor = new PlayerTransferExecutor();
+        TransferResultSender transferResultSender = new TransferResultSender(messageSender, logger);
+        LobbyTransferService lobbyTransferService = new LobbyTransferService(
+                sessionRegistry,
+                transferRegistry,
+                bootstrapRegistry,
+                targetResolver,
+                transferExecutor
+        );
 
-        ProtocolMessageSender messageSender =
-                new ProtocolMessageSender();
-
-        BackendPingConnectionResolver pingConnectionResolver =
-                new BackendPingConnectionResolver(
-                        proxyServer
-                );
-
-        BackendPingEmitter pingEmitter =
-                new BackendPingEmitter(
-                        Clock.systemUTC(),
-                        UUID::randomUUID,
-                        pendingPingRegistry,
-                        pingConnectionResolver,
-                        messageSender,
-                        logger
-                );
-
-        BackendHealthCheckTask healthCheckTask =
-                new BackendHealthCheckTask(
-                        authorizationPolicy,
-                        pingEmitter,
-                        logger
-                );
-
-        healthCheckScheduler =
-                new BackendHealthCheckScheduler(
-                        proxyServer,
-                        this,
-                        healthCheckTask,
-                        logger
-                );
-
-        PlayerAuthenticationAckSender
-                authenticationAckSender =
-                new PlayerAuthenticationAckSender(
-                        messageSender,
-                        logger
-                );
-
-        VelocityPlayerSessionAcquisitionTimeoutScheduler
-                acquisitionTimeoutScheduler =
-                new VelocityPlayerSessionAcquisitionTimeoutScheduler(
-                        proxyServer,
-                        this
-                );
-
-        TransferTargetResolver targetResolver =
-                new TransferTargetResolver(
-                        proxyServer,
-                        authorizationPolicy,
-                        identityRegistry,
-                        healthRegistry,
-                        capacityRegistry
-                );
-
-        PlayerTransferExecutor transferExecutor =
-                new PlayerTransferExecutor();
-
-        TransferResultSender transferResultSender =
-                new TransferResultSender(
-                        messageSender,
-                        logger
-                );
-
-        LobbyTransferService lobbyTransferService =
-                new LobbyTransferService(
+        backendKickFailoverListener = new BackendKickFailoverListener(
+                new BackendKickFailoverService(
                         sessionRegistry,
-                        transferRegistry,
-                        bootstrapRegistry,
+                        identityRegistry,
                         targetResolver,
-                        transferExecutor
-                );
+                        bootstrapRegistry,
+                        failoverRegistry
+                )
+        );
+        lobbyCommandRegistration = new LobbyCommandRegistration(
+                proxyServer,
+                this,
+                new LobbyCommand(lobbyTransferService)
+        );
 
-        backendKickFailoverListener =
-                new BackendKickFailoverListener(
-                        new BackendKickFailoverService(
-                                sessionRegistry,
-                                identityRegistry,
-                                targetResolver,
-                                bootstrapRegistry,
-                                failoverRegistry
-                        )
-                );
-
-        lobbyCommandRegistration =
-                new LobbyCommandRegistration(
-                        proxyServer,
-                        this,
-                        new LobbyCommand(lobbyTransferService)
-                );
-
-        BackendOperationalSnapshotService
-                operationalSnapshotService =
+        BackendOperationalSnapshotService operationalSnapshotService =
                 new BackendOperationalSnapshotService(
                         proxyServer,
                         authorizationPolicy,
@@ -635,78 +503,62 @@ public final class TheosferaProxy {
                         capacityRegistry,
                         bootstrapRegistry
                 );
+        proxyStatusCommandRegistration = new ProxyStatusCommandRegistration(
+                proxyServer,
+                this,
+                new ProxyStatusCommand(operationalSnapshotService)
+        );
 
-        proxyStatusCommandRegistration =
-                new ProxyStatusCommandRegistration(
-                        proxyServer,
-                        this,
-                        new ProxyStatusCommand(
-                                operationalSnapshotService
+        ProtocolMessageDispatcher dispatcher = new ProtocolMessageDispatcher(
+                List.of(
+                        new BackendHelloMessageHandler(
+                                authorizationPolicy,
+                                identityRegistry,
+                                bootstrapRegistry,
+                                messageSender,
+                                logger
+                        ),
+                        new PingMessageHandler(messageSender, logger),
+                        new PongMessageHandler(pendingPingRegistry, healthRegistry, logger),
+                        new PlayerAuthenticatedMessageHandler(
+                                sessionCoordinator,
+                                sessionLeaseBindingRegistry,
+                                proxyInstanceIdentity,
+                                authenticationAckSender,
+                                acquisitionTimeoutScheduler,
+                                releaseService,
+                                logger
+                        ),
+                        new PlayerServerReadyMessageHandler(
+                                presenceRuntimeService,
+                                logger
+                        ),
+                        new TransferRequestMessageHandler(
+                                proxyServer,
+                                identityRegistry,
+                                sessionRegistry,
+                                presenceRegistry,
+                                transferRegistry,
+                                bootstrapRegistry,
+                                targetResolver,
+                                transferExecutor,
+                                transferResultSender,
+                                logger
                         )
-                );
+                )
+        );
 
-        ProtocolMessageDispatcher dispatcher =
-                new ProtocolMessageDispatcher(
-                        List.of(
-                                new BackendHelloMessageHandler(
-                                        authorizationPolicy,
-                                        identityRegistry,
-                                        bootstrapRegistry,
-                                        messageSender,
-                                        logger
-                                ),
-                                new PingMessageHandler(
-                                        messageSender,
-                                        logger
-                                ),
-                                new PongMessageHandler(
-                                        pendingPingRegistry,
-                                        healthRegistry,
-                                        logger
-                                ),
-                                new PlayerAuthenticatedMessageHandler(
-                                        sessionCoordinator,
-                                        sessionLeaseBindingRegistry,
-                                        proxyInstanceIdentity,
-                                        authenticationAckSender,
-                                        acquisitionTimeoutScheduler,
-                                        releaseService,
-                                        logger
-                                ),
-                                new PlayerServerReadyMessageHandler(
-                                        presenceRegistry,
-                                        logger
-                                ),
-                                new TransferRequestMessageHandler(
-                                        proxyServer,
-                                        identityRegistry,
-                                        sessionRegistry,
-                                        presenceRegistry,
-                                        transferRegistry,
-                                        bootstrapRegistry,
-                                        targetResolver,
-                                        transferExecutor,
-                                        transferResultSender,
-                                        logger
-                                )
-                        )
-                );
-
-        protocolMessageListener =
-                new ProtocolMessageListener(
-                        logger,
-                        messageAuthorizer,
-                        dispatcher,
-                        () -> coordinationBootstrap != null
-                                && coordinationBootstrap.state()
-                                == CoordinationState.HEALTHY
-                );
+        protocolMessageListener = new ProtocolMessageListener(
+                logger,
+                messageAuthorizer,
+                dispatcher,
+                () -> coordinationBootstrap != null
+                        && coordinationBootstrap.state() == CoordinationState.HEALTHY
+        );
 
         logger.info(
                 "Política de backends cargada: {} autorizados.",
-                authorizationPolicy
-                        .authorizedBackendNames()
-                        .size()
+                authorizationPolicy.authorizedBackendNames().size()
         );
     }
 
