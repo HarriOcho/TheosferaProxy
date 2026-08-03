@@ -1,6 +1,10 @@
 package com.theosfera.proxy.coordination.distributed.redis;
 
+import com.theosfera.proxy.coordination.BackendCapacityReserveRequest;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
+import com.theosfera.proxy.coordination.PlayerSessionLease;
+import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
+import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.transfer.BackendCapacityReservation;
 import org.junit.jupiter.api.Test;
 
@@ -16,15 +20,34 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RedisBackendCapacityCoordinatorTest {
 
     private static final Duration TTL = Duration.ofSeconds(10);
+    private static final UUID PLAYER_ID = UUID.randomUUID();
     private static final BackendCapacityReservation RESERVATION =
             new BackendCapacityReservation(
                     UUID.randomUUID(),
-                    UUID.randomUUID(),
+                    PLAYER_ID,
                     "lobby-1"
+            );
+    private static final PlayerSessionLease LEASE =
+            new PlayerSessionLease(
+                    new AuthenticatedPlayerSession(
+                            PLAYER_ID,
+                            "HarriOcho",
+                            1000L
+                    ),
+                    new ProxyInstanceIdentity(
+                            "proxy-1",
+                            UUID.randomUUID()
+                    ),
+                    7L
+            );
+    private static final BackendCapacityReserveRequest REQUEST =
+            new BackendCapacityReserveRequest(
+                    RESERVATION,
+                    LEASE
             );
 
     @Test
-    void delegatesReservationWithConfiguredTtl() {
+    void delegatesReservationWithConfiguredTtlAndExactLease() {
         RecordingStore store = new RecordingStore();
         store.reserveResult = CompletableFuture.completedFuture(
                 BackendCapacityReserveResult.withReservation(
@@ -36,12 +59,12 @@ class RedisBackendCapacityCoordinatorTest {
                 new RedisBackendCapacityCoordinator(store, TTL);
 
         BackendCapacityReserveResult result = coordinator
-                .reserve(RESERVATION, 100)
+                .reserve(REQUEST, 100)
                 .toCompletableFuture()
                 .join();
 
         assertEquals(BackendCapacityReserveResult.Status.RESERVED, result.status());
-        assertEquals(RESERVATION, store.reservation);
+        assertEquals(REQUEST, store.request);
         assertEquals(100, store.capacity);
         assertEquals(TTL, store.ttl);
     }
@@ -56,7 +79,7 @@ class RedisBackendCapacityCoordinatorTest {
                 new RedisBackendCapacityCoordinator(store, TTL);
 
         BackendCapacityReserveResult result = coordinator
-                .reserve(RESERVATION, 100)
+                .reserve(REQUEST, 100)
                 .toCompletableFuture()
                 .join();
 
@@ -76,7 +99,7 @@ class RedisBackendCapacityCoordinatorTest {
                 new RedisBackendCapacityCoordinator(store, TTL);
 
         assertFalse(
-                coordinator.releaseIfOwned(RESERVATION)
+                coordinator.releaseIfOwned(REQUEST)
                         .toCompletableFuture()
                         .join()
         );
@@ -108,7 +131,7 @@ class RedisBackendCapacityCoordinatorTest {
                 new RedisBackendCapacityCoordinator(store, TTL);
 
         assertTrue(
-                coordinator.releaseIfOwned(RESERVATION)
+                coordinator.releaseIfOwned(REQUEST)
                         .toCompletableFuture()
                         .join()
         );
@@ -120,10 +143,23 @@ class RedisBackendCapacityCoordinatorTest {
         );
     }
 
+    @Test
+    void rejectsSubMillisecondReservationTtl() {
+        RecordingStore store = new RecordingStore();
+
+        assertThrows(
+                IllegalArgumentException.class,
+                () -> new RedisBackendCapacityCoordinator(
+                        store,
+                        Duration.ofNanos(1)
+                )
+        );
+    }
+
     private static final class RecordingStore
             implements RedisBackendCapacityStore {
 
-        private BackendCapacityReservation reservation;
+        private BackendCapacityReserveRequest request;
         private int capacity;
         private Duration ttl;
         private CompletableFuture<BackendCapacityReserveResult> reserveResult =
@@ -139,11 +175,11 @@ class RedisBackendCapacityCoordinatorTest {
 
         @Override
         public CompletableFuture<BackendCapacityReserveResult> reserve(
-                BackendCapacityReservation reservation,
+                BackendCapacityReserveRequest request,
                 int capacity,
                 Duration ttl
         ) {
-            this.reservation = reservation;
+            this.request = request;
             this.capacity = capacity;
             this.ttl = ttl;
             return reserveResult;
@@ -151,7 +187,7 @@ class RedisBackendCapacityCoordinatorTest {
 
         @Override
         public CompletableFuture<Boolean> releaseIfOwned(
-                BackendCapacityReservation expected
+                BackendCapacityReserveRequest expected
         ) {
             return releaseResult;
         }
