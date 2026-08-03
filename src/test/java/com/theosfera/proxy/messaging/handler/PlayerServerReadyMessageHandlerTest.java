@@ -305,7 +305,7 @@ class PlayerServerReadyMessageHandlerTest {
         assertThrows(
                 NullPointerException.class,
                 () -> new PlayerServerReadyMessageHandler(
-                        null,
+                        (PlayerServerPresenceRegistry) null,
                         logger
                 )
         );
