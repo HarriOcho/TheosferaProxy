@@ -47,6 +47,8 @@ class BackendCapacityReserveResultTest {
         for (BackendCapacityReserveResult.Status status : new BackendCapacityReserveResult.Status[]{
                 BackendCapacityReserveResult.Status.REQUEST_ID_CONFLICT,
                 BackendCapacityReserveResult.Status.NO_CAPACITY,
+                BackendCapacityReserveResult.Status.SESSION_NOT_FOUND,
+                BackendCapacityReserveResult.Status.NOT_SESSION_OWNER,
                 BackendCapacityReserveResult.Status.OCCUPANCY_UNAVAILABLE,
                 BackendCapacityReserveResult.Status.COORDINATION_UNAVAILABLE
         }) {
@@ -80,7 +82,7 @@ class BackendCapacityReserveResultTest {
     void unsuccessfulStatusesExposeEmptyReservation() {
         BackendCapacityReserveResult unavailable =
                 BackendCapacityReserveResult.withoutReservation(
-                        BackendCapacityReserveResult.Status.OCCUPANCY_UNAVAILABLE
+                        BackendCapacityReserveResult.Status.NOT_SESSION_OWNER
                 );
 
         assertTrue(unavailable.reservedCapacity().isEmpty());
