@@ -2581,3 +2581,152 @@ Punto exacto de reanudación:
 - conservar ownership explícito, atomicidad, fencing y política fail-closed.
 
 No introducir parties, amigos o escuadrones dentro del siguiente incremento.
+
+## 31. Checkpoint - Redis Backend Capacity Runtime Rollout Validation
+
+La barrera de rollout definida en el checkpoint `#30` quedo completada
+documentalmente despues de una validacion runtime real multi-proxy.
+
+Este checkpoint supersede las afirmaciones del `#30` que indicaban que la
+validacion runtime multi-proxy del indice global y la politica productiva de
+`reservationTtl` seguian pendientes. El `#30` se conserva como checkpoint
+historico del foundation; este checkpoint cierra la evidencia posterior al
+rollout.
+
+Validacion runtime confirmada:
+
+- Redis Open Source `7.4.2` estuvo operativo en `127.0.0.1:6379`;
+- se ejecutaron simultaneamente dos procesos Velocity:
+  - `proxy-1` en `127.0.0.1:25565`;
+  - `proxy-2` en `127.0.0.1:25564`;
+- ambos adquirieron membresias Redis independientes y renovables;
+- dos jugadores distintos quedaron simultaneamente en `lobby-1` mediante
+  proxies distintos, uno propiedad de `proxy-1` y otro de `proxy-2`;
+- el indice global
+  `theosfera:coordination:backend-presence:lobby-1` alcanzo `ZCARD = 2`;
+- los hashes `player-presence` confirmaron ownership distinto por jugador:
+  jugador A -> `proxy-1` y jugador B -> `proxy-2`;
+- ambos scores del sorted set de presencia avanzaron despues de esperar mas de
+  un intervalo de renovacion, confirmando renovacion activa desde ambos
+  proxies;
+- no aparecieron warnings de `PLAYER_SERVER_READY` no autorizado ni `PONG` no
+  autorizado;
+- despues del fix de TheosferaCore, cada Proxy registro independientemente
+  `auth-1` y `lobby-1` mediante su propio carrier.
+
+Durante la validacion se descubrio un blocker real fuera de TheosferaProxy:
+`BackendHandshakeService` en TheosferaCore mantenia autorizacion global por
+backend, por lo que un carrier conectado mediante `proxy-2` podia heredar
+autorizacion obtenida originalmente mediante `proxy-1`.
+
+Prerequisite/fix confirmado:
+
+- TheosferaCore PR `#17`;
+- merge commit `bd29cfe`;
+- `fix(network): scope backend handshake authorization by carrier (#17)`;
+- el fix cambio la autorizacion a carrier-scoped y permitio que cada Proxy
+  registrara los backends por su propio carrier.
+
+Movimiento multi-proxy validado:
+
+- inicialmente `lobby-1` tenia occupancy `2`;
+- el jugador de `proxy-2` se movio de `lobby-1` a `skyblock-1`;
+- despues del movimiento:
+  - `lobby-1` quedo con `ZCARD = 1`;
+  - `skyblock-1` quedo con `ZCARD = 1`;
+- cada indice contenia exactamente al jugador esperado.
+
+Clean disconnect del jugador de `proxy-2`:
+
+- `lobby-1` permanecio en `1`;
+- `skyblock-1` paso a `0`;
+- `player-presence` del jugador desconectado dejo de existir;
+- `player-session` del jugador desconectado dejo de existir.
+
+Crash abrupto de `proxy-1`:
+
+- antes del crash, `lobby-1` tenia raw `ZCARD = 1`, la player session existia y
+  la membership de `proxy-1` tenia TTL positivo;
+- despues del crash, la membership de `proxy-1` expiro y la player session
+  expiro por TTL;
+- el raw `ZCARD` permanecio temporalmente en `1`, como se esperaba porque un
+  ZSET no elimina miembros por score automaticamente.
+
+Despues de superar el TTL, la lectura/pruning equivalente al algoritmo
+autoritativo ejecuto:
+
+```text
+Redis TIME
+ZREMRANGEBYSCORE -inf nowMillis
+ZCARD
+```
+
+Resultado:
+
+- `1` miembro stale eliminado;
+- occupancy resultante `0`;
+- `ZCARD` posterior `0`;
+- `ZRANGE` posterior vacio.
+
+Conclusiones del rollout:
+
+- un `ZCARD` crudo no es autoridad despues de crashes;
+- la lectura con `Redis TIME` + pruning si produce occupancy autoritativa;
+- en la topologia dev validada solo participaron `proxy-1` y `proxy-2`;
+- ambos proxies ejecutaban el foundation moderno;
+- no participo ningun Proxy legacy que escribiera presencia sin mantener el
+  indice global.
+
+Decision cerrada de `reservationTtl`:
+
+```text
+reservationTtl productivo inicial = 20 segundos
+```
+
+Justificacion:
+
+- `PlayerTransferExecutor.DEFAULT_TIMEOUT` actual es `10` segundos;
+- una reserva debe vivir mas que el intento de conexion que protege;
+- `20` segundos da un margen de `10` segundos sobre el timeout maximo normal;
+- `PlayerTransferRetryCoordinator` libera la reserva de capacidad del intento
+  terminado antes de iniciar un retry alternativo;
+- por tanto `reservationTtl` no necesita cubrir toda una cadena de retries:
+  protege una reserva de un intento/backend concreto;
+- el TTL es fallback de recuperacion ante crash, no sustituto del release
+  exact-match;
+- `20` segundos limita cuanto tiempo puede permanecer capacidad fantasma
+  despues de una caida sin arriesgar expiracion durante el intento normal;
+- Redis sigue siendo fail-closed;
+- no existe fallback silencioso a `BackendCapacityReservationRegistry`;
+- no se introduce todavia una propiedad de configuracion ni se fija el nombre
+  de esa property; eso pertenece al wiring productivo siguiente.
+
+Punto exacto de reanudacion:
+
+Disenar el wiring productivo de capacidad distribuida.
+
+Restricciones para el siguiente milestone:
+
+- `TransferTargetResolver` no debe conocer Redis, claves Redis, Lua ni Lettuce;
+- `BackendCapacityCoordinator` es asincrono; no forzar llamadas bloqueantes para
+  encajarlo artificialmente en el resolver sincrono actual;
+- separar seleccion/candidatos de allocation/reservation si es necesario;
+- una reserva distribuida debe recibir el `PlayerSessionLease` exacto;
+- no usar connected player count local como autoridad;
+- mapear explicitamente:
+  - `RESERVED`;
+  - `ALREADY_RESERVED`;
+  - `REQUEST_ID_CONFLICT`;
+  - `NO_CAPACITY`;
+  - `SESSION_NOT_FOUND`;
+  - `NOT_SESSION_OWNER`;
+  - `OCCUPANCY_UNAVAILABLE`;
+  - `COORDINATION_UNAVAILABLE`;
+- Redis/coordination unavailable debe fallar cerrado;
+- jamas fallback automatico a `BackendCapacityReservationRegistry` en modo
+  distribuido;
+- preservar release exact-match en success, failure, rejection, timeout, retry,
+  disconnect/lifecycle apropiado;
+- distributed transfer coordination y distributed backend bootstrap continuan
+  siendo fronteras posteriores e independientes;
+- no introducir parties, friends ni squads.
