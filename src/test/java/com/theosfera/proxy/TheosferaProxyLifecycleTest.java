@@ -2,9 +2,14 @@ package com.theosfera.proxy;
 
 import com.theosfera.proxy.command.LobbyCommand;
 import com.theosfera.proxy.command.ProxyStatusCommand;
+import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.PlayerPresenceCoordinator;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
+import com.theosfera.proxy.coordination.distributed.redis.RedisBackendCapacityCoordinator;
+import com.theosfera.proxy.coordination.distributed.redis.RedisBackendOccupancyCoordinator;
+import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfig;
+import com.theosfera.proxy.coordination.velocity.VelocityRedisCoordinationBootstrap;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
 import com.theosfera.proxy.messaging.ProtocolMessageHandler;
@@ -32,6 +37,7 @@ import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -92,6 +98,12 @@ class TheosferaProxyLifecycleTest {
 
         verify(fixture.sessionRenewalService()).start();
         verify(fixture.presenceRuntimeService()).start();
+        verify(fixture.coordinationBootstrap())
+                .createBackendCapacityCoordinator(
+                        Duration.ofSeconds(20)
+                );
+        verify(fixture.coordinationBootstrap())
+                .createBackendOccupancyCoordinator(any());
 
         verify(commandManager).register(
                 eq(lobbyCommandMeta),
@@ -212,7 +224,37 @@ class TheosferaProxyLifecycleTest {
                 mock(PlayerPresenceRuntimeService.class);
         setField(plugin, "presenceRuntimeService", presenceRuntimeService);
 
-        return new RuntimeFixture(renewalService, presenceRuntimeService);
+        VelocityRedisCoordinationBootstrap coordinationBootstrap =
+                mock(VelocityRedisCoordinationBootstrap.class);
+        when(coordinationBootstrap.state())
+                .thenReturn(CoordinationState.HEALTHY);
+        when(coordinationBootstrap.config())
+                .thenReturn(
+                        new RedisCoordinationConfig(
+                                "redis://127.0.0.1:6379",
+                                Duration.ofSeconds(15),
+                                Duration.ofSeconds(5),
+                                Duration.ofSeconds(30),
+                                Duration.ofSeconds(10),
+                                Duration.ofSeconds(20)
+                        )
+                );
+        when(coordinationBootstrap.createBackendOccupancyCoordinator(any()))
+                .thenReturn(mock(RedisBackendOccupancyCoordinator.class));
+        when(coordinationBootstrap.createBackendCapacityCoordinator(
+                Duration.ofSeconds(20)
+        )).thenReturn(mock(RedisBackendCapacityCoordinator.class));
+        setField(
+                plugin,
+                "coordinationBootstrap",
+                coordinationBootstrap
+        );
+
+        return new RuntimeFixture(
+                renewalService,
+                presenceRuntimeService,
+                coordinationBootstrap
+        );
     }
 
     private void setField(
@@ -276,7 +318,8 @@ class TheosferaProxyLifecycleTest {
 
     private record RuntimeFixture(
             PlayerSessionRenewalService sessionRenewalService,
-            PlayerPresenceRuntimeService presenceRuntimeService
+            PlayerPresenceRuntimeService presenceRuntimeService,
+            VelocityRedisCoordinationBootstrap coordinationBootstrap
     ) {
     }
 }
