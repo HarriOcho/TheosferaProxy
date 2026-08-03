@@ -15,22 +15,17 @@ import java.util.UUID;
 
 public final class PlayerDisconnectListener {
 
-    private final PlayerSessionLeaseBindingRegistry
-            leaseBindingRegistry;
+    private final PlayerSessionLeaseBindingRegistry leaseBindingRegistry;
     private final PlayerSessionReleaseService releaseService;
-    private final AuthenticatedPlayerSessionRegistry
-            sessionRegistry;
-    private final PlayerServerPresenceRegistry
-            presenceRegistry;
-    private final PendingPlayerTransferRegistry
-            transferRegistry;
-    private final BackendCapacityReservationRegistry
-            capacityRegistry;
+    private final AuthenticatedPlayerSessionRegistry sessionRegistry;
+    private final PlayerServerPresenceRegistry presenceRegistry;
+    private final PendingPlayerTransferRegistry transferRegistry;
+    private final BackendCapacityReservationRegistry capacityRegistry;
+    private final PlayerPresenceRuntimeService presenceRuntimeService;
     private final Logger logger;
 
     public PlayerDisconnectListener(
-            PlayerSessionLeaseBindingRegistry
-                    leaseBindingRegistry,
+            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
             AuthenticatedPlayerSessionRegistry sessionRegistry,
@@ -44,13 +39,13 @@ public final class PlayerDisconnectListener {
                 new BackendCapacityReservationRegistry(),
                 sessionRegistry,
                 releaseService,
+                null,
                 logger
         );
     }
 
     public PlayerDisconnectListener(
-            PlayerSessionLeaseBindingRegistry
-                    leaseBindingRegistry,
+            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
             BackendCapacityReservationRegistry capacityRegistry,
@@ -58,70 +53,74 @@ public final class PlayerDisconnectListener {
             PlayerSessionReleaseService releaseService,
             Logger logger
     ) {
-        this.leaseBindingRegistry =
-                Objects.requireNonNull(
-                        leaseBindingRegistry,
-                        "leaseBindingRegistry cannot be null"
-                );
+        this(
+                leaseBindingRegistry,
+                presenceRegistry,
+                transferRegistry,
+                capacityRegistry,
+                sessionRegistry,
+                releaseService,
+                null,
+                logger
+        );
+    }
 
+    public PlayerDisconnectListener(
+            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
+            PlayerServerPresenceRegistry presenceRegistry,
+            PendingPlayerTransferRegistry transferRegistry,
+            BackendCapacityReservationRegistry capacityRegistry,
+            AuthenticatedPlayerSessionRegistry sessionRegistry,
+            PlayerSessionReleaseService releaseService,
+            PlayerPresenceRuntimeService presenceRuntimeService,
+            Logger logger
+    ) {
+        this.leaseBindingRegistry = Objects.requireNonNull(
+                leaseBindingRegistry,
+                "leaseBindingRegistry cannot be null"
+        );
         this.presenceRegistry = Objects.requireNonNull(
                 presenceRegistry,
                 "presenceRegistry cannot be null"
         );
-
         this.transferRegistry = Objects.requireNonNull(
                 transferRegistry,
                 "transferRegistry cannot be null"
         );
-
         this.capacityRegistry = Objects.requireNonNull(
                 capacityRegistry,
                 "capacityRegistry cannot be null"
         );
-
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
                 "sessionRegistry cannot be null"
         );
-
-        this.logger = Objects.requireNonNull(
-                logger,
-                "logger cannot be null"
-        );
-
         this.releaseService = Objects.requireNonNull(
                 releaseService,
                 "releaseService cannot be null"
+        );
+        this.presenceRuntimeService = presenceRuntimeService;
+        this.logger = Objects.requireNonNull(
+                logger,
+                "logger cannot be null"
         );
     }
 
     @Subscribe
     public void onDisconnect(DisconnectEvent event) {
-        Objects.requireNonNull(
-                event,
-                "event cannot be null"
-        );
+        Objects.requireNonNull(event, "event cannot be null");
 
         Player player = event.getPlayer();
         UUID playerId = player.getUniqueId();
 
         Optional<PendingPlayerTransfer> removedTransfer =
-                transferRegistry
-                        .removeByPlayer(playerId);
-
+                transferRegistry.removeByPlayer(playerId);
         removedTransfer.ifPresent(transfer ->
-                capacityRegistry.removeByRequest(
-                        transfer.requestId()
-                )
+                capacityRegistry.removeByRequest(transfer.requestId())
         );
 
-        boolean transferRemoved =
-                removedTransfer.isPresent();
-
-        boolean presenceRemoved =
-                presenceRegistry
-                        .remove(playerId)
-                        .isPresent();
+        Optional<PlayerServerPresence> removedPresence =
+                presenceRegistry.remove(playerId);
 
         Optional<PlayerSessionLease> lease;
         boolean authenticationRemoved;
@@ -129,39 +128,60 @@ public final class PlayerDisconnectListener {
         synchronized (leaseBindingRegistry) {
             Optional<PlayerSessionLease> authenticatedLease =
                     leaseBindingRegistry.find(player);
-
-            lease =
-                    leaseBindingRegistry
-                            .removeForDisconnect(player);
-
-            authenticationRemoved =
-                    authenticatedLease
-                            .flatMap(ownedLease ->
-                                    sessionRegistry.removeIfMatches(
-                                            ownedLease.session()
-                                    )
-                            )
-                            .isPresent();
+            lease = leaseBindingRegistry.removeForDisconnect(player);
+            authenticationRemoved = authenticatedLease
+                    .flatMap(ownedLease -> sessionRegistry.removeIfMatches(
+                            ownedLease.session()
+                    ))
+                    .isPresent();
         }
 
-        boolean localStateRemoved =
-                transferRemoved
-                        || presenceRemoved
-                        || authenticationRemoved;
+        boolean localStateRemoved = removedTransfer.isPresent()
+                || removedPresence.isPresent()
+                || authenticationRemoved;
 
         if (lease.isEmpty()) {
             if (localStateRemoved) {
                 logStateRemoval(playerId);
             }
-
             return;
         }
 
-        releaseLease(
-                lease.orElseThrow(),
-                playerId,
-                localStateRemoved
-        );
+        PlayerSessionLease ownedLease = lease.orElseThrow();
+        if (presenceRuntimeService == null || removedPresence.isEmpty()) {
+            releaseLease(ownedLease, playerId, localStateRemoved);
+            return;
+        }
+
+        try {
+            presenceRuntimeService.removeIfOwned(
+                    ownedLease,
+                    removedPresence.orElseThrow()
+            ).whenComplete((result, failure) -> {
+                if (failure != null) {
+                    logger.warn(
+                            "No se pudo retirar la presencia Redis de {} antes de liberar su sesion.",
+                            playerId,
+                            failure
+                    );
+                } else if (result.status()
+                        == com.theosfera.proxy.coordination.PlayerPresenceRemoveResult.Status
+                        .COORDINATION_UNAVAILABLE) {
+                    logger.warn(
+                            "La presencia Redis de {} no pudo retirarse durante disconnect; TTL actuara como fallback.",
+                            playerId
+                    );
+                }
+                releaseLease(ownedLease, playerId, localStateRemoved);
+            });
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudo iniciar la retirada de presencia Redis para {}.",
+                    playerId,
+                    exception
+            );
+            releaseLease(ownedLease, playerId, localStateRemoved);
+        }
     }
 
     private void releaseLease(
@@ -173,9 +193,7 @@ public final class PlayerDisconnectListener {
                 lease,
                 new PlayerSessionReleaseService.ReleaseCallbacks() {
                     @Override
-                    public void onNotReserved(
-                            PlayerSessionLease ignored
-                    ) {
+                    public void onNotReserved(PlayerSessionLease ignored) {
                         if (localStateRemoved) {
                             logStateRemoval(playerId);
                         }
@@ -187,12 +205,10 @@ public final class PlayerDisconnectListener {
                             RuntimeException failure
                     ) {
                         logger.error(
-                                "No se pudo iniciar la liberación "
-                                        + "del lease de sesión para {}.",
+                                "No se pudo iniciar la liberacion del lease de sesion para {}.",
                                 playerId,
                                 failure
                         );
-
                         if (localStateRemoved) {
                             logStateRemoval(playerId);
                         }
@@ -204,12 +220,10 @@ public final class PlayerDisconnectListener {
                             Throwable failure
                     ) {
                         logger.error(
-                                "No se pudo liberar el lease "
-                                        + "de sesión para {}.",
+                                "No se pudo liberar el lease de sesion para {}.",
                                 playerId,
                                 failure
                         );
-
                         if (localStateRemoved) {
                             logStateRemoval(playerId);
                         }
@@ -222,13 +236,10 @@ public final class PlayerDisconnectListener {
                     ) {
                         if (!released) {
                             logger.debug(
-                                    "El lease de sesión para {} "
-                                            + "ya no coincidía con la "
-                                            + "propiedad vigente.",
+                                    "El lease de sesion para {} ya no coincidia con la propiedad vigente.",
                                     playerId
                             );
                         }
-
                         if (localStateRemoved || released) {
                             logStateRemoval(playerId);
                         }
@@ -239,10 +250,8 @@ public final class PlayerDisconnectListener {
 
     private void logStateRemoval(UUID playerId) {
         logger.debug(
-                "Estado de sesión eliminado para {} "
-                        + "al desconectarse del proxy.",
+                "Estado de sesion eliminado para {} al desconectarse del proxy.",
                 playerId
         );
     }
-
 }
