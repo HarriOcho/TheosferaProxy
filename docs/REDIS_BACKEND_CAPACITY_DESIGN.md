@@ -227,7 +227,7 @@ No existe fallback automático hacia `BackendCapacityReservationRegistry` si Red
 
 Ambos reutilizan la conexión Lettuce existente y requieren runtime Redis saludable.
 
-No se añadió todavía una propiedad arbitraria de TTL a `redis-coordination.properties`. La política temporal productiva de reservas debe definirse explícitamente cuando se diseñe el wiring.
+No se añadió todavía una propiedad arbitraria de TTL a `redis-coordination.properties`. La política temporal productiva inicial queda definida post-rollout como `20` segundos; la configuración productiva y el nombre de su property pertenecen al wiring siguiente.
 
 ## Barrera de rollout
 
@@ -251,6 +251,121 @@ Hasta completar esa barrera:
 - `BackendCapacityReservationRegistry` sigue siendo la ruta productiva local de transferencias;
 - `TransferTargetResolver` no consume aún capacidad Redis;
 - el coordinator Redis permanece disponible pero sin consumidores productivos de transferencia.
+
+La sección post-rollout siguiente registra la validación que completa esta
+barrera.
+
+## Runtime Rollout Validation
+
+La barrera de rollout anterior quedo satisfecha despues de una validacion
+runtime real multi-proxy. Esta seccion no reescribe el Final Checkpoint
+historico del foundation; documenta la evidencia posterior que habilita el
+siguiente milestone de wiring productivo.
+
+Topologia validada:
+
+- Redis Open Source `7.4.2` en `127.0.0.1:6379`;
+- `proxy-1` en `127.0.0.1:25565`;
+- `proxy-2` en `127.0.0.1:25564`;
+- ambos proxies adquirieron membresias Redis independientes y renovables.
+
+Presencia y ocupacion multi-proxy:
+
+- dos jugadores distintos quedaron simultaneamente en `lobby-1` mediante
+  proxies distintos;
+- el indice global
+  `theosfera:coordination:backend-presence:lobby-1` alcanzo `ZCARD = 2`;
+- los hashes `player-presence` confirmaron ownership distinto:
+  jugador A -> `proxy-1` y jugador B -> `proxy-2`;
+- ambos scores del sorted set avanzaron despues de mas de un intervalo de
+  renovacion, confirmando renewals activos desde ambos proxies;
+- no aparecieron warnings de `PLAYER_SERVER_READY` no autorizado ni `PONG` no
+  autorizado.
+
+Durante el rollout se detecto un blocker real en TheosferaCore:
+`BackendHandshakeService` mantenia autorizacion global por backend, por lo que
+un carrier conectado mediante `proxy-2` podia heredar autorizacion obtenida
+originalmente mediante `proxy-1`.
+
+El prerequisite quedo corregido y fusionado:
+
+- TheosferaCore PR `#17`;
+- merge commit `bd29cfe`;
+- `fix(network): scope backend handshake authorization by carrier (#17)`;
+- despues del fix, cada Proxy registro independientemente `auth-1` y `lobby-1`
+  mediante su propio carrier.
+
+Movimiento y limpieza validados:
+
+- occupancy inicial de `lobby-1`: `2`;
+- el jugador de `proxy-2` se movio `lobby-1` -> `skyblock-1`;
+- despues del movimiento:
+  - `lobby-1` `ZCARD = 1`;
+  - `skyblock-1` `ZCARD = 1`;
+  - cada indice contenia exactamente al jugador esperado;
+- clean disconnect del jugador de `proxy-2`:
+  - `lobby-1` permanecio en `1`;
+  - `skyblock-1` paso a `0`;
+  - `player-presence` del jugador desconectado dejo de existir;
+  - `player-session` del jugador desconectado dejo de existir.
+
+Crash/pruning validado:
+
+- antes del crash abrupto de `proxy-1`, `lobby-1` tenia raw `ZCARD = 1`, la
+  player session existia y la membership de `proxy-1` tenia TTL positivo;
+- despues del crash, la membership expiro y la player session expiro por TTL;
+- raw `ZCARD` permanecio temporalmente en `1`, como se esperaba porque un ZSET
+  no elimina miembros por score automaticamente;
+- despues de superar el TTL, la lectura autoritativa equivalente ejecuto:
+
+```text
+Redis TIME
+ZREMRANGEBYSCORE -inf nowMillis
+ZCARD
+```
+
+Resultado:
+
+- `1` miembro stale eliminado;
+- occupancy resultante `0`;
+- `ZCARD` posterior `0`;
+- `ZRANGE` posterior vacio.
+
+Conclusiones:
+
+- un `ZCARD` crudo no es autoridad despues de crashes;
+- la lectura con `Redis TIME` + pruning si produce occupancy autoritativa;
+- solo participaron `proxy-1` y `proxy-2`;
+- ambos ejecutaban el foundation moderno;
+- no participo ningun Proxy legacy que escribiera presencia sin mantener el
+  indice global;
+- la barrera de rollout queda marcada como satisfecha.
+
+## Politica inicial de reservationTtl
+
+Decision productiva inicial:
+
+```text
+reservationTtl = 20 segundos
+```
+
+Justificacion:
+
+- `PlayerTransferExecutor.DEFAULT_TIMEOUT` actual es `10` segundos;
+- una reserva debe vivir mas que el intento de conexion que protege;
+- `20` segundos da un margen de `10` segundos sobre el timeout maximo normal;
+- `PlayerTransferRetryCoordinator` libera la reserva de capacidad del intento
+  terminado antes de iniciar un retry alternativo;
+- por tanto `reservationTtl` no necesita cubrir toda una cadena de retries:
+  protege una reserva de un intento/backend concreto;
+- el TTL es fallback de recuperacion ante crash, no sustituto del release
+  exact-match;
+- `20` segundos limita cuanto tiempo puede permanecer capacidad fantasma
+  despues de una caida sin arriesgar expiracion durante el intento normal;
+- Redis sigue siendo fail-closed;
+- no existe fallback silencioso a `BackendCapacityReservationRegistry`;
+- no se introduce todavia una propiedad de configuracion ni se inventa el
+  nombre de esa property; eso pertenece al wiring productivo siguiente.
 
 ## Scope completado
 
@@ -279,8 +394,7 @@ Continúa fuera de este checkpoint:
 
 - wiring productivo de `TransferTargetResolver`;
 - migración del flujo productivo desde `BackendCapacityReservationRegistry`;
-- política/configuración final de `reservationTtl`;
-- validación runtime multi-proxy del índice ya calentado;
+- configuración productiva de `reservationTtl` y el nombre de su property;
 - distributed transfer coordination;
 - distributed backend bootstrap coordination.
 
@@ -316,17 +430,34 @@ PR final:
 
 ## Punto exacto de reanudación
 
-El siguiente milestone **no** debe empezar conectando el resolver directamente a Redis.
+La barrera de rollout runtime ya fue satisfecha. El siguiente milestone es:
 
-Primero:
+```text
+Diseñar el wiring productivo de capacidad distribuida.
+```
 
-1. desplegar `main @ 4080f03` en todos los procesos Proxy que participen del runtime distribuido;
-2. permitir que las renovaciones de presencia pueblen/calienten el índice global por backend;
-3. validar en runtime multi-proxy que el conteo agregado refleja correctamente movimientos, renewals, disconnect y expiración;
-4. confirmar que no existen proxies antiguos escribiendo presencia sin mantener el índice;
-5. definir una política explícita y justificable para `reservationTtl`;
-6. solo después diseñar el wiring productivo de `TransferTargetResolver` / allocation flow hacia `BackendCapacityCoordinator`.
+Restricciones:
 
-Transfer coordination y backend bootstrap coordination permanecen como fronteras independientes posteriores.
-
-No introducir parties, amigos o escuadrones dentro del siguiente incremento.
+- `TransferTargetResolver` no debe conocer Redis, claves Redis, Lua ni Lettuce;
+- `BackendCapacityCoordinator` es asíncrono; no forzar llamadas bloqueantes para
+  encajarlo artificialmente en el resolver síncrono actual;
+- separar selección/candidatos de allocation/reservation si es necesario;
+- una reserva distribuida debe recibir el `PlayerSessionLease` exacto;
+- no usar connected player count local como autoridad;
+- mapear explícitamente:
+  - `RESERVED`;
+  - `ALREADY_RESERVED`;
+  - `REQUEST_ID_CONFLICT`;
+  - `NO_CAPACITY`;
+  - `SESSION_NOT_FOUND`;
+  - `NOT_SESSION_OWNER`;
+  - `OCCUPANCY_UNAVAILABLE`;
+  - `COORDINATION_UNAVAILABLE`;
+- Redis/coordination unavailable debe fallar cerrado;
+- jamás fallback automático a `BackendCapacityReservationRegistry` en modo
+  distribuido;
+- preservar release exact-match en success, failure, rejection, timeout, retry,
+  disconnect/lifecycle apropiado;
+- distributed transfer coordination y distributed backend bootstrap continúan
+  siendo fronteras posteriores e independientes;
+- no introducir parties, friends ni squads.
