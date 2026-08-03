@@ -2526,3 +2526,58 @@ La presencia utiliza actualmente `playerSessionTtl` y `playerSessionRenewInterva
 Transferencias, capacidad/reservas y bootstrap distribuidos continúan fuera de scope y deben abordarse como fronteras independientes.
 
 El siguiente hito es decidir explícitamente cuál de esas fronteras distribuidas debe implementarse primero, manteniendo arquitectura modular, ownership explícito y política fail-closed.
+
+## 30. Checkpoint final - Redis Backend Capacity Foundation
+
+El foundation de capacidad distribuida para backends quedó completado y fusionado mediante el PR `#59` (`feat: add Redis backend capacity foundation`).
+
+El checkpoint autoritativo está documentado en `docs/REDIS_BACKEND_CAPACITY_DESIGN.md`, cerrado como Final Checkpoint.
+
+Estado post-merge funcional: `main` @ `4080f03` (`4080f0364f2821af7e5cad15b4e5e5a5edb64702`).
+
+Estado confirmado:
+
+- `BackendOccupancyCoordinator` define la lectura agregada y fail-closed de ocupación por backend;
+- la presencia Redis mantiene un índice global por backend mediante sorted sets sin utilizar `SCAN`;
+- cada miembro del índice de presencia usa `playerId` y un `expiresAt` calculado con `Redis TIME`;
+- publish, update, movimiento, renovación y remove de presencia mantienen el índice dentro de la misma decisión Lua fenced;
+- las lecturas podan miembros vencidos antes de contar;
+- `BackendCapacityCoordinator` y `BackendCapacityReserveRequest` introducen la frontera distribuida de reservas;
+- cada reserva exige el `PlayerSessionLease` exacto del jugador;
+- Redis valida sesión, owner, incarnation y fencing token antes de crear o renovar capacidad;
+- la reserva ejecuta de forma atómica pruning de ocupación y reservas, conteo, comparación contra capacidad y creación del lease temporal;
+- las reservas utilizan hash exacto con TTL y sorted set por backend;
+- `releaseIfOwned()` exige coincidencia exacta de request, jugador, backend, owner, incarnation y fencing;
+- fallos Redis no degradan silenciosamente hacia autoridad local;
+- `RedisCoordinationRuntime` y `VelocityRedisCoordinationBootstrap` exponen factories reutilizando la conexión Lettuce existente;
+- `TransferTargetResolver` todavía no consume capacidad Redis;
+- `BackendCapacityReservationRegistry` continúa siendo la ruta productiva local de transferencias;
+- no existe todavía una política/configuración productiva definitiva para `reservationTtl`.
+
+Validación final del PR `#59`:
+
+- `.\gradlew.bat test --no-daemon` -> `BUILD SUCCESSFUL`;
+- `.\gradlew.bat clean build --no-daemon` -> `BUILD SUCCESSFUL`;
+- `git diff main...HEAD --check` limpio;
+- working tree limpio antes de publicar;
+- GitHub Actions Build `#131` -> `success`.
+
+Barrera de rollout aprobada:
+
+1. desplegar el foundation en todos los procesos Proxy;
+2. permitir que las renovaciones de presencia pueblen y calienten el índice global;
+3. validar en runtime multi-proxy ocupación, movimientos, renewals, disconnect y expiración;
+4. confirmar que no quedan proxies antiguos escribiendo presencia sin mantener el índice;
+5. definir una política explícita de `reservationTtl`;
+6. solo después migrar el flujo productivo de selección/reserva hacia `BackendCapacityCoordinator`.
+
+Distributed transfer coordination y distributed backend bootstrap coordination permanecen como fronteras independientes posteriores.
+
+Punto exacto de reanudación:
+
+- validar el índice global de ocupación en runtime multi-proxy después de su calentamiento;
+- definir `reservationTtl` productivo;
+- diseñar después el wiring de `TransferTargetResolver` / allocation flow hacia capacidad Redis sin introducir fallback local silencioso;
+- conservar ownership explícito, atomicidad, fencing y política fail-closed.
+
+No introducir parties, amigos o escuadrones dentro del siguiente incremento.
