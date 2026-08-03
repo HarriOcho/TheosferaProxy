@@ -29,6 +29,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -109,7 +110,7 @@ class PlayerPresenceRuntimeServiceTest {
 
         service.start();
 
-        verify(scheduler).schedule(any(), RENEW_INTERVAL);
+        verify(scheduler).schedule(any(), eq(RENEW_INTERVAL));
         assertThrows(IllegalStateException.class, service::start);
 
         service.stop();
