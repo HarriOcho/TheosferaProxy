@@ -2493,3 +2493,9 @@ Ese documento supersede las afirmaciones hist√≥ricas anteriores que indiquen que
 Estado base de este checkpoint: `main` @ `d6095bd` (`feat: activate Redis player session runtime (#52)`).
 
 El siguiente hito es definir con precisi√≥n la sem√°ntica de `CoordinationMode` y la activaci√≥n expl√≠cita de `DISTRIBUTED_REQUIRED`, manteniendo fuera de scope por ahora presencia, transferencias, capacidad y bootstrap distribuidos.
+
+## 29. WIP vigente - Redis Player Presence Runtime
+
+El estado de trabajo en curso est· documentado en docs/PLAYER_PRESENCE_RUNTIME_WIP.md.
+Este checkpoint WIP parte de main @ d9e65dd y contin˙a en feature/redis-player-presence-runtime.
+El siguiente paso es aÒadir cobertura especÌfica del runtime de presencia antes del gate final y PR.
