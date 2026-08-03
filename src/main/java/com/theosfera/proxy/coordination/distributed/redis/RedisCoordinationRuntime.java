@@ -42,10 +42,7 @@ public final class RedisCoordinationRuntime {
         this.config = Objects.requireNonNull(config, "config cannot be null");
         this.identity = Objects.requireNonNull(identity, "identity cannot be null");
         this.scheduler = Objects.requireNonNull(scheduler, "scheduler cannot be null");
-        this.stateRegistry = Objects.requireNonNull(
-                stateRegistry,
-                "stateRegistry cannot be null"
-        );
+        this.stateRegistry = Objects.requireNonNull(stateRegistry, "stateRegistry cannot be null");
         this.clock = Objects.requireNonNull(clock, "clock cannot be null");
         this.logger = Objects.requireNonNull(logger, "logger cannot be null");
     }
@@ -53,9 +50,7 @@ public final class RedisCoordinationRuntime {
     public CompletionStage<Boolean> start() {
         synchronized (lock) {
             if (started || stopping) {
-                throw new IllegalStateException(
-                        "Redis coordination runtime cannot be started again"
-                );
+                throw new IllegalStateException("Redis coordination runtime cannot be started again");
             }
             started = true;
         }
@@ -75,10 +70,7 @@ public final class RedisCoordinationRuntime {
         }
 
         ProxyMembershipLifecycle lifecycle = new ProxyMembershipLifecycle(
-                new RedisProxyMembershipCoordinator(
-                        createdConnection.async(),
-                        config.membershipTtl()
-                ),
+                new RedisProxyMembershipCoordinator(createdConnection.async(), config.membershipTtl()),
                 scheduler,
                 stateRegistry,
                 clock,
@@ -94,22 +86,15 @@ public final class RedisCoordinationRuntime {
 
         return lifecycle.start(identity).handleAsync((acquired, failure) -> {
             if (failure != null) {
-                logger.error(
-                        "Fallo al adquirir la membresia distribuida del Proxy.",
-                        failure
-                );
+                logger.error("Fallo al adquirir la membresia distribuida del Proxy.", failure);
                 closeResources();
                 return false;
             }
             if (!Boolean.TRUE.equals(acquired)) {
-                logger.error(
-                        "No se pudo adquirir la membresia distribuida para {}.",
-                        identity.proxyName()
-                );
+                logger.error("No se pudo adquirir la membresia distribuida para {}.", identity.proxyName());
                 closeResources();
                 return false;
             }
-
             logger.info(
                     "Membresia distribuida adquirida para {} (incarnationId={}).",
                     identity.proxyName(),
@@ -135,16 +120,10 @@ public final class RedisCoordinationRuntime {
 
         return releaseStage.handleAsync((released, failure) -> {
             if (failure != null) {
-                logger.warn(
-                        "No se pudo liberar limpiamente la membresia distribuida del Proxy.",
-                        failure
-                );
+                logger.warn("No se pudo liberar limpiamente la membresia distribuida del Proxy.", failure);
             } else if (!Boolean.TRUE.equals(released)) {
-                logger.warn(
-                        "La membresia distribuida ya no pertenecia a esta incarnation al apagar."
-                );
+                logger.warn("La membresia distribuida ya no pertenecia a esta incarnation al apagar.");
             }
-
             closeResources();
             return failure == null && Boolean.TRUE.equals(released);
         });
@@ -153,24 +132,23 @@ public final class RedisCoordinationRuntime {
     public RedisPlayerSessionCoordinator createPlayerSessionCoordinator(
             AuthenticatedPlayerSessionRegistry sessionRegistry
     ) {
-        Objects.requireNonNull(
-                sessionRegistry,
-                "sessionRegistry cannot be null"
-        );
+        Objects.requireNonNull(sessionRegistry, "sessionRegistry cannot be null");
 
         synchronized (lock) {
-            if (!started
-                    || stopping
-                    || connection == null
-                    || !stateRegistry.is(CoordinationState.HEALTHY)) {
-                throw new IllegalStateException(
-                        "Redis player session coordinator requires a healthy runtime"
-                );
-            }
-
+            requireHealthyRuntime("Redis player session coordinator requires a healthy runtime");
             return new RedisPlayerSessionCoordinator(
                     connection.async(),
                     sessionRegistry,
+                    config.playerSessionTtl()
+            );
+        }
+    }
+
+    public RedisPlayerPresenceCoordinator createPlayerPresenceCoordinator() {
+        synchronized (lock) {
+            requireHealthyRuntime("Redis player presence coordinator requires a healthy runtime");
+            return new RedisPlayerPresenceCoordinator(
+                    connection.async(),
                     config.playerSessionTtl()
             );
         }
@@ -183,6 +161,15 @@ public final class RedisCoordinationRuntime {
     public ProxyMembershipLifecycle membershipLifecycle() {
         synchronized (lock) {
             return membershipLifecycle;
+        }
+    }
+
+    private void requireHealthyRuntime(String message) {
+        if (!started
+                || stopping
+                || connection == null
+                || !stateRegistry.is(CoordinationState.HEALTHY)) {
+            throw new IllegalStateException(message);
         }
     }
 
