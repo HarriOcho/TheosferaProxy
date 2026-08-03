@@ -11,7 +11,9 @@ import io.lettuce.core.api.StatefulRedisConnection;
 import org.slf4j.Logger;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
@@ -150,6 +152,40 @@ public final class RedisCoordinationRuntime {
             return new RedisPlayerPresenceCoordinator(
                     connection.async(),
                     config.playerSessionTtl()
+            );
+        }
+    }
+
+    public RedisBackendOccupancyCoordinator createBackendOccupancyCoordinator(
+            Set<String> configuredBackends
+    ) {
+        Set<String> nonNullBackends = Set.copyOf(
+                Objects.requireNonNull(
+                        configuredBackends,
+                        "configuredBackends cannot be null"
+                )
+        );
+        synchronized (lock) {
+            requireHealthyRuntime("Redis backend occupancy coordinator requires a healthy runtime");
+            return new RedisBackendOccupancyCoordinator(
+                    connection.async(),
+                    nonNullBackends
+            );
+        }
+    }
+
+    public RedisBackendCapacityCoordinator createBackendCapacityCoordinator(
+            Duration reservationTtl
+    ) {
+        Duration nonNullTtl = Objects.requireNonNull(
+                reservationTtl,
+                "reservationTtl cannot be null"
+        );
+        synchronized (lock) {
+            requireHealthyRuntime("Redis backend capacity coordinator requires a healthy runtime");
+            return new RedisBackendCapacityCoordinator(
+                    connection.async(),
+                    nonNullTtl
             );
         }
     }
