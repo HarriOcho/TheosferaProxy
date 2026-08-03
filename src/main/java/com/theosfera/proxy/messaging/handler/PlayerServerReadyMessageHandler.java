@@ -29,7 +29,10 @@ public final class PlayerServerReadyMessageHandler
                 "presenceRuntimeService cannot be null"
         );
         this.legacyPresenceRegistry = null;
-        this.logger = Objects.requireNonNull(logger, "logger cannot be null");
+        this.logger = Objects.requireNonNull(
+                logger,
+                "logger cannot be null"
+        );
     }
 
     public PlayerServerReadyMessageHandler(
@@ -41,7 +44,10 @@ public final class PlayerServerReadyMessageHandler
                 presenceRegistry,
                 "presenceRegistry cannot be null"
         );
-        this.logger = Objects.requireNonNull(logger, "logger cannot be null");
+        this.logger = Objects.requireNonNull(
+                logger,
+                "logger cannot be null"
+        );
     }
 
     @Override
@@ -51,13 +57,17 @@ public final class PlayerServerReadyMessageHandler
 
     @Override
     public void handle(ProtocolMessageContext context) {
-        Objects.requireNonNull(context, "context cannot be null");
+        Objects.requireNonNull(
+                context,
+                "context cannot be null"
+        );
 
-        PlayerServerReadyPayload payload = requireReadyPayload(context.envelope());
+        PlayerServerReadyPayload payload =
+                requireReadyPayload(context.envelope());
 
         if (!context.serverName().equals(payload.backendName())) {
             logger.warn(
-                    "PLAYER_SERVER_READY rechazado desde {}: el payload declaro otro backend.",
+                    "PLAYER_SERVER_READY rechazado desde {}: el payload declaró otro backend.",
                     context.serverName()
             );
             return;
@@ -74,7 +84,7 @@ public final class PlayerServerReadyMessageHandler
                         context.source().getPlayer(),
                         presence
                 )
-                : legacyPresenceRegistry.update(presence);
+                : legacyPresenceRegistry.record(presence);
 
         switch (result) {
             case RECORDED, UPDATED -> logger.info(
@@ -88,7 +98,7 @@ public final class PlayerServerReadyMessageHandler
                     presence.backendName()
             );
             case NOT_AUTHENTICATED -> logger.warn(
-                    "PLAYER_SERVER_READY rechazado para {}: el jugador no esta autenticado.",
+                    "PLAYER_SERVER_READY rechazado para {}: el jugador no está autenticado.",
                     presence.playerId()
             );
             case STALE -> logger.debug(
