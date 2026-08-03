@@ -24,8 +24,13 @@ public final class RedisCoordinationConfigLoader {
             "player-session-ttl-seconds";
     private static final String PLAYER_SESSION_RENEW_SECONDS_PROPERTY =
             "player-session-renew-seconds";
+    private static final String
+            BACKEND_CAPACITY_RESERVATION_TTL_SECONDS_PROPERTY =
+            "backend-capacity-reservation-ttl-seconds";
     private static final long DEFAULT_PLAYER_SESSION_TTL_SECONDS = 30L;
     private static final long DEFAULT_PLAYER_SESSION_RENEW_SECONDS = 10L;
+    private static final long
+            DEFAULT_BACKEND_CAPACITY_RESERVATION_TTL_SECONDS = 20L;
 
     private static final String DEFAULT_CONFIG = """
             # Redis compartido para coordinacion distribuida entre proxies.
@@ -42,6 +47,9 @@ public final class RedisCoordinationConfigLoader {
 
             # Debe ser menor que player-session-ttl-seconds.
             player-session-renew-seconds=10
+
+            # Lease temporal de reserva distribuida de capacidad por backend.
+            backend-capacity-reservation-ttl-seconds=20
             """;
 
     private final Path configFile;
@@ -89,6 +97,12 @@ public final class RedisCoordinationConfigLoader {
                 PLAYER_SESSION_RENEW_SECONDS_PROPERTY,
                 DEFAULT_PLAYER_SESSION_RENEW_SECONDS
         );
+        long backendCapacityReservationTtlSeconds =
+                positiveLongOrDefault(
+                        properties,
+                        BACKEND_CAPACITY_RESERVATION_TTL_SECONDS_PROPERTY,
+                        DEFAULT_BACKEND_CAPACITY_RESERVATION_TTL_SECONDS
+                );
 
         try {
             return new RedisCoordinationConfig(
@@ -96,7 +110,10 @@ public final class RedisCoordinationConfigLoader {
                     Duration.ofSeconds(membershipTtlSeconds),
                     Duration.ofSeconds(membershipRenewSeconds),
                     Duration.ofSeconds(playerSessionTtlSeconds),
-                    Duration.ofSeconds(playerSessionRenewSeconds)
+                    Duration.ofSeconds(playerSessionRenewSeconds),
+                    Duration.ofSeconds(
+                            backendCapacityReservationTtlSeconds
+                    )
             );
         } catch (IllegalArgumentException exception) {
             throw new IllegalStateException(
