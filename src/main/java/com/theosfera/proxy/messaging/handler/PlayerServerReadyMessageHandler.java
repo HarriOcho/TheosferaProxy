@@ -8,6 +8,7 @@ import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.session.PlayerPresenceRuntimeService;
 import com.theosfera.proxy.session.PlayerPresenceUpdateResult;
 import com.theosfera.proxy.session.PlayerServerPresence;
+import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import org.slf4j.Logger;
 
 import java.util.Objects;
@@ -16,6 +17,7 @@ public final class PlayerServerReadyMessageHandler
         implements ProtocolMessageHandler {
 
     private final PlayerPresenceRuntimeService presenceRuntimeService;
+    private final PlayerServerPresenceRegistry legacyPresenceRegistry;
     private final Logger logger;
 
     public PlayerServerReadyMessageHandler(
@@ -26,10 +28,20 @@ public final class PlayerServerReadyMessageHandler
                 presenceRuntimeService,
                 "presenceRuntimeService cannot be null"
         );
-        this.logger = Objects.requireNonNull(
-                logger,
-                "logger cannot be null"
+        this.legacyPresenceRegistry = null;
+        this.logger = Objects.requireNonNull(logger, "logger cannot be null");
+    }
+
+    public PlayerServerReadyMessageHandler(
+            PlayerServerPresenceRegistry presenceRegistry,
+            Logger logger
+    ) {
+        this.presenceRuntimeService = null;
+        this.legacyPresenceRegistry = Objects.requireNonNull(
+                presenceRegistry,
+                "presenceRegistry cannot be null"
         );
+        this.logger = Objects.requireNonNull(logger, "logger cannot be null");
     }
 
     @Override
@@ -39,13 +51,9 @@ public final class PlayerServerReadyMessageHandler
 
     @Override
     public void handle(ProtocolMessageContext context) {
-        Objects.requireNonNull(
-                context,
-                "context cannot be null"
-        );
+        Objects.requireNonNull(context, "context cannot be null");
 
-        PlayerServerReadyPayload payload =
-                requireReadyPayload(context.envelope());
+        PlayerServerReadyPayload payload = requireReadyPayload(context.envelope());
 
         if (!context.serverName().equals(payload.backendName())) {
             logger.warn(
@@ -61,11 +69,12 @@ public final class PlayerServerReadyMessageHandler
                 payload.readyAt()
         );
 
-        PlayerPresenceUpdateResult result =
-                presenceRuntimeService.publishReady(
+        PlayerPresenceUpdateResult result = presenceRuntimeService != null
+                ? presenceRuntimeService.publishReady(
                         context.source().getPlayer(),
                         presence
-                );
+                )
+                : legacyPresenceRegistry.update(presence);
 
         switch (result) {
             case RECORDED, UPDATED -> logger.info(
