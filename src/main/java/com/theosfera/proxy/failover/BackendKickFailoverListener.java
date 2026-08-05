@@ -60,11 +60,11 @@ public final class BackendKickFailoverListener {
                 .handle((resolution, failure) -> {
                     if (failure != null || resolution == null) {
                         applyFailClosed(nonNullEvent);
-                        return null;
+                        return (Void) null;
                     }
 
                     applyResolution(nonNullEvent, resolution);
-                    return null;
+                    return (Void) null;
                 })
                 .toCompletableFuture();
 
