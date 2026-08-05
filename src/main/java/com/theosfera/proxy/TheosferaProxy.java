@@ -53,7 +53,9 @@ import com.theosfera.proxy.session.velocity.VelocityPlayerSessionReleaseTimeoutS
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionRenewalScheduler;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
+import com.theosfera.proxy.transfer.DistributedBackendCapacityReleaseService;
 import com.theosfera.proxy.transfer.DistributedBackendCapacityRuntime;
+import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.TransferResultSender;
@@ -547,6 +549,19 @@ public final class TheosferaProxy {
         bindDistributedCapacityHandoff();
 
         PlayerTransferExecutor transferExecutor = new PlayerTransferExecutor();
+        DistributedPlayerTransferRetryCoordinator distributedTransferRetryCoordinator =
+                new DistributedPlayerTransferRetryCoordinator(
+                        bootstrapRegistry,
+                        transferRegistry,
+                        distributedBackendCapacityRuntime.allocationService(),
+                        transferExecutor,
+                        new DistributedBackendCapacityReleaseService(
+                                distributedBackendCapacityRuntime.capacityCoordinator(),
+                                logger
+                        ),
+                        distributedBackendCapacityRuntime.handoffService(),
+                        logger
+                );
         TransferResultSender transferResultSender = new TransferResultSender(messageSender, logger);
         LobbyTransferService lobbyTransferService = new LobbyTransferService(
                 sessionRegistry,
@@ -615,10 +630,7 @@ public final class TheosferaProxy {
                                 identityRegistry,
                                 sessionRegistry,
                                 presenceRegistry,
-                                transferRegistry,
-                                bootstrapRegistry,
-                                targetResolver,
-                                transferExecutor,
+                                distributedTransferRetryCoordinator,
                                 transferResultSender,
                                 logger
                         )
