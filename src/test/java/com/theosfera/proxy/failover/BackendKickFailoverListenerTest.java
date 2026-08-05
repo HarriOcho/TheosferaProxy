@@ -8,12 +8,14 @@ import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -53,6 +55,15 @@ class BackendKickFailoverListenerTest {
                 event.getResult()
         );
         assertSame(target, result.getServer());
+        assertEquals(
+                Component.text("Redireccionando a ", NamedTextColor.GOLD)
+                        .append(Component.text(
+                                "Skyblock-2",
+                                NamedTextColor.AQUA
+                        ))
+                        .append(Component.text("...", NamedTextColor.GOLD)),
+                result.getMessageComponent()
+        );
     }
 
     @Test
