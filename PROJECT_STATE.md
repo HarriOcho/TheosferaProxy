@@ -3112,3 +3112,166 @@ Punto exacto de reanudacion:
 5. mantener distributed transfer coordination y distributed backend bootstrap
    como fronteras independientes hasta su milestone explicito;
 6. no introducir parties, friends ni squads en este incremento.
+
+## 33. Checkpoint final - Redis Lobby Transfer Capacity
+
+La migración productiva de `/hub` y `/lobby` hacia capacidad distribuida Redis
+quedó completada y fusionada mediante el PR `#63`:
+
+- PR: `#63 feat: route lobby commands through distributed capacity`;
+- squash merge: `b65065e17a7c4c23f8ad175264e19f00043a9acd`;
+- checkpoint autoritativo:
+  `docs/REDIS_LOBBY_TRANSFER_CAPACITY_CHECKPOINT.md`.
+
+Este checkpoint supersede las afirmaciones históricas del `#32` que indicaban
+que `LobbyTransferService` seguía utilizando capacidad local.
+
+Estado confirmado:
+
+- `LobbyTransferService` utiliza `DistributedPlayerTransferRetryCoordinator`;
+- `/hub` y `/lobby` consumen capacidad global Redis;
+- cada reserva utiliza el `PlayerSessionLease` exacto;
+- se preservan owner, incarnation y fencing;
+- el release continúa siendo exact-match;
+- `NO_CAPACITY` puede reintentar otro Lobby elegible;
+- `TIMED_OUT` permanece terminal;
+- Redis indisponible falla cerrado;
+- no existe fallback silencioso hacia capacidad local;
+- una reserva exitosa permanece hasta el handoff de presencia del destino.
+
+Runtime confirmado:
+
+- `/hub` y `/lobby` desde Skyblock transfieren mediante capacidad distribuida;
+- con `lobby-1` no disponible y `lobby-2` operativo funciona el retry alternativo;
+- después del handoff no quedan reservas `backend-capacity:*`;
+- una caída sostenida de Redis conserva fencing y política fail-closed;
+- si el jugador ya está en el Lobby elegido, el comportamiento actual continúa
+  respondiendo `Ya estás en el Lobby.` sin cambiarlo voluntariamente de instancia.
+
+Ese último punto deja una necesidad funcional pendiente: todavía no existe una
+superficie oficial para que un jugador que ya está en un Lobby solicite cambiar
+a otra instancia de Lobby.
+
+## 34. Checkpoint final - Distributed Redis Kick Failover Capacity
+
+La migración productiva del failover ante kicks hacia capacidad distribuida
+Redis quedó completada y fusionada mediante el PR `#64`:
+
+- PR: `#64 feat: route backend kick failover through distributed capacity`;
+- último HEAD funcional/documental previo al squash:
+  `7e142e03a4e319f4cfc3c1fdf5a2e7f7423f8403`;
+- squash merge:
+  `2defdbe224f76afdeb45ec8fc8e5447ffac6758d`;
+- checkpoint autoritativo:
+  `docs/REDIS_KICK_FAILOVER_RUNTIME_CHECKPOINT.md`;
+- estándar visual:
+  `docs/THEOSFERA_VISUAL_MESSAGING_STANDARD.md`.
+
+Estado productivo confirmado:
+
+- `DistributedResolvedTargetAllocationService` asigna destinos activos con
+  capacidad Redis;
+- `DistributedBackendKickFailoverCoordinator` coordina el failover;
+- solo se aceptan destinos `RESOLVED`;
+- `BOOTSTRAP_REQUIRED` nunca es válido para kick failover;
+- un kick nunca intenta arrancar ni reservar un Lobby frío;
+- primero se intenta el mismo `BackendType`;
+- un backend no-Lobby puede degradar una sola vez hacia un Lobby activo cuando
+  corresponde;
+- `REQUEST_ID_CONFLICT`, `SESSION_NOT_FOUND`, `NOT_SESSION_OWNER`,
+  `OCCUPANCY_UNAVAILABLE` y `COORDINATION_UNAVAILABLE` son terminales;
+- cada reserva utiliza el `PlayerSessionLease` exacto y fencing;
+- la reserva permanece hasta presencia confirmada;
+- el handoff libera mediante exact-match;
+- no existe autoridad productiva local de capacidad como fallback.
+
+Runtime confirmado:
+
+- `LOBBY -> LOBBY` después de un kick real;
+- `SKYBLOCK -> LOBBY` cuando no existe alternativa Skyblock activa;
+- rechazo fail-closed de destino frío/no resuelto;
+- reserva Redis con sesión y fencing exactos;
+- handoff de presencia y release explícito;
+- cero residuos `backend-capacity:*` después de los casos exitosos;
+- outage sostenido de Redis provoca `HEALTHY -> FENCED`;
+- el Proxy desconecta jugadores al perder definitivamente su autoridad;
+- no existe fallback local durante el outage.
+
+La prueba de outage sostenido no se presenta como observación directa de
+`COORDINATION_UNAVAILABLE` dentro del kick coordinator: el fencing global
+preemptó el kick del backend antes de que ese flujo pudiera observarse.
+
+Gates finales previos al PR `#64`:
+
+- `git diff main...HEAD --check` limpio;
+- `gradlew test --no-daemon` -> `BUILD SUCCESSFUL`;
+- `gradlew clean build --no-daemon` -> `BUILD SUCCESSFUL`;
+- working tree limpio;
+- GitHub Actions Build `#141` -> `success`.
+
+Estado post-merge:
+
+- `main` sincronizada en `2defdbe`;
+- PR `#63` fusionado;
+- PR `#64` fusionado;
+- capacidad distribuida productiva cubre `TRANSFER_REQUEST`, `/hub`, `/lobby`
+  y backend-kick failover.
+
+## 35. Siguiente milestone aprobado - Lobby Instance Switching
+
+Antes de bloquear el raw Velocity `/server`, Theosfera necesita una superficie
+oficial para cambiar voluntariamente entre instancias Lobby.
+
+Comando aprobado:
+
+- `/lobby switch`;
+- `/hub switch` puede conservarse como alias equivalente porque `/hub` y
+  `/lobby` comparten actualmente el mismo comando.
+
+Semántica prevista:
+
+- `switch` solo aplica cuando el jugador ya se encuentra en un backend
+  autorizado de tipo `LOBBY`;
+- el Lobby actual se excluye explícitamente de la selección;
+- el jugador no selecciona una máquina concreta por nombre;
+- Theosfera elige otra instancia `LOBBY` mediante routing, capacidad,
+  preferencia y coordinación distribuida;
+- el flujo reutiliza `DistributedPlayerTransferRetryCoordinator`;
+- se conserva `PlayerSessionLease` exacto;
+- se conserva fencing;
+- Redis continúa siendo autoridad de capacidad;
+- se conserva reservation -> connection -> presence -> exact release;
+- `NO_CAPACITY` puede probar otra instancia elegible;
+- `TIMED_OUT` permanece terminal;
+- Redis indisponible falla cerrado;
+- no existe fallback local silencioso.
+
+Si el jugador no está actualmente en Lobby, `/lobby switch` no debe convertirse
+en una segunda forma ambigua de `/lobby`; deberá indicarle que utilice
+`/lobby` para regresar al Lobby.
+
+Si no existe otra instancia Lobby elegible, la operación termina de forma
+controlada sin reconectar al Lobby actual.
+
+Validación runtime mínima requerida para este milestone:
+
+- `lobby-1 -> /lobby switch -> lobby-2`;
+- `lobby-2 -> /lobby switch -> lobby-1`;
+- ejecución desde un backend no-Lobby sin iniciar transferencia;
+- único Lobby elegible -> fallo controlado;
+- destino alternativo sin capacidad -> sin overcommit;
+- reservation -> destination presence -> exact release;
+- cero keys residuales `backend-capacity:*`;
+- Redis indisponible -> fail-closed y cero fallback local.
+
+Rama sugerida para la implementación:
+
+`feature/lobby-instance-switching`
+
+El hardening que bloquea/elimina raw Velocity `/server` continúa aprobado, pero
+queda explícitamente después de Lobby Instance Switching. No debe bloquearse
+`/server` hasta que exista y se valide esta superficie oficial de cambio entre
+Lobbies.
+
+Distributed transfer coordination y distributed backend bootstrap coordination
+permanecen fronteras independientes y no forman parte de este milestone.

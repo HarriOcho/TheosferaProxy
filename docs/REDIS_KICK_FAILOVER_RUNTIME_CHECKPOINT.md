@@ -653,3 +653,42 @@ Comando de contexto recomendado para un chat nuevo:
 ```text
 Broer, continuemos TheosferaProxy desde docs/REDIS_KICK_FAILOVER_RUNTIME_CHECKPOINT.md. El milestone Distributed Redis Kick Failover Capacity quedó cerrado en runtime con LOBBY->LOBBY, SKYBLOCK->LOBBY, cold refusal, handoff/release exacto, cero residuos y fencing global ante outage sostenido de Redis. Continuemos con los gates finales/PR o con el siguiente hardening de /server :3
 ```
+
+---
+
+## Corrección post-merge del roadmap
+
+PR `#64` fue fusionado mediante squash en:
+
+`main @ 2defdbe224f76afdeb45ec8fc8e5447ffac6758d`.
+
+Después del cierre del milestone se identificó una dependencia funcional previa
+al hardening de `/server`.
+
+El siguiente milestone ya no es bloquear `/server` inmediatamente.
+
+Antes debe implementarse **Lobby Instance Switching**, con la superficie
+oficial:
+
+- `/lobby switch`;
+- `/hub switch` como alias equivalente mientras ambos nombres compartan el
+  mismo comando.
+
+El cambio debe permitir que un jugador ya conectado a un Lobby solicite otra
+instancia Lobby sin elegir manualmente un backend físico. El Lobby actual debe
+quedar excluido y la selección debe continuar pasando por routing, capacidad
+Redis, `PlayerSessionLease` exacto, fencing, retry, handoff de presencia y
+release exact-match.
+
+Por tanto, el orden aprobado queda:
+
+1. Distributed Redis Kick Failover Capacity - completado y fusionado en PR `#64`;
+2. Lobby Instance Switching - siguiente milestone;
+3. hardening para bloquear/eliminar raw Velocity `/server` para todos,
+   incluido staff.
+
+Las secciones anteriores de este documento que presentan `/server` como el
+siguiente hito inmediato quedan superseded por esta corrección post-merge.
+
+`PROJECT_STATE.md` checkpoint `#35` contiene el alcance aprobado de Lobby
+Instance Switching.
