@@ -301,8 +301,9 @@ class LobbyTransferServiceTest {
     private DistributedPlayerTransferRetryCoordinator.TransferRetryRequest
     captureRequest(String sourceBackendName) {
         authenticatePlayer();
+        ServerConnection connection = serverConnection(sourceBackendName);
         when(player.getCurrentServer()).thenReturn(
-                Optional.of(serverConnection(sourceBackendName))
+                Optional.of(connection)
         );
 
         service.transferToLobby(player);
