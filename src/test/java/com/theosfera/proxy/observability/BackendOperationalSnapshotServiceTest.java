@@ -10,9 +10,6 @@ import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
-import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
@@ -84,29 +81,6 @@ class BackendOperationalSnapshotServiceTest {
 
         healthRegistry.markHealthy("lobby-1");
 
-        BackendCapacityReservationRegistry capacityRegistry =
-                new BackendCapacityReservationRegistry();
-
-        BackendCapacityReservation capacityReservation =
-                new BackendCapacityReservation(
-                        UUID.fromString(
-                                "50a908b7-f672-4a36-b074-c2936cfda53f"
-                        ),
-                        UUID.fromString(
-                                "c451cc88-a56c-423e-ae4b-d547ec27a20d"
-                        ),
-                        "lobby-1"
-                );
-
-        assertEquals(
-                BackendCapacityReservationResult.RESERVED,
-                capacityRegistry.reserve(
-                        capacityReservation,
-                        2,
-                        5
-                )
-        );
-
         BackendBootstrapRegistry bootstrapRegistry =
                 new BackendBootstrapRegistry();
 
@@ -135,7 +109,6 @@ class BackendOperationalSnapshotServiceTest {
                         authorizationPolicy,
                         identityRegistry,
                         healthRegistry,
-                        capacityRegistry,
                         bootstrapRegistry
                 );
 
@@ -166,8 +139,6 @@ class BackendOperationalSnapshotServiceTest {
                 lobbyOne.lastHealthyActivity()
         );
         assertEquals(2, lobbyOne.connectedPlayers());
-        assertEquals(1, lobbyOne.reservedCapacity());
-        assertEquals(3, lobbyOne.allocatedPlayers());
         assertFalse(
                 lobbyOne.bootstrapReservationPresent()
         );
@@ -186,14 +157,12 @@ class BackendOperationalSnapshotServiceTest {
                 lobbyTwo.lastHealthyActivity().isEmpty()
         );
         assertEquals(0, lobbyTwo.connectedPlayers());
-        assertEquals(0, lobbyTwo.reservedCapacity());
         assertTrue(
                 lobbyTwo.bootstrapReservationPresent()
         );
 
         assertEquals(1, identityRegistry.snapshot().size());
         assertEquals(1, healthRegistry.snapshot().size());
-        assertEquals(1, capacityRegistry.snapshot().size());
         assertEquals(
                 1,
                 bootstrapRegistry.snapshotByRequest().size()
@@ -231,7 +200,6 @@ class BackendOperationalSnapshotServiceTest {
                         ),
                         identityRegistry,
                         healthRegistry(),
-                        new BackendCapacityReservationRegistry(),
                         new BackendBootstrapRegistry()
                 );
 
