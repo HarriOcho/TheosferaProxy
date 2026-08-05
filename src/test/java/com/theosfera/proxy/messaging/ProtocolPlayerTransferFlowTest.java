@@ -12,7 +12,6 @@ import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
-import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
@@ -29,11 +28,13 @@ import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionReleaseService;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
+import com.theosfera.proxy.transfer.DistributedTransferTestRuntime;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.TransferResultSender;
-import com.theosfera.proxy.transfer.TransferTargetResolver;
+import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -45,8 +46,6 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
-import java.time.Clock;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -119,12 +118,6 @@ class ProtocolPlayerTransferFlowTest {
 
         BackendIdentityRegistry identityRegistry =
                 new BackendIdentityRegistry();
-
-        BackendHealthRegistry healthRegistry =
-                new BackendHealthRegistry(
-                        Clock.systemUTC(),
-                        Duration.ofSeconds(15)
-                );
 
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
@@ -200,14 +193,6 @@ class ProtocolPlayerTransferFlowTest {
                 )
         );
 
-        TransferTargetResolver targetResolver =
-                new TransferTargetResolver(
-                        proxyServer,
-                        policy,
-                        identityRegistry,
-                        healthRegistry
-                );
-
         TransferResultSender resultSender =
                 new TransferResultSender(
                         messageSender,
@@ -228,6 +213,24 @@ class ProtocolPlayerTransferFlowTest {
                         (key, timeout) -> () -> {
                         },
                         logger
+                );
+
+        DistributedPlayerTransferRetryCoordinator retryCoordinator =
+                DistributedTransferTestRuntime.retryCoordinator(
+                        bootstrapRegistry,
+                        transferRegistry,
+                        transferExecutor,
+                        logger,
+                        player,
+                        TRANSFER_REQUEST_ID,
+                        "lobby-1",
+                        BackendType.SKYBLOCK,
+                        TransferTargetResolution.resolved(
+                                skyblockTarget
+                        ),
+                        () -> leaseBindingRegistry
+                                .find(player)
+                                .orElseThrow()
                 );
 
         ProtocolMessageDispatcher dispatcher =
@@ -259,10 +262,7 @@ class ProtocolPlayerTransferFlowTest {
                                         identityRegistry,
                                         sessionRegistry,
                                         presenceRegistry,
-                                        transferRegistry,
-                                        bootstrapRegistry,
-                                        targetResolver,
-                                        transferExecutor,
+                                        retryCoordinator,
                                         resultSender,
                                         logger
                                 )
@@ -313,8 +313,6 @@ class ProtocolPlayerTransferFlowTest {
                         )
                 )
         );
-
-        healthRegistry.markHealthy("skyblock-1");
 
         send(
                 listener,
