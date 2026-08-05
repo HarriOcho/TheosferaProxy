@@ -2,7 +2,6 @@ package com.theosfera.proxy.session;
 
 import com.theosfera.proxy.coordination.BackendCapacityHandoffLifecycle;
 import com.theosfera.proxy.coordination.PlayerSessionLease;
-import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.Subscribe;
@@ -80,61 +79,6 @@ public final class PlayerDisconnectListener {
                 logger,
                 "logger cannot be null"
         );
-    }
-
-    /**
-     * Compatibility constructor for tests and callers compiled against the
-     * pre-Redis-capacity cleanup API. The local capacity registry is no longer
-     * an authority and is deliberately ignored.
-     */
-    @Deprecated(forRemoval = true)
-    public PlayerDisconnectListener(
-            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
-            PlayerServerPresenceRegistry presenceRegistry,
-            PendingPlayerTransferRegistry transferRegistry,
-            BackendCapacityReservationRegistry ignoredCapacityRegistry,
-            AuthenticatedPlayerSessionRegistry sessionRegistry,
-            PlayerSessionReleaseService releaseService,
-            Logger logger
-    ) {
-        this(
-                leaseBindingRegistry,
-                presenceRegistry,
-                transferRegistry,
-                requireLegacyRegistry(ignoredCapacityRegistry),
-                sessionRegistry,
-                releaseService,
-                null,
-                logger
-        );
-    }
-
-    /**
-     * Compatibility constructor for tests and callers compiled against the
-     * pre-Redis-capacity cleanup API. The local capacity registry is no longer
-     * an authority and is deliberately ignored.
-     */
-    @Deprecated(forRemoval = true)
-    public PlayerDisconnectListener(
-            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
-            PlayerServerPresenceRegistry presenceRegistry,
-            PendingPlayerTransferRegistry transferRegistry,
-            BackendCapacityReservationRegistry ignoredCapacityRegistry,
-            AuthenticatedPlayerSessionRegistry sessionRegistry,
-            PlayerSessionReleaseService releaseService,
-            PlayerPresenceRuntimeService presenceRuntimeService,
-            Logger logger
-    ) {
-        this(
-                leaseBindingRegistry,
-                presenceRegistry,
-                transferRegistry,
-                sessionRegistry,
-                releaseService,
-                presenceRuntimeService,
-                logger
-        );
-        requireLegacyRegistry(ignoredCapacityRegistry);
     }
 
     public synchronized void configureCapacityHandoffLifecycle(
@@ -357,15 +301,6 @@ public final class PlayerDisconnectListener {
         logger.debug(
                 "Estado de sesión eliminado para {} al desconectarse del proxy.",
                 playerId
-        );
-    }
-
-    private static BackendCapacityReservationRegistry requireLegacyRegistry(
-            BackendCapacityReservationRegistry registry
-    ) {
-        return Objects.requireNonNull(
-                registry,
-                "capacityRegistry cannot be null"
         );
     }
 }
