@@ -3,6 +3,7 @@ package com.theosfera.proxy.transfer;
 import com.theosfera.proxy.coordination.BackendCapacityCoordinator;
 import com.theosfera.proxy.coordination.BackendOccupancyCoordinator;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
+import org.slf4j.Logger;
 
 import java.util.Objects;
 
@@ -11,12 +12,14 @@ import java.util.Objects;
  *
  * <p>The bundle deliberately owns no Redis-specific implementation details.
  * The composition root supplies authoritative coordinator implementations and
- * consumers receive one shared allocation service.</p>
+ * consumers receive one shared allocation service and one shared handoff
+ * service.</p>
  */
 public record DistributedBackendCapacityRuntime(
         BackendOccupancyCoordinator occupancyCoordinator,
         BackendCapacityCoordinator capacityCoordinator,
-        DistributedPlayerTransferTargetAllocationService allocationService
+        DistributedPlayerTransferTargetAllocationService allocationService,
+        BackendCapacityHandoffService handoffService
 ) {
 
     public DistributedBackendCapacityRuntime {
@@ -32,6 +35,10 @@ public record DistributedBackendCapacityRuntime(
                 allocationService,
                 "allocationService cannot be null"
         );
+        Objects.requireNonNull(
+                handoffService,
+                "handoffService cannot be null"
+        );
     }
 
     public static DistributedBackendCapacityRuntime create(
@@ -39,7 +46,8 @@ public record DistributedBackendCapacityRuntime(
             BackendCapacityCoordinator capacityCoordinator,
             TransferTargetResolver targetResolver,
             PendingPlayerTransferRegistry transferRegistry,
-            PlayerSessionLeaseBindingRegistry sessionLeaseBindings
+            PlayerSessionLeaseBindingRegistry sessionLeaseBindings,
+            Logger logger
     ) {
         BackendOccupancyCoordinator nonNullOccupancy =
                 Objects.requireNonNull(
@@ -70,6 +78,14 @@ public record DistributedBackendCapacityRuntime(
                         ),
                         nonNullOccupancy,
                         nonNullCapacity
+                ),
+                new BackendCapacityHandoffService(
+                        nonNullCapacity,
+                        new BackendCapacityHandoffRegistry(),
+                        Objects.requireNonNull(
+                                logger,
+                                "logger cannot be null"
+                        )
                 )
         );
     }
