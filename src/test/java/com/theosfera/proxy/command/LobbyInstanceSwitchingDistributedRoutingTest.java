@@ -78,9 +78,10 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
                 new BackendBootstrapRegistry();
 
         Player player = mock(Player.class);
+        ServerConnection lobby1Connection = serverConnection("lobby-1");
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
         when(player.getCurrentServer()).thenReturn(
-                Optional.of(serverConnection("lobby-1"))
+                Optional.of(lobby1Connection)
         );
 
         AuthenticatedPlayerSession session =
