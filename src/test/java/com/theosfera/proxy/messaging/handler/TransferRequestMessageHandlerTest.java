@@ -1,5 +1,6 @@
 package com.theosfera.proxy.messaging.handler;
 
+import com.theosfera.protocol.ProtocolVersion;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
 import com.theosfera.protocol.message.payload.BackendType;
@@ -8,29 +9,26 @@ import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
-import com.theosfera.proxy.transfer.BackendBootstrapReservation;
-import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
-import com.theosfera.proxy.transfer.BackendCapacityReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
+import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
+import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
-import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
-import com.theosfera.proxy.transfer.PlayerTransferExecutor;
+import com.theosfera.proxy.transfer.PlayerTransferRegistrationResult;
 import com.theosfera.proxy.transfer.TransferResultSender;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
-import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.ServerConnection;
-import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
 import java.time.Clock;
@@ -38,117 +36,70 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class TransferRequestMessageHandlerTest {
 
-    private static final UUID REQUEST_ID =
-            UUID.fromString(
-                    "11111111-2222-3333-4444-555555555555"
-            );
-
-    private static final UUID PLAYER_ID =
-            UUID.fromString(
-                    "417e98b4-74a1-467e-b453-a15be3af8996"
-            );
-
-    private static final UUID OTHER_PLAYER_ID =
-            UUID.fromString(
-                    "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-            );
-
-    private static final long NOW =
-            1_750_000_000_000L;
+    private static final UUID REQUEST_ID = UUID.fromString(
+            "11111111-2222-3333-4444-555555555555"
+    );
+    private static final UUID PLAYER_ID = UUID.fromString(
+            "417e98b4-74a1-467e-b453-a15be3af8996"
+    );
+    private static final UUID OTHER_PLAYER_ID = UUID.fromString(
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    );
+    private static final long NOW = 1_750_000_000_000L;
 
     private ProxyServer proxyServer;
     private BackendIdentityRegistry identityRegistry;
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
     private PlayerServerPresenceRegistry presenceRegistry;
-    private PendingPlayerTransferRegistry transferRegistry;
-    private BackendBootstrapRegistry bootstrapRegistry;
-    private TransferTargetResolver targetResolver;
-    private PlayerTransferExecutor transferExecutor;
+    private DistributedPlayerTransferRetryCoordinator retryCoordinator;
     private TransferResultSender resultSender;
     private Logger logger;
     private Player player;
     private ServerConnection source;
-    private RegisteredServer target;
     private TransferRequestMessageHandler handler;
 
     @BeforeEach
     void setUp() {
         proxyServer = mock(ProxyServer.class);
-
-        identityRegistry =
-                new BackendIdentityRegistry();
-
+        identityRegistry = new BackendIdentityRegistry();
         identityRegistry.register(
-                new BackendIdentity(
-                        "lobby-1",
-                        BackendType.LOBBY
-                )
+                new BackendIdentity("lobby-1", BackendType.LOBBY)
         );
-
-        sessionRegistry =
-                new AuthenticatedPlayerSessionRegistry();
-
-        presenceRegistry =
-                new PlayerServerPresenceRegistry(
-                        sessionRegistry
-                );
-
-        transferRegistry =
-                new PendingPlayerTransferRegistry();
-
-        bootstrapRegistry =
-                new BackendBootstrapRegistry();
-
-        targetResolver =
-                mock(TransferTargetResolver.class);
-
-        when(targetResolver.reserveCapacity(
-                any(),
-                any()
-        )).thenReturn(
-                BackendCapacityReservationResult.RESERVED
-        );
-
-        transferExecutor =
-                mock(PlayerTransferExecutor.class);
-
-        resultSender =
-                mock(TransferResultSender.class);
-
+        sessionRegistry = new AuthenticatedPlayerSessionRegistry();
+        presenceRegistry = new PlayerServerPresenceRegistry(sessionRegistry);
+        retryCoordinator = mock(DistributedPlayerTransferRetryCoordinator.class);
+        resultSender = mock(TransferResultSender.class);
         logger = mock(Logger.class);
         player = mock(Player.class);
         source = mock(ServerConnection.class);
-        target = mock(RegisteredServer.class);
 
-        configureSourceConnection();
-        configureTarget();
+        ServerInfo sourceInfo = mock(ServerInfo.class);
+        when(source.getServerInfo()).thenReturn(sourceInfo);
+        when(sourceInfo.getName()).thenReturn("lobby-1");
+        when(source.getPlayer()).thenReturn(player);
+        when(player.getUniqueId()).thenReturn(PLAYER_ID);
 
         Clock clock = Clock.fixed(
                 Instant.ofEpochMilli(NOW),
                 ZoneOffset.UTC
         );
-
         handler = new TransferRequestMessageHandler(
                 proxyServer,
                 identityRegistry,
                 sessionRegistry,
                 presenceRegistry,
-                transferRegistry,
-                bootstrapRegistry,
-                targetResolver,
-                transferExecutor,
+                retryCoordinator,
                 resultSender,
                 logger,
                 clock
@@ -164,157 +115,153 @@ class TransferRequestMessageHandlerTest {
     }
 
     @Test
-    void transfersAuthenticatedPlayerFromMatchingSource() {
-        registerPlayerState();
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution.resolved(target)
-                );
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
+    void delegatesValidTransferToDistributedRetryCoordinator() {
+        registerLobbyPlayerState();
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
 
         handler.handle(context);
 
-        verify(transferExecutor).execute(player, target);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.SUCCESS,
-                "Player transferred successfully"
-        );
-
-        assertFalse(
-                transferRegistry
-                        .findByPlayer(PLAYER_ID)
-                        .isPresent()
-        );
-
-        assertFalse(
-                presenceRegistry
-                        .find(PLAYER_ID)
-                        .isPresent()
-        );
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureRetryRequest();
+        assertEquals(REQUEST_ID, request.requestId());
+        assertEquals(PLAYER_ID, request.playerId());
+        assertEquals("lobby-1", request.sourceBackendName());
+        assertEquals(BackendType.SKYBLOCK, request.targetBackendType());
+        assertEquals(NOW, request.requestedAt());
+        assertEquals(player, request.player());
+        verify(resultSender, never()).send(any(), any(), any(), any());
     }
 
     @Test
-    void reservesBootstrapForColdTargetAndKeepsItOnSuccess() {
-        registerPlayerState();
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
-
+    void successfulDistributedCompletionRemovesOnlyOriginalSourcePresence() {
+        registerLobbyPlayerState();
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
         handler.handle(context);
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureRetryRequest();
 
-        BackendBootstrapReservation reservation =
-                bootstrapRegistry
-                        .findByTarget("skyblock-1")
-                        .orElseThrow();
-
-        assertEquals(
-                REQUEST_ID,
-                reservation.requestId()
-        );
-
-        assertEquals(
-                PLAYER_ID,
-                reservation.playerId()
-        );
-
-        verify(transferExecutor).execute(
-                player,
-                target
-        );
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.SUCCESS,
-                "Player transferred successfully"
-        );
-    }
-
-    @Test
-    void releasesBootstrapWhenTransferFails() {
-        registerPlayerState();
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.failed()
-                        )
-                );
-
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        assertTrue(
-                bootstrapRegistry
-                        .findByTarget("skyblock-1")
-                        .isEmpty()
-        );
-
-        assertTrue(
-                bootstrapRegistry
-                        .findByRequest(REQUEST_ID)
-                        .isEmpty()
-        );
-    }
-
-    @Test
-    void rejectsBootstrapWhenTargetIsAlreadyReserved() {
-        registerPlayerState();
-
-        bootstrapRegistry.register(
-                new BackendBootstrapReservation(
+        presenceRegistry.update(
+                new PlayerServerPresence(
+                        PLAYER_ID,
                         "skyblock-1",
-                        UUID.randomUUID(),
-                        OTHER_PLAYER_ID,
-                        NOW - 1_000L
+                        NOW + 100
                 )
         );
+        request.completionHandler().accept(
+                PlayerTransferCompletion.success()
+        );
 
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
+        assertEquals(
+                "skyblock-1",
+                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
+        );
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.SUCCESS,
+                "Player transferred successfully"
+        );
+    }
 
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
+    @Test
+    void failedDistributedCompletionKeepsSourcePresence() {
+        registerLobbyPlayerState();
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
+        handler.handle(context);
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureRetryRequest();
 
+        request.completionHandler().accept(
+                PlayerTransferCompletion.failed()
+        );
+
+        assertEquals(
+                "lobby-1",
+                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
+        );
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.FAILED,
+                "Player transfer failed"
+        );
+    }
+
+    @Test
+    void mapsDistributedCapacityCoordinationFailureToRejection() {
+        registerLobbyPlayerState();
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
         handler.handle(context);
 
+        captureRetryRequest().capacityRejectedHandler().accept(
+                BackendCapacityReserveResult.Status.COORDINATION_UNAVAILABLE
+        );
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Backend capacity coordination is unavailable"
+        );
+    }
+
+    @Test
+    void mapsDistributedNoCapacityToRejection() {
+        registerLobbyPlayerState();
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
+        handler.handle(context);
+
+        captureRetryRequest().capacityRejectedHandler().accept(
+                BackendCapacityReserveResult.Status.NO_CAPACITY
+        );
+
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Target backend has no available capacity"
+        );
+    }
+
+    @Test
+    void mapsRegistrationBootstrapAndUnavailableCallbacks() {
+        registerLobbyPlayerState();
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
+        handler.handle(context);
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureRetryRequest();
+
+        request.registrationRejectedHandler().accept(
+                PlayerTransferRegistrationResult.PLAYER_BUSY
+        );
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Player already has a pending transfer"
+        );
+
+        request.bootstrapRejectedHandler().accept(
+                BackendBootstrapRegistrationResult.TARGET_BUSY
+        );
         verify(resultSender).send(
                 context,
                 PLAYER_ID,
@@ -322,25 +269,52 @@ class TransferRequestMessageHandlerTest {
                 "Target backend bootstrap is already in progress"
         );
 
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
+        request.unavailableHandler().accept(
+                TransferTargetResolution.notAuthenticated()
         );
-
-        assertTrue(
-                transferRegistry
-                        .findByPlayer(PLAYER_ID)
-                        .isEmpty()
+        verify(resultSender).send(
+                context,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Target backend is not authenticated"
         );
     }
 
     @Test
-    void rejectsSpoofedPlayerIdentifier() {
-        ProtocolMessageContext context =
-                transferContext(OTHER_PLAYER_ID);
+    void lateDistributedResultOnlyLogs() {
+        registerLobbyPlayerState();
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
+        handler.handle(context);
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureRetryRequest();
+        PendingPlayerTransfer transfer = new PendingPlayerTransfer(
+                REQUEST_ID,
+                PLAYER_ID,
+                "lobby-1",
+                "skyblock-1",
+                NOW
+        );
+
+        request.lateResultHandler().accept(transfer);
+
+        verify(logger).warn(
+                "Resultado tardio de transferencia ignorado "
+                        + "(requestId: {}, playerId: {}).",
+                REQUEST_ID,
+                PLAYER_ID
+        );
+        verify(resultSender, never()).send(any(), any(), any(), any());
+    }
+
+    @Test
+    void rejectsSpoofedPlayerIdentifierBeforeDistributedAllocation() {
+        ProtocolMessageContext context = transferContext(
+                OTHER_PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
 
         handler.handle(context);
 
@@ -350,20 +324,15 @@ class TransferRequestMessageHandlerTest {
                 TransferResultStatus.REJECTED,
                 "Transfer source does not match player"
         );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
+        verify(retryCoordinator, never()).start(any());
     }
 
     @Test
-    void rejectsUnauthenticatedPlayer() {
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
+    void rejectsUnauthenticatedPlayerBeforeDistributedAllocation() {
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
 
         handler.handle(context);
 
@@ -373,18 +342,11 @@ class TransferRequestMessageHandlerTest {
                 TransferResultStatus.REJECTED,
                 "Player is not authenticated"
         );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
+        verify(retryCoordinator, never()).start(any());
     }
 
     @Test
-    void rejectsPresenceFromDifferentBackend() {
+    void rejectsPresenceFromDifferentBackendBeforeDistributedAllocation() {
         sessionRegistry.register(
                 new AuthenticatedPlayerSession(
                         PLAYER_ID,
@@ -392,7 +354,6 @@ class TransferRequestMessageHandlerTest {
                         NOW - 200
                 )
         );
-
         presenceRegistry.update(
                 new PlayerServerPresence(
                         PLAYER_ID,
@@ -401,9 +362,10 @@ class TransferRequestMessageHandlerTest {
                 )
         );
 
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
-
+        ProtocolMessageContext context = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
         handler.handle(context);
 
         verify(resultSender).send(
@@ -412,744 +374,111 @@ class TransferRequestMessageHandlerTest {
                 TransferResultStatus.REJECTED,
                 "Player presence does not match source backend"
         );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
+        verify(retryCoordinator, never()).start(any());
     }
 
     @Test
-    void rejectsTargetWithoutAuthenticatedHandshake() {
-        registerPlayerState();
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .notAuthenticated()
-                );
-
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.REJECTED,
-                "Target backend is not authenticated"
+    void transfersAuthenticatedPlayerFromAuthToLobbyWithoutPresenceRequirement() {
+        identityRegistry.register(
+                new BackendIdentity("auth-1", BackendType.AUTH)
         );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
-    }
-
-    @Test
-    void preservesNewTargetPresenceOnSuccessfulCallback() {
-        registerPlayerState();
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution.resolved(target)
-                );
-
-        CompletableFuture<PlayerTransferCompletion> future =
-                new CompletableFuture<>();
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(future);
-
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        presenceRegistry.update(
-                new PlayerServerPresence(
+        ServerInfo sourceInfo = source.getServerInfo();
+        when(sourceInfo.getName()).thenReturn("auth-1");
+        sessionRegistry.register(
+                new AuthenticatedPlayerSession(
                         PLAYER_ID,
-                        "skyblock-1",
-                        NOW + 100
+                        "HarriOcho",
+                        NOW - 200
                 )
         );
+        when(proxyServer.getPlayer(PLAYER_ID))
+                .thenReturn(Optional.of(player));
+        when(player.getCurrentServer())
+                .thenReturn(Optional.of(source));
 
-        future.complete(
-                PlayerTransferCompletion.success()
-        );
+        handler.handle(transferContext(PLAYER_ID, BackendType.LOBBY));
 
         assertEquals(
-                "skyblock-1",
-                presenceRegistry
-                        .find(PLAYER_ID)
-                        .orElseThrow()
-                        .backendName()
+                BackendType.LOBBY,
+                captureRetryRequest().targetBackendType()
         );
     }
 
     @Test
-    void lateResultDoesNotRemoveDifferentTransferWithSameRequest() {
-        registerPlayerState();
+    void rejectsAuthToSkyblockAndOfflinePlayers() {
+        identityRegistry.register(
+                new BackendIdentity("auth-1", BackendType.AUTH)
+        );
+        ServerInfo sourceInfo = source.getServerInfo();
+        when(sourceInfo.getName()).thenReturn("auth-1");
 
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution.resolved(target)
-                );
-
-        CompletableFuture<PlayerTransferCompletion> future =
-                new CompletableFuture<>();
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(future);
-
-        ProtocolMessageContext context =
-                transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        transferRegistry.remove(REQUEST_ID);
-
-        PendingPlayerTransfer newerTransfer =
-                new PendingPlayerTransfer(
-                        REQUEST_ID,
-                        OTHER_PLAYER_ID,
-                        "auth-1",
-                        "lobby-1",
-                        NOW + 1
-                );
-
-        transferRegistry.register(newerTransfer);
-
-        future.complete(
-                PlayerTransferCompletion.success()
+        ProtocolMessageContext forbidden = transferContext(
+                PLAYER_ID,
+                BackendType.SKYBLOCK
+        );
+        handler.handle(forbidden);
+        verify(resultSender).send(
+                forbidden,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Transfer is not allowed for source and target backend types"
         );
 
-        assertEquals(
-                newerTransfer,
-                transferRegistry
-                        .findByRequest(REQUEST_ID)
-                        .orElseThrow()
+        sessionRegistry.register(
+                new AuthenticatedPlayerSession(
+                        PLAYER_ID,
+                        "HarriOcho",
+                        NOW - 200
+                )
         );
-
-        verify(
-                resultSender,
-                never()
-        ).send(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
+        when(proxyServer.getPlayer(PLAYER_ID))
+                .thenReturn(Optional.empty());
+        ProtocolMessageContext offline = transferContext(
+                PLAYER_ID,
+                BackendType.LOBBY
+        );
+        handler.handle(offline);
+        verify(resultSender).send(
+                offline,
+                PLAYER_ID,
+                TransferResultStatus.REJECTED,
+                "Player connection does not match source backend"
         );
     }
 
     @Test
-    void rejectsEnvelopeWithUnexpectedPayload() {
-        ProtocolEnvelope<PingPayload> envelope =
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.TRANSFER_REQUEST,
-                        new PingPayload(NOW)
-                );
-
-        ProtocolMessageContext context =
-                new ProtocolMessageContext(
-                        source,
-                        envelope
-                );
+    void rejectsUnexpectedPayloadAndNullContext() {
+        ProtocolEnvelope<PingPayload> envelope = ProtocolEnvelope.create(
+                ProtocolMessageType.TRANSFER_REQUEST,
+                new PingPayload(NOW)
+        );
+        ProtocolMessageContext context = new ProtocolMessageContext(
+                source,
+                envelope
+        );
 
         assertThrows(
                 IllegalArgumentException.class,
                 () -> handler.handle(context)
         );
-    }
-
-    @Test
-    void firstColdTargetFailsThenSecondTargetSucceeds() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution
-                        .bootstrapRequired(secondTarget)
-        );
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.failed()
-                        )
-                );
-        when(transferExecutor.execute(player, secondTarget))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.SUCCESS,
-                "Player transferred successfully"
-        );
-    }
-
-    @Test
-    void firstBootstrapTargetBusyThenSecondTargetSucceeds() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        BackendBootstrapReservation existingReservation =
-                new BackendBootstrapReservation(
-                        "skyblock-1",
-                        UUID.fromString(
-                                "22222222-3333-4444-5555-666666666666"
-                        ),
-                        OTHER_PLAYER_ID,
-                        NOW - 1
-                );
-
-        bootstrapRegistry.register(existingReservation);
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution
-                        .bootstrapRequired(secondTarget)
-        );
-
-        when(transferExecutor.execute(player, secondTarget))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        assertEquals(
-                existingReservation,
-                bootstrapRegistry.findByTarget("skyblock-1").orElseThrow()
-        );
-        assertEquals(
-                REQUEST_ID,
-                bootstrapRegistry
-                        .findByTarget("skyblock-2")
-                        .orElseThrow()
-                        .requestId()
-        );
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.SUCCESS,
-                "Player transferred successfully"
-        );
-    }
-
-    @Test
-    void allBootstrapTargetsBusySendsOneTerminalResult() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        BackendBootstrapReservation firstExisting =
-                new BackendBootstrapReservation(
-                        "skyblock-1",
-                        UUID.fromString(
-                                "22222222-3333-4444-5555-666666666666"
-                        ),
-                        OTHER_PLAYER_ID,
-                        NOW - 1
-                );
-        BackendBootstrapReservation secondExisting =
-                new BackendBootstrapReservation(
-                        "skyblock-2",
-                        UUID.fromString(
-                                "33333333-4444-5555-6666-777777777777"
-                        ),
-                        UUID.fromString(
-                                "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
-                        ),
-                        NOW - 1
-                );
-
-        bootstrapRegistry.register(firstExisting);
-        bootstrapRegistry.register(secondExisting);
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution
-                        .bootstrapRequired(secondTarget)
-        );
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1", "skyblock-2")
-        )).thenReturn(TransferTargetResolution.notConfigured());
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        verify(resultSender, times(1)).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.REJECTED,
-                "Target backend bootstrap is already in progress"
-        );
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
-        assertEquals(
-                firstExisting,
-                bootstrapRegistry.findByTarget("skyblock-1").orElseThrow()
-        );
-        assertEquals(
-                secondExisting,
-                bootstrapRegistry.findByTarget("skyblock-2").orElseThrow()
-        );
-    }
-
-    @Test
-    void firstResolvedTargetRejectedThenSecondTargetSucceeds() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(TransferTargetResolution.resolved(target));
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.rejected()
-                        )
-                );
-        when(transferExecutor.execute(player, secondTarget))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.SUCCESS,
-                "Player transferred successfully"
-        );
-    }
-
-    @Test
-    void timedOutTargetDoesNotRetryAnotherTarget() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.timedOut()
-                        )
-                );
-        when(transferExecutor.execute(player, secondTarget))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        verify(transferExecutor, times(1)).execute(player, target);
-        verify(transferExecutor, never()).execute(player, secondTarget);
-        verify(resultSender, times(1)).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.TIMED_OUT,
-                "Player transfer timed out"
-        );
-        assertEquals(
-                "lobby-1",
-                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
-        );
-        assertTrue(transferRegistry.findByRequest(REQUEST_ID).isEmpty());
-        assertTrue(bootstrapRegistry.findByRequest(REQUEST_ID).isEmpty());
-        verify(targetResolver).releaseCapacity(
-                new BackendCapacityReservation(
-                        REQUEST_ID,
-                        PLAYER_ID,
-                        "skyblock-1"
-                )
-        );
-    }
-
-    @Test
-    void firstExecutorThrowThenSecondTargetSucceeds() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(TransferTargetResolution.resolved(target));
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
-
-        when(transferExecutor.execute(player, target))
-                .thenThrow(new IllegalStateException("internal"));
-        when(transferExecutor.execute(player, secondTarget))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.SUCCESS,
-                "Player transferred successfully"
-        );
-    }
-
-    @Test
-    void firstExceptionalCompletionThenSecondTargetSucceeds() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(TransferTargetResolution.resolved(target));
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
-
-        CompletableFuture<PlayerTransferCompletion> first =
-                new CompletableFuture<>();
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(first);
-        when(transferExecutor.execute(player, secondTarget))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-        first.completeExceptionally(
-                new IllegalStateException("internal")
-        );
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.SUCCESS,
-                "Player transferred successfully"
-        );
-    }
-
-    @Test
-    void allTargetsFailSendsExactlyOneTerminalResult() {
-        registerPlayerState();
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(TransferTargetResolution.resolved(target));
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(TransferTargetResolution.notConfigured());
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.failed()
-                        )
-                );
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        verify(resultSender, times(1)).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.FAILED,
-                "Player transfer failed"
-        );
-    }
-
-    @Test
-    void failedAttemptDoesNotRemoveSourcePresence() {
-        registerPlayerState();
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(TransferTargetResolution.resolved(target));
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(TransferTargetResolution.notConfigured());
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.failed()
-                        )
-                );
-
-        handler.handle(transferContext(PLAYER_ID));
-
-        assertEquals(
-                "lobby-1",
-                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
-        );
-    }
-
-    @Test
-    void successfulRetryRemovesOnlyOriginalSourcePresence() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(TransferTargetResolution.resolved(target));
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(TransferTargetResolution.resolved(secondTarget));
-
-        CompletableFuture<PlayerTransferCompletion> first =
-                new CompletableFuture<>();
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(first);
-        when(transferExecutor.execute(player, secondTarget))
-                .thenAnswer(invocation -> {
-                    presenceRegistry.update(
-                            new PlayerServerPresence(
-                                    PLAYER_ID,
-                                    "skyblock-2",
-                                    NOW + 100
-                            )
-                    );
-                    return CompletableFuture.completedFuture(
-                            PlayerTransferCompletion.success()
-                    );
-                });
-
-        handler.handle(transferContext(PLAYER_ID));
-        first.complete(PlayerTransferCompletion.failed());
-
-        assertEquals(
-                "skyblock-2",
-                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
-        );
-    }
-
-    @Test
-    void failedAttemptReleasesCapacityAndBootstrapBeforeRetry() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenAnswer(invocation -> {
-            assertTrue(bootstrapRegistry.findByTarget("skyblock-1").isEmpty());
-            return TransferTargetResolution.resolved(secondTarget);
-        });
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.failed()
-                        )
-                );
-        when(transferExecutor.execute(player, secondTarget))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        handler.handle(transferContext(PLAYER_ID));
-
-        verify(targetResolver, times(2)).releaseCapacity(any());
-    }
-
-    @Test
-    void successfulRetryKeepsWinningBootstrapReservation() {
-        registerPlayerState();
-        RegisteredServer secondTarget = server("skyblock-2");
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(
-                        TransferTargetResolution
-                                .bootstrapRequired(target)
-                );
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                java.util.Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution
-                        .bootstrapRequired(secondTarget)
-        );
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.failed()
-                        )
-                );
-        when(transferExecutor.execute(player, secondTarget))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        handler.handle(transferContext(PLAYER_ID));
-
-        assertTrue(bootstrapRegistry.findByTarget("skyblock-1").isEmpty());
-        assertEquals(
-                REQUEST_ID,
-                bootstrapRegistry
-                        .findByTarget("skyblock-2")
-                        .orElseThrow()
-                        .requestId()
-        );
-    }
-
-    @Test
-    void lateCompletionCannotSendDuplicateResultOrRemoveNewerState() {
-        registerPlayerState();
-
-        when(targetResolver.resolve(BackendType.SKYBLOCK))
-                .thenReturn(TransferTargetResolution.resolved(target));
-
-        CompletableFuture<PlayerTransferCompletion> first =
-                new CompletableFuture<>();
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(first);
-
-        ProtocolMessageContext context = transferContext(PLAYER_ID);
-
-        handler.handle(context);
-
-        transferRegistry.remove(REQUEST_ID);
-        PendingPlayerTransfer newerTransfer =
-                new PendingPlayerTransfer(
-                        REQUEST_ID,
-                        OTHER_PLAYER_ID,
-                        "auth-1",
-                        "lobby-1",
-                        NOW + 1
-                );
-        transferRegistry.register(newerTransfer);
-
-        first.complete(PlayerTransferCompletion.failed());
-
-        assertEquals(
-                newerTransfer,
-                transferRegistry.findByRequest(REQUEST_ID).orElseThrow()
-        );
-        assertEquals(
-                "lobby-1",
-                presenceRegistry.find(PLAYER_ID).orElseThrow().backendName()
-        );
-        verify(resultSender, never()).send(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
-    }
-
-    @Test
-    void rejectsNullContext() {
         assertThrows(
                 NullPointerException.class,
                 () -> handler.handle(null)
         );
     }
 
-    @Test
-    void transfersAuthenticatedPlayerFromAuthToLobby() {
-        identityRegistry.register(
-                new BackendIdentity(
-                        "auth-1",
-                        BackendType.AUTH
-                )
+    private DistributedPlayerTransferRetryCoordinator.TransferRetryRequest
+    captureRetryRequest() {
+        ArgumentCaptor<DistributedPlayerTransferRetryCoordinator.TransferRetryRequest>
+                captor = ArgumentCaptor.forClass(
+                DistributedPlayerTransferRetryCoordinator
+                        .TransferRetryRequest.class
         );
+        verify(retryCoordinator).start(captor.capture());
+        return captor.getValue();
+    }
 
-        when(source.getServerInfo().getName())
-                .thenReturn("auth-1");
-
+    private void registerLobbyPlayerState() {
         sessionRegistry.register(
                 new AuthenticatedPlayerSession(
                         PLAYER_ID,
@@ -1157,278 +486,6 @@ class TransferRequestMessageHandlerTest {
                         NOW - 200
                 )
         );
-
-        when(proxyServer.getPlayer(PLAYER_ID))
-                .thenReturn(Optional.of(player));
-
-        when(player.getCurrentServer())
-                .thenReturn(Optional.of(source));
-
-        when(target.getServerInfo().getName())
-                .thenReturn("lobby-1");
-
-        when(targetResolver.resolve(BackendType.LOBBY))
-                .thenReturn(
-                        TransferTargetResolution.resolved(target)
-                );
-
-        when(transferExecutor.execute(player, target))
-                .thenReturn(
-                        CompletableFuture.completedFuture(
-                                PlayerTransferCompletion.success()
-                        )
-                );
-
-        ProtocolMessageContext context =
-                transferContext(
-                        PLAYER_ID,
-                        BackendType.LOBBY
-                );
-
-        handler.handle(context);
-
-        verify(transferExecutor).execute(player, target);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.SUCCESS,
-                "Player transferred successfully"
-        );
-    }
-
-    @Test
-    void rejectsTransferFromAuthToAuth() {
-        identityRegistry.register(
-                new BackendIdentity(
-                        "auth-1",
-                        BackendType.AUTH
-                )
-        );
-
-        when(source.getServerInfo().getName())
-                .thenReturn("auth-1");
-
-        TransferRequestPayload payload =
-                mock(TransferRequestPayload.class);
-
-        when(payload.playerId())
-                .thenReturn(PLAYER_ID);
-
-        when(payload.targetBackendType())
-                .thenReturn(BackendType.AUTH);
-
-        ProtocolMessageContext context =
-                transferContext(payload);
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.REJECTED,
-                "Transfer is not allowed for source and target backend types"
-        );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
-    }
-
-    @Test
-    void rejectsTransferFromAuthToSkyblock() {
-        identityRegistry.register(
-                new BackendIdentity(
-                        "auth-1",
-                        BackendType.AUTH
-                )
-        );
-
-        when(source.getServerInfo().getName())
-                .thenReturn("auth-1");
-
-        ProtocolMessageContext context =
-                transferContext(
-                        PLAYER_ID,
-                        BackendType.SKYBLOCK
-                );
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.REJECTED,
-                "Transfer is not allowed for source and target backend types"
-        );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
-    }
-
-    @Test
-    void rejectsUnauthenticatedPlayerFromAuthToLobby() {
-        identityRegistry.register(
-                new BackendIdentity(
-                        "auth-1",
-                        BackendType.AUTH
-                )
-        );
-
-        when(source.getServerInfo().getName())
-                .thenReturn("auth-1");
-
-        ProtocolMessageContext context =
-                transferContext(
-                        PLAYER_ID,
-                        BackendType.LOBBY
-                );
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.REJECTED,
-                "Player is not authenticated"
-        );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
-    }
-
-    @Test
-    void rejectsOfflinePlayerFromAuthToLobby() {
-        identityRegistry.register(
-                new BackendIdentity(
-                        "auth-1",
-                        BackendType.AUTH
-                )
-        );
-
-        when(source.getServerInfo().getName())
-                .thenReturn("auth-1");
-
-        sessionRegistry.register(
-                new AuthenticatedPlayerSession(
-                        PLAYER_ID,
-                        "HarriOcho",
-                        NOW - 200
-                )
-        );
-
-        when(proxyServer.getPlayer(PLAYER_ID))
-                .thenReturn(Optional.empty());
-
-        ProtocolMessageContext context =
-                transferContext(
-                        PLAYER_ID,
-                        BackendType.LOBBY
-                );
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.REJECTED,
-                "Player connection does not match source backend"
-        );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
-    }
-
-    @Test
-    void rejectsPlayerConnectedOutsideAuthFromAuthToLobby() {
-        identityRegistry.register(
-                new BackendIdentity(
-                        "auth-1",
-                        BackendType.AUTH
-                )
-        );
-
-        when(source.getServerInfo().getName())
-                .thenReturn("auth-1");
-
-        sessionRegistry.register(
-                new AuthenticatedPlayerSession(
-                        PLAYER_ID,
-                        "HarriOcho",
-                        NOW - 200
-                )
-        );
-
-        when(proxyServer.getPlayer(PLAYER_ID))
-                .thenReturn(Optional.of(player));
-
-        ServerConnection differentConnection =
-                mock(ServerConnection.class);
-
-        ServerInfo differentServerInfo =
-                mock(ServerInfo.class);
-
-        when(differentConnection.getServerInfo())
-                .thenReturn(differentServerInfo);
-
-        when(differentServerInfo.getName())
-                .thenReturn("lobby-1");
-
-        when(player.getCurrentServer())
-                .thenReturn(Optional.of(differentConnection));
-
-        ProtocolMessageContext context =
-                transferContext(
-                        PLAYER_ID,
-                        BackendType.LOBBY
-                );
-
-        handler.handle(context);
-
-        verify(resultSender).send(
-                context,
-                PLAYER_ID,
-                TransferResultStatus.REJECTED,
-                "Player connection does not match source backend"
-        );
-
-        verify(
-                transferExecutor,
-                never()
-        ).execute(
-                org.mockito.ArgumentMatchers.any(),
-                org.mockito.ArgumentMatchers.any()
-        );
-    }
-
-    private void registerPlayerState() {
-        sessionRegistry.register(
-                new AuthenticatedPlayerSession(
-                        PLAYER_ID,
-                        "HarriOcho",
-                        NOW - 200
-                )
-        );
-
         presenceRegistry.update(
                 new PlayerServerPresence(
                         PLAYER_ID,
@@ -1436,88 +493,27 @@ class TransferRequestMessageHandlerTest {
                         NOW - 100
                 )
         );
-
         when(proxyServer.getPlayer(PLAYER_ID))
                 .thenReturn(Optional.of(player));
-
         when(player.getCurrentServer())
                 .thenReturn(Optional.of(source));
-    }
-
-    private void configureSourceConnection() {
-        ServerInfo sourceInfo =
-                mock(ServerInfo.class);
-
-        when(source.getServerInfo())
-                .thenReturn(sourceInfo);
-
-        when(sourceInfo.getName())
-                .thenReturn("lobby-1");
-
-        when(source.getPlayer())
-                .thenReturn(player);
-
-        when(player.getUniqueId())
-                .thenReturn(PLAYER_ID);
-    }
-
-    private void configureTarget() {
-        ServerInfo targetInfo =
-                mock(ServerInfo.class);
-
-        when(target.getServerInfo())
-                .thenReturn(targetInfo);
-
-        when(targetInfo.getName())
-                .thenReturn("skyblock-1");
-    }
-
-    private RegisteredServer server(String name) {
-        RegisteredServer server = mock(RegisteredServer.class);
-        ServerInfo info = mock(ServerInfo.class);
-
-        when(server.getServerInfo()).thenReturn(info);
-        when(info.getName()).thenReturn(name);
-
-        return server;
-    }
-
-    private ProtocolMessageContext transferContext(
-            UUID playerId
-    ) {
-        return transferContext(
-                playerId,
-                BackendType.SKYBLOCK
-        );
     }
 
     private ProtocolMessageContext transferContext(
             UUID playerId,
             BackendType targetBackendType
     ) {
-        return transferContext(
-                new TransferRequestPayload(
-                        playerId,
-                        targetBackendType
-                )
-        );
-    }
-
-    private ProtocolMessageContext transferContext(
-            TransferRequestPayload payload
-    ) {
         ProtocolEnvelope<TransferRequestPayload> envelope =
                 new ProtocolEnvelope<>(
-                        com.theosfera.protocol.ProtocolVersion.CURRENT,
+                        ProtocolVersion.CURRENT,
                         ProtocolMessageType.TRANSFER_REQUEST,
                         REQUEST_ID,
                         NOW - 1,
-                        payload
+                        new TransferRequestPayload(
+                                playerId,
+                                targetBackendType
+                        )
                 );
-
-        return new ProtocolMessageContext(
-                source,
-                envelope
-        );
+        return new ProtocolMessageContext(source, envelope);
     }
 }
