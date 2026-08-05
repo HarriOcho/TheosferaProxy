@@ -565,10 +565,7 @@ public final class TheosferaProxy {
         TransferResultSender transferResultSender = new TransferResultSender(messageSender, logger);
         LobbyTransferService lobbyTransferService = new LobbyTransferService(
                 sessionRegistry,
-                transferRegistry,
-                bootstrapRegistry,
-                targetResolver,
-                transferExecutor
+                distributedTransferRetryCoordinator
         );
 
         backendKickFailoverListener = new BackendKickFailoverListener(
