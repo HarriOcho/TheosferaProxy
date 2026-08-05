@@ -71,6 +71,18 @@ public final class DistributedTransferTestRuntime {
                     targetBackendName,
                     requestedAt
             );
+
+            PlayerTransferRegistrationResult registrationResult =
+                    transferRegistry.register(transfer);
+
+            if (registrationResult
+                    != PlayerTransferRegistrationResult.REGISTERED) {
+                throw new IllegalStateException(
+                        "distributed test allocation could not register pending transfer: "
+                                + registrationResult
+                );
+            }
+
             BackendCapacityReserveRequest capacityRequest =
                     new BackendCapacityReserveRequest(
                             new BackendCapacityReservation(
