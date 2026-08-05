@@ -32,6 +32,30 @@ public final class DistributedPlayerTransferRetryCoordinator {
 
     public DistributedPlayerTransferRetryCoordinator(
             BackendBootstrapRegistry bootstrapRegistry,
+            PendingPlayerTransferRegistry transferRegistry,
+            DistributedPlayerTransferTargetAllocationService allocationService,
+            PlayerTransferExecutor transferExecutor,
+            DistributedBackendCapacityReleaseService capacityReleaseService,
+            BackendCapacityHandoffService handoffService,
+            Logger logger
+    ) {
+        this(
+                bootstrapRegistry,
+                allocationService,
+                transferExecutor,
+                new DistributedPlayerTransferAttemptLifecycle(
+                        transferRegistry,
+                        bootstrapRegistry,
+                        capacityReleaseService,
+                        handoffService,
+                        logger
+                ),
+                logger
+        );
+    }
+
+    public DistributedPlayerTransferRetryCoordinator(
+            BackendBootstrapRegistry bootstrapRegistry,
             DistributedPlayerTransferTargetAllocationService allocationService,
             PlayerTransferExecutor transferExecutor,
             DistributedPlayerTransferAttemptLifecycle attemptLifecycle,
