@@ -76,14 +76,13 @@ class DistributedBackendKickFailoverCoordinatorTest {
     void redirectsToAllocatedSameTypeAndKeepsPendingReservation() {
         RegisteredServer target = server("skyblock-2");
         BackendCapacityReserveRequest request = request("skyblock-2");
+        DistributedResolvedTargetAllocation allocation = allocated(target, request);
         when(allocationService.allocate(
                 eq(player),
                 any(UUID.class),
                 eq(BackendType.SKYBLOCK),
                 eq(EXCLUSIONS)
-        )).thenReturn(CompletableFuture.completedFuture(
-                allocated(target, request)
-        ));
+        )).thenReturn(CompletableFuture.completedFuture(allocation));
 
         BackendKickFailoverResolution resolution = resolve(BackendType.SKYBLOCK);
 
@@ -98,6 +97,10 @@ class DistributedBackendKickFailoverCoordinatorTest {
     void fallsBackToLobbyOnlyAfterOrdinaryNoCapacity() {
         RegisteredServer lobby = server("lobby-1");
         BackendCapacityReserveRequest lobbyRequest = request("lobby-1");
+        DistributedResolvedTargetAllocation lobbyAllocation = allocated(
+                lobby,
+                lobbyRequest
+        );
 
         when(allocationService.allocate(
                 eq(player),
@@ -115,9 +118,7 @@ class DistributedBackendKickFailoverCoordinatorTest {
                 any(UUID.class),
                 eq(BackendType.LOBBY),
                 eq(EXCLUSIONS)
-        )).thenReturn(CompletableFuture.completedFuture(
-                allocated(lobby, lobbyRequest)
-        ));
+        )).thenReturn(CompletableFuture.completedFuture(lobbyAllocation));
 
         BackendKickFailoverResolution resolution = resolve(BackendType.SKYBLOCK);
 
@@ -252,14 +253,13 @@ class DistributedBackendKickFailoverCoordinatorTest {
     private BackendCapacityReserveRequest startAllocatedFailover(String backendName) {
         RegisteredServer target = server(backendName);
         BackendCapacityReserveRequest request = request(backendName);
+        DistributedResolvedTargetAllocation allocation = allocated(target, request);
         when(allocationService.allocate(
                 eq(player),
                 any(UUID.class),
                 eq(BackendType.SKYBLOCK),
                 eq(EXCLUSIONS)
-        )).thenReturn(CompletableFuture.completedFuture(
-                allocated(target, request)
-        ));
+        )).thenReturn(CompletableFuture.completedFuture(allocation));
 
         BackendKickFailoverResolution resolution = resolve(BackendType.SKYBLOCK);
         assertEquals(BackendKickFailoverResolutionStatus.REDIRECT, resolution.status());
