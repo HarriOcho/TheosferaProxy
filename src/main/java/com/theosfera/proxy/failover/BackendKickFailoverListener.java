@@ -7,18 +7,23 @@ import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+
+import static com.theosfera.proxy.ui.TheosferaPalette.GOLD;
+import static com.theosfera.proxy.ui.TheosferaPalette.LIGHT_GOLD;
+import static com.theosfera.proxy.ui.TheosferaPalette.SECONDARY_TEXT;
+import static com.theosfera.proxy.ui.TheosferaPalette.WARM_IVORY;
 
 public final class BackendKickFailoverListener {
 
     private static final Component NO_SAFE_TARGET_REASON =
             Component.text(
                     "No hay servidores seguros disponibles en este momento. "
-                            + "Inténtalo nuevamente más tarde."
+                            + "Inténtalo nuevamente más tarde.",
+                    WARM_IVORY
             );
 
     private final BackendKickFailoverService failoverService;
@@ -142,18 +147,9 @@ public final class BackendKickFailoverListener {
         String displayName = Character.toUpperCase(serverName.charAt(0))
                 + serverName.substring(1);
 
-        return Component.text(
-                        "Redireccionando a ",
-                        NamedTextColor.GOLD
-                )
-                .append(Component.text(
-                        displayName,
-                        NamedTextColor.AQUA
-                ))
-                .append(Component.text(
-                        "...",
-                        NamedTextColor.GOLD
-                ));
+        return Component.text("Redireccionando a ", GOLD)
+                .append(Component.text(displayName, LIGHT_GOLD))
+                .append(Component.text("...", SECONDARY_TEXT));
     }
 
     private void applyFailClosed(KickedFromServerEvent event) {
