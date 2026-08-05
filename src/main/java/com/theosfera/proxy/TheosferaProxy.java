@@ -561,6 +561,7 @@ public final class TheosferaProxy {
         TransferResultSender transferResultSender = new TransferResultSender(messageSender, logger);
         LobbyTransferService lobbyTransferService = new LobbyTransferService(
                 sessionRegistry,
+                identityRegistry,
                 distributedTransferRetryCoordinator
         );
 
