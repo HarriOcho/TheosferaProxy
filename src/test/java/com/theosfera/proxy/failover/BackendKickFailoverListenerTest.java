@@ -8,13 +8,15 @@ import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import com.velocitypowered.api.proxy.server.ServerInfo;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
+import static com.theosfera.proxy.ui.TheosferaPalette.GOLD;
+import static com.theosfera.proxy.ui.TheosferaPalette.LIGHT_GOLD;
+import static com.theosfera.proxy.ui.TheosferaPalette.SECONDARY_TEXT;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -56,12 +58,9 @@ class BackendKickFailoverListenerTest {
         );
         assertSame(target, result.getServer());
         assertEquals(
-                Component.text("Redireccionando a ", NamedTextColor.GOLD)
-                        .append(Component.text(
-                                "Skyblock-2",
-                                NamedTextColor.AQUA
-                        ))
-                        .append(Component.text("...", NamedTextColor.GOLD)),
+                Component.text("Redireccionando a ", GOLD)
+                        .append(Component.text("Skyblock-2", LIGHT_GOLD))
+                        .append(Component.text("...", SECONDARY_TEXT)),
                 result.getMessageComponent()
         );
     }
