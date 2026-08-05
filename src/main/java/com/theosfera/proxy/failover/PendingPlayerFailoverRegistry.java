@@ -1,5 +1,6 @@
 package com.theosfera.proxy.failover;
 
+import com.theosfera.proxy.coordination.BackendCapacityReserveRequest;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
 import com.theosfera.proxy.transfer.BackendCapacityReservation;
 
@@ -21,6 +22,10 @@ public final class PendingPlayerFailoverRegistry {
 
     private final Map<UUID, BackendCapacityReservation>
             capacityReservationsByPlayer =
+            new ConcurrentHashMap<>();
+
+    private final Map<UUID, BackendCapacityReserveRequest>
+            distributedCapacityRequestsByPlayer =
             new ConcurrentHashMap<>();
 
     public synchronized boolean reserve(UUID playerId) {
@@ -95,6 +100,54 @@ public final class PendingPlayerFailoverRegistry {
         return true;
     }
 
+    public synchronized boolean attachDistributedCapacityRequest(
+            UUID playerId,
+            BackendCapacityReserveRequest capacityRequest
+    ) {
+        UUID nonNullPlayerId = requirePlayerId(playerId);
+        BackendCapacityReserveRequest nonNullRequest =
+                Objects.requireNonNull(
+                        capacityRequest,
+                        "capacityRequest cannot be null"
+                );
+
+        if (!nonNullRequest.reservation().playerId().equals(nonNullPlayerId)) {
+            throw new IllegalArgumentException(
+                    "capacityRequest must belong to playerId"
+            );
+        }
+
+        if (!pendingPlayers.contains(nonNullPlayerId)) {
+            return false;
+        }
+
+        BackendCapacityReserveRequest existing =
+                distributedCapacityRequestsByPlayer.get(nonNullPlayerId);
+        if (existing != null) {
+            return existing.equals(nonNullRequest);
+        }
+
+        distributedCapacityRequestsByPlayer.put(
+                nonNullPlayerId,
+                nonNullRequest
+        );
+        return true;
+    }
+
+    public synchronized Optional<BackendCapacityReserveRequest>
+    clearDistributedForCompletion(UUID playerId) {
+        UUID nonNullPlayerId = requirePlayerId(playerId);
+        pendingPlayers.remove(nonNullPlayerId);
+        return Optional.ofNullable(
+                distributedCapacityRequestsByPlayer.remove(nonNullPlayerId)
+        );
+    }
+
+    public synchronized Optional<BackendCapacityReserveRequest>
+    clearDistributedForDisconnect(UUID playerId) {
+        return clearDistributedForCompletion(playerId);
+    }
+
     public synchronized boolean clear(UUID playerId) {
         return pendingPlayers.remove(
                 requirePlayerId(playerId)
@@ -152,6 +205,7 @@ public final class PendingPlayerFailoverRegistry {
         pendingPlayers.clear();
         bootstrapReservationsByPlayer.clear();
         capacityReservationsByPlayer.clear();
+        distributedCapacityRequestsByPlayer.clear();
     }
 
     private UUID requirePlayerId(UUID playerId) {
