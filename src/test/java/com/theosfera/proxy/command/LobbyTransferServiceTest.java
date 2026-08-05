@@ -1,6 +1,8 @@
 package com.theosfera.proxy.command;
 
 import com.theosfera.protocol.message.payload.BackendType;
+import com.theosfera.proxy.backend.BackendIdentity;
+import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
@@ -34,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -51,6 +54,7 @@ class LobbyTransferServiceTest {
     private static final long NOW = 1_750_000_000_000L;
 
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
+    private BackendIdentityRegistry identityRegistry;
     private DistributedPlayerTransferRetryCoordinator retryCoordinator;
     private Player player;
     private LobbyTransferService service;
@@ -58,6 +62,7 @@ class LobbyTransferServiceTest {
     @BeforeEach
     void setUp() {
         sessionRegistry = new AuthenticatedPlayerSessionRegistry();
+        identityRegistry = new BackendIdentityRegistry();
         retryCoordinator = mock(DistributedPlayerTransferRetryCoordinator.class);
         player = mock(Player.class);
 
@@ -65,6 +70,7 @@ class LobbyTransferServiceTest {
 
         service = new LobbyTransferService(
                 sessionRegistry,
+                identityRegistry,
                 retryCoordinator,
                 Clock.fixed(
                         Instant.ofEpochMilli(NOW),
@@ -87,6 +93,7 @@ class LobbyTransferServiceTest {
                         DistributedPlayerTransferRetryCoordinator.class
                 )
         );
+        assertTrue(fieldTypes.contains(BackendIdentityRegistry.class));
         assertFalse(fieldTypes.contains(TransferTargetResolver.class));
     }
 
@@ -292,13 +299,139 @@ class LobbyTransferServiceTest {
         verify(player, never()).sendMessage(any(Component.class));
     }
 
+    @Test
+    void switchRejectsUnauthenticatedPlayerBeforeDistributedAllocation() {
+        service.switchLobbyInstance(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.AUTHENTICATION_REQUIRED_MESSAGE
+        );
+        verify(retryCoordinator, never()).start(any(), any());
+    }
+
+    @Test
+    void switchRejectsPlayerWithoutCurrentServerBeforeDistributedAllocation() {
+        authenticatePlayer();
+        when(player.getCurrentServer()).thenReturn(Optional.empty());
+
+        service.switchLobbyInstance(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.NO_CURRENT_SERVER_MESSAGE
+        );
+        verify(retryCoordinator, never()).start(any(), any());
+    }
+
+    @Test
+    void switchRejectsUnregisteredCurrentBackend() {
+        prepareCurrentServer("lobby-1");
+
+        service.switchLobbyInstance(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.SWITCH_REQUIRES_LOBBY_MESSAGE
+        );
+        verify(retryCoordinator, never()).start(any(), any());
+    }
+
+    @Test
+    void switchRejectsRegisteredNonLobbyBackend() {
+        prepareCurrentServer("skyblock-1");
+        identityRegistry.register(
+                new BackendIdentity(
+                        "skyblock-1",
+                        BackendType.SKYBLOCK
+                )
+        );
+
+        service.switchLobbyInstance(player);
+
+        verify(player).sendMessage(
+                LobbyTransferService.SWITCH_REQUIRES_LOBBY_MESSAGE
+        );
+        verify(retryCoordinator, never()).start(any(), any());
+    }
+
+    @Test
+    void switchDelegatesWithCurrentLobbyExcluded() {
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureSwitchRequest("lobby-1");
+
+        assertEquals(REQUEST_ID, request.requestId());
+        assertEquals(PLAYER_ID, request.playerId());
+        assertEquals("lobby-1", request.sourceBackendName());
+        assertEquals(BackendType.LOBBY, request.targetBackendType());
+        assertEquals(NOW, request.requestedAt());
+        assertSame(player, request.player());
+    }
+
+    @Test
+    void switchSameTargetFailsControlled() {
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureSwitchRequest("lobby-1");
+
+        request.sameTargetHandler().run();
+
+        verify(player).sendMessage(
+                LobbyTransferService.SWITCH_UNAVAILABLE_MESSAGE
+        );
+    }
+
+    @Test
+    void switchUnavailableAndCapacityRejectionsUseSwitchMessage() {
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureSwitchRequest("lobby-1");
+
+        request.unavailableHandler().accept(
+                TransferTargetResolution.notConfigured()
+        );
+        request.capacityRejectedHandler().accept(
+                BackendCapacityReserveResult.Status.NO_CAPACITY
+        );
+        request.capacityRejectedHandler().accept(
+                BackendCapacityReserveResult.Status.COORDINATION_UNAVAILABLE
+        );
+        request.bootstrapRejectedHandler().accept(
+                BackendBootstrapRegistrationResult.TARGET_BUSY
+        );
+
+        verify(player, times(4)).sendMessage(
+                LobbyTransferService.SWITCH_UNAVAILABLE_MESSAGE
+        );
+    }
+
+    @Test
+    void switchCompletionMessagesAreSpecific() {
+        DistributedPlayerTransferRetryCoordinator.TransferRetryRequest request =
+                captureSwitchRequest("lobby-1");
+
+        request.completionHandler().accept(
+                PlayerTransferCompletion.success()
+        );
+        request.completionHandler().accept(
+                PlayerTransferCompletion.rejected()
+        );
+        request.completionHandler().accept(
+                PlayerTransferCompletion.failed()
+        );
+        request.completionHandler().accept(
+                PlayerTransferCompletion.timedOut()
+        );
+
+        verify(player).sendMessage(
+                LobbyTransferService.SWITCH_SUCCESS_MESSAGE
+        );
+        verify(player, times(2)).sendMessage(
+                LobbyTransferService.SWITCH_FAILED_MESSAGE
+        );
+        verify(player).sendMessage(
+                LobbyTransferService.SWITCH_TIMED_OUT_MESSAGE
+        );
+    }
+
     private DistributedPlayerTransferRetryCoordinator.TransferRetryRequest
     captureRequest(String sourceBackendName) {
-        authenticatePlayer();
-        ServerConnection connection = serverConnection(sourceBackendName);
-        when(player.getCurrentServer()).thenReturn(
-                Optional.of(connection)
-        );
+        prepareCurrentServer(sourceBackendName);
 
         service.transferToLobby(player);
 
@@ -309,6 +442,38 @@ class LobbyTransferServiceTest {
         );
         verify(retryCoordinator).start(captor.capture());
         return captor.getValue();
+    }
+
+    private DistributedPlayerTransferRetryCoordinator.TransferRetryRequest
+    captureSwitchRequest(String sourceBackendName) {
+        prepareCurrentServer(sourceBackendName);
+        identityRegistry.register(
+                new BackendIdentity(
+                        sourceBackendName,
+                        BackendType.LOBBY
+                )
+        );
+
+        service.switchLobbyInstance(player);
+
+        ArgumentCaptor<DistributedPlayerTransferRetryCoordinator.TransferRetryRequest>
+                captor = ArgumentCaptor.forClass(
+                DistributedPlayerTransferRetryCoordinator
+                        .TransferRetryRequest.class
+        );
+        verify(retryCoordinator).start(
+                captor.capture(),
+                eq(Set.of(sourceBackendName))
+        );
+        return captor.getValue();
+    }
+
+    private void prepareCurrentServer(String sourceBackendName) {
+        authenticatePlayer();
+        ServerConnection connection = serverConnection(sourceBackendName);
+        when(player.getCurrentServer()).thenReturn(
+                Optional.of(connection)
+        );
     }
 
     private void authenticatePlayer() {
