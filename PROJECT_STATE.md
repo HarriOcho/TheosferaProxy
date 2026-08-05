@@ -1951,8 +1951,7 @@ La coordinación futura será independiente del transporte mediante contratos
 asíncronos y adaptadores. La lógica de dominio no dependerá directamente de
 Redis ni de un cliente concreto.
 
-El primer incremento local de esa frontera está repartido entre PR `#44` y PR
-`#45`:
+El primer incremento local de esa frontera está repartido entre PR `#44` y PR `#45`:
 
 - PR `#44` introdujo `PlayerSessionCoordinator` como contrato asíncrono;
 - PR `#44` introdujo `PlayerSessionLeaseRequest`, `PlayerSessionLease`,
@@ -2730,3 +2729,386 @@ Restricciones para el siguiente milestone:
 - distributed transfer coordination y distributed backend bootstrap continuan
   siendo fronteras posteriores e independientes;
 - no introducir parties, friends ni squads.
+
+## 32. Checkpoint - Productive Redis Transfer Capacity Runtime Validation
+
+El wiring productivo de capacidad distribuida para `TRANSFER_REQUEST` quedo
+implementado y validado en runtime real sobre la rama
+`feature/redis-backend-capacity-runtime`.
+
+Este checkpoint supersede el punto de reanudacion del `#31` que indicaba que el
+wiring productivo de capacidad distribuida seguia pendiente. El checkpoint
+`#31` se conserva como evidencia del rollout previo del foundation y de la
+decision de `reservationTtl = 20 segundos`.
+
+### Estado de codigo y validacion automatizada
+
+HEAD funcional validado antes de este checkpoint:
+
+```text
+519639d584cc900870e7a775e5b68180732a647f
+519639d test: register pending transfer in distributed test runtime
+```
+
+La rama incorporo la ruta productiva distribuida mediante:
+
+- `DistributedBackendCapacityReleaseService` para release exacto por
+  `BackendCapacityReserveRequest`;
+- `DistributedPlayerTransferAttemptLifecycle` para cleanup exacto de pending,
+  bootstrap y reserva distribuida;
+- `DistributedPlayerTransferRetryCoordinator` como state machine asincrona;
+- `DistributedPlayerTransferTargetAllocationService` como frontera de
+  allocation/reservation distribuida;
+- handoff de reserva exitosa mediante `BackendCapacityHandoffService`;
+- `TransferRequestMessageHandler` conectado al retry coordinator distribuido;
+- composition root de `TheosferaProxy` usando el mismo
+  `BackendCapacityCoordinator` para reserve y release;
+- una ruta `candidates()` de `TransferTargetResolver` para candidatos
+  distribuidos sin usar connected player count local como autoridad.
+
+Semantica productiva confirmada en codigo:
+
+- `TRANSFER_REQUEST` ya no usa la reserva local de capacidad como autoridad;
+- Redis no degrada silenciosamente hacia
+  `BackendCapacityReservationRegistry` para `TRANSFER_REQUEST`;
+- `SUCCESS` no libera inmediatamente la reserva: primero registra handoff y
+  espera la confirmacion de presencia del destino;
+- fallo o rechazo limpia el intento exacto y solo permite retry si el release
+  distribuido fue confirmado;
+- `TIMED_OUT` limpia de forma exacta y es terminal;
+- conflicto, mismatch o incertidumbre de cleanup falla cerrado;
+- los callbacks tardios no pueden liberar capacidad perteneciente a un intento
+  posterior;
+- los status de capacidad distribuida se mapean explicitamente, incluidos
+  `NO_CAPACITY`, `REQUEST_ID_CONFLICT`, `SESSION_NOT_FOUND`,
+  `NOT_SESSION_OWNER`, `OCCUPANCY_UNAVAILABLE` y
+  `COORDINATION_UNAVAILABLE`.
+
+La ruta sincrona historica `TransferTargetResolver.resolve()` permanece para
+consumidores legacy. En este incremento solo `TRANSFER_REQUEST` fue migrado a
+capacidad distribuida. `/hub`, `/lobby` y el failover ante kicks conservan su
+ruta productiva local de capacidad y no deben describirse todavia como
+consumidores Redis.
+
+Validacion automatizada ejecutada sobre `519639d`:
+
+```powershell
+.\gradlew.bat test `
+  --tests "*ProtocolColdBackendBootstrapFlowTest" `
+  --tests "*ProtocolPlayerTransferFlowTest" `
+  --no-daemon
+```
+
+Resultado: `BUILD SUCCESSFUL`.
+
+Tambien se ejecuto:
+
+```powershell
+.\gradlew.bat test `
+  --tests "*DistributedBackendCapacityReleaseServiceTest" `
+  --tests "*DistributedPlayerTransferAttemptLifecycleTest" `
+  --tests "*DistributedPlayerTransferRetryCoordinatorTest" `
+  --tests "*TransferRequestMessageHandlerTest" `
+  --tests "*TransferTargetResolverDistributedCandidatesTest" `
+  --tests "*TransferTargetResolverTest" `
+  --no-daemon
+```
+
+Resultado: `BUILD SUCCESSFUL`.
+
+Finalmente:
+
+```powershell
+.\gradlew.bat test --no-daemon
+.\gradlew.bat clean build --no-daemon
+git diff --check
+git status
+```
+
+Resultado confirmado:
+
+- suite completa: `BUILD SUCCESSFUL`;
+- clean build: `BUILD SUCCESSFUL`;
+- `git diff --check`: sin salida;
+- working tree limpio y sincronizado antes de la validacion runtime.
+
+### Topologia runtime de la validacion
+
+Redis Open Source `7.4.2` compilado localmente en WSL estuvo operativo en
+`127.0.0.1:6379`.
+
+Topologia utilizada:
+
+```text
+proxy-1     127.0.0.1:25565
+proxy-2     127.0.0.1:25564
+lobby-1     127.0.0.1:25566
+skyblock-1  127.0.0.1:25567
+auth-1      127.0.0.1:25568
+```
+
+TheosferaCore estuvo instalado en Auth, Lobby y Skyblock; TheosferaProxy solo
+en Velocity. La prueba explicita de transferencia utilizo
+`/theosfera transfer <lobby|skyblock>` para producir `TRANSFER_REQUEST`.
+`/server` de Velocity no se utilizo como evidencia porque no atraviesa la ruta
+productiva de allocation distribuida de Theosfera.
+
+### SUCCESS: reservation -> connection -> presence -> exact release
+
+Con un jugador autenticado en `lobby-1`, antes de transferir se observo:
+
+- session Redis propiedad de `proxy-1`;
+- presence Redis en `lobby-1`;
+- occupancy global de `lobby-1 = 1`;
+- occupancy global de `skyblock-1 = 0`;
+- cero keys `backend-capacity:*`.
+
+La primera transferencia exitosa hacia Skyblock creo una reserva con
+`requestId`:
+
+```text
+b75985ee-8c0a-48a7-9ca9-cff0afdd9724
+```
+
+Mientras la reserva estaba viva se observo:
+
+```text
+backend-name          = skyblock-1
+proxy-name            = proxy-1
+session-fencing-token = 11
+PTTL                   ~= 19942 ms
+lobby occupancy       = 1
+skyblock occupancy    = 0
+```
+
+Esto demuestra que la plaza quedo protegida antes de contabilizar presencia en
+el destino.
+
+Despues de `PLAYER_SERVER_READY`:
+
+- `player-presence` paso a `skyblock-1`;
+- el indice de `lobby-1` quedo vacio;
+- el indice de `skyblock-1` quedo con el jugador;
+- no quedaron keys de capacidad residuales.
+
+La prueba posterior de last-slot capturo ademas el release explicito de una
+reserva exitosa: despues de publicar presencia en `skyblock-1`, Redis ejecuto
+la validacion exacta del hash de reservation y posteriormente:
+
+```text
+DEL  theosfera:coordination:backend-capacity:reservation:<requestId>
+ZREM theosfera:coordination:backend-capacity:backend:skyblock-1 <requestId>
+```
+
+Por tanto el handoff exitoso no depende solamente del TTL para recuperar la
+capacidad.
+
+### Connection failure: exact release antes del retry
+
+Para provocar un fallo fisico, `skyblock-1` se apago y se disparo
+inmediatamente un `TRANSFER_REQUEST` mientras aun era candidato localmente.
+
+Request validado:
+
+```text
+f565f98d-88ff-4f93-a4b7-c5456ebd285a
+```
+
+Redis observo en orden:
+
+```text
+HSET reservation:f565f98d...
+PEXPIRE ... 20000
+ZADD backend-capacity:backend:skyblock-1 ...
+```
+
+Aproximadamente 13.5 ms despues, tras fallar la conexion, el release exacto
+leyo la reserva y ejecuto:
+
+```text
+DEL  reservation:f565f98d...
+ZREM backend-capacity:backend:skyblock-1 f565f98d...
+```
+
+Estado final:
+
+- el jugador permanecio en `lobby-1`;
+- presence continuo en `lobby-1`;
+- occupancy de `skyblock-1 = 0`;
+- no quedaron keys `backend-capacity:*`;
+- al no existir otro backend SKYBLOCK, el intento termino con fallo controlado.
+
+Esto confirma que `FAILED` no inicia un retry alternativo antes de demostrar el
+release exacto de la reserva del intento fallido.
+
+### Redis outage sostenido y fencing
+
+Con el jugador en `lobby-1`, Redis se detuvo mediante `SHUTDOWN SAVE`.
+Durante la caida se ejecuto `/theosfera transfer skyblock` y el jugador no fue
+movido a `skyblock-1`; no se observo fallback local de capacidad.
+
+La caida se prolongo mas alla de la ventana de lease. El runtime registro:
+
+```text
+Estado de coordinacion distribuida: HEALTHY -> FENCED.
+El Proxy fue fenced; se desconectaran 1 jugadores para evitar autoridad distribuida obsoleta.
+```
+
+El cliente fue desconectado de forma controlada con el mensaje:
+
+```text
+Este Proxy perdio su autoridad distribuida. Reconecta en unos momentos.
+```
+
+Despues de restaurar Redis, la membership, session y player-presence antiguas
+ya habian expirado. El sorted set de `backend-presence:lobby-1` conservaba un
+miembro stale por score, como estaba previsto. El pruning autoritativo con
+`Redis TIME` + `ZREMRANGEBYSCORE -inf now` elimino exactamente un miembro y
+dejó occupancy `0`.
+
+No se afirma que en esta prueba se haya observado directamente una respuesta
+terminal especifica `COORDINATION_UNAVAILABLE` del handler de transferencia.
+La evidencia runtime demostrada es mas amplia: con Redis no autoritativo no se
+realizo la transferencia, no hubo fallback local y una perdida sostenida de
+autoridad termino en fencing y desconexion controlada.
+
+### Multi-proxy last-slot: cero overcommit
+
+Para validar contencion global real se configuro temporalmente en ambos
+proxies:
+
+```properties
+skyblock-1=SKYBLOCK,1,80
+```
+
+Dos jugadores autenticados quedaron simultaneamente en `lobby-1`:
+
+- jugador A propiedad de `proxy-1`;
+- jugador B propiedad de `proxy-2`;
+- `lobby-1` global `ZCARD = 2`;
+- `skyblock-1` global `ZCARD = 0`;
+- cero reservations iniciales.
+
+Los dos procesos enviaron casi consecutivamente
+`/theosfera transfer skyblock`.
+
+El primer request:
+
+```text
+2da414e7-ec6f-46f2-b014-2272406004a0
+```
+
+obtuvo:
+
+```text
+HSET reservation:2da414e7...
+PEXPIRE ... 20000
+ZADD backend-capacity:backend:skyblock-1 2da414e7...
+```
+
+El segundo request:
+
+```text
+11f14213-d08f-44a0-9da4-9f8702653d0a
+```
+
+alcanzo el mismo Lua autoritativo y ejecuto pruning, `EXISTS`, `ZCARD` de
+occupancy y `ZCARD` de reservations, pero no produjo `HSET`, `PEXPIRE` ni
+`ZADD` para una segunda reserva.
+
+En ese instante el primer jugador todavia no habia publicado presencia en
+Skyblock, por lo que la proteccion contra overcommit dependio directamente de
+contar la reserva vigente:
+
+```text
+occupied + reserved = 0 + 1 = 1
+capacity = 1
+```
+
+Posteriormente el ganador publico presencia en `skyblock-1` y su reserva fue
+liberada explicitamente mediante `DEL + ZREM`.
+
+Estado final observado:
+
+```text
+lobby-1 occupancy    = 1
+skyblock-1 occupancy = 1
+backend-capacity:*   = vacio
+```
+
+El jugador de `proxy-1` quedo en `skyblock-1` y el jugador de `proxy-2`
+permanecio en `lobby-1`. Nunca se observo occupancy `2` en un backend con
+capacidad configurada `1`.
+
+Esta prueba confirma que dos procesos Proxy independientes consumen una unica
+capacidad global atomica y que una reserva in-flight evita el race de ultima
+plaza antes de que exista presencia del destino.
+
+### Recuperacion y restauracion del entorno
+
+Despues del outage se reiniciaron ambos proxies y adquirieron nuevas
+incarnations/fencing. Tras la restauracion final de la configuracion runtime se
+observaron memberships activas con fencing `15` y `16`, TTL positivos y cero
+keys residuales `backend-capacity:*`.
+
+La capacidad experimental se restauro en ambos archivos runtime a:
+
+```properties
+skyblock-1=SKYBLOCK,200,80
+```
+
+Durante esa restauracion, Windows PowerShell `Set-Content -Encoding utf8`
+introdujo un BOM UTF-8 al inicio de `backends.properties`; el loader fallo
+cerrado al interpretar `U+FEFF#` como una entrada. El incidente fue exclusivo
+del archivo runtime de desarrollo y no un defecto del loader. Ambos archivos
+se reescribieron como UTF-8 sin BOM y los proxies arrancaron correctamente.
+
+Al terminar la validacion:
+
+- Redis estaba saludable;
+- `proxy-1` y `proxy-2` tenian memberships nuevas y renovables;
+- no habia reservations de capacidad residuales;
+- `skyblock-1` habia vuelto a capacidad `200` en ambos proxies;
+- la network podia apagarse sin conservar estado de prueba pendiente.
+
+### Decision de superficie de transferencia
+
+Decision arquitectonica aprobada durante este checkpoint:
+
+- el comando `/server` de Velocity no sera una ruta valida de transferencia en
+  Theosfera;
+- no existira excepcion de uso para staff;
+- las transferencias explicitas deben pasar por la superficie de Theosfera,
+  actualmente `/theosfera transfer ...`, para no saltarse routing, health,
+  policy, capacity, fencing ni coordinacion distribuida;
+- este bloqueo de `/server` es hardening futuro aprobado y no fue implementado
+  dentro de esta rama.
+
+### Estado actual y punto exacto de reanudacion
+
+`TRANSFER_REQUEST` ya es un consumer productivo de capacidad Redis y quedo
+validado automatica y operacionalmente con success, failure, outage/fencing y
+contencion multi-proxy.
+
+Todavia permanecen en la ruta local de capacidad:
+
+- `LobbyTransferService`, que respalda `/hub` y `/lobby`;
+- el failover ante kicks de backends.
+
+`BackendCapacityReservationRegistry` sigue siendo necesario para esos consumers
+legacy; no debe confundirse con fallback de `TRANSFER_REQUEST`.
+
+Punto exacto de reanudacion:
+
+1. migrar el siguiente consumer productivo, empezando por
+   `LobbyTransferService` / `/hub` / `/lobby`, hacia allocation y reservation
+   distribuidas sin fallback local silencioso;
+2. preservar `PlayerSessionLease` exacto, fencing, release exact-match,
+   semantics de retry y `TIMED_OUT` terminal;
+3. despues revisar/migrar la capacidad usada por el failover ante kicks sin
+   debilitar su politica `RESOLVED`-only y fail-closed;
+4. implementar posteriormente el hardening que elimina `/server` de Velocity
+   como bypass de transferencias;
+5. mantener distributed transfer coordination y distributed backend bootstrap
+   como fronteras independientes hasta su milestone explicito;
+6. no introducir parties, friends ni squads en este incremento.
