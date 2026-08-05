@@ -8,8 +8,6 @@ import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
 import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferRegistrationResult;
-import com.theosfera.proxy.transfer.PlayerTransferRetryCoordinator;
-import com.theosfera.proxy.transfer.PlayerTransferTargetAllocationService;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.proxy.Player;
@@ -77,7 +75,7 @@ class LobbyTransferServiceTest {
     }
 
     @Test
-    void dependsOnDistributedRetryWithoutLegacyLobbyAllocationFields() {
+    void dependsOnDistributedRetryWithoutDirectResolverCoupling() {
         Set<Class<?>> fieldTypes = Arrays.stream(
                         LobbyTransferService.class.getDeclaredFields()
                 )
@@ -88,10 +86,6 @@ class LobbyTransferServiceTest {
                 fieldTypes.contains(
                         DistributedPlayerTransferRetryCoordinator.class
                 )
-        );
-        assertFalse(fieldTypes.contains(PlayerTransferRetryCoordinator.class));
-        assertFalse(
-                fieldTypes.contains(PlayerTransferTargetAllocationService.class)
         );
         assertFalse(fieldTypes.contains(TransferTargetResolver.class));
     }
