@@ -7,15 +7,12 @@ import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -30,7 +27,6 @@ public final class BackendOperationalSnapshotService {
     private final BackendAuthorizationPolicy authorizationPolicy;
     private final BackendIdentityRegistry identityRegistry;
     private final BackendHealthRegistry healthRegistry;
-    private final BackendCapacityReservationRegistry capacityRegistry;
     private final BackendBootstrapRegistry bootstrapRegistry;
 
     public BackendOperationalSnapshotService(
@@ -38,7 +34,6 @@ public final class BackendOperationalSnapshotService {
             BackendAuthorizationPolicy authorizationPolicy,
             BackendIdentityRegistry identityRegistry,
             BackendHealthRegistry healthRegistry,
-            BackendCapacityReservationRegistry capacityRegistry,
             BackendBootstrapRegistry bootstrapRegistry
     ) {
         this.proxyServer = Objects.requireNonNull(
@@ -57,10 +52,6 @@ public final class BackendOperationalSnapshotService {
                 healthRegistry,
                 "healthRegistry cannot be null"
         );
-        this.capacityRegistry = Objects.requireNonNull(
-                capacityRegistry,
-                "capacityRegistry cannot be null"
-        );
         this.bootstrapRegistry = Objects.requireNonNull(
                 bootstrapRegistry,
                 "bootstrapRegistry cannot be null"
@@ -74,16 +65,9 @@ public final class BackendOperationalSnapshotService {
         Map<String, Instant> healthyActivity =
                 healthRegistry.snapshot();
 
-        Map<UUID, BackendCapacityReservation>
-                capacityReservations =
-                capacityRegistry.snapshot();
-
         Map<UUID, BackendBootstrapReservation>
                 bootstrapReservations =
                 bootstrapRegistry.snapshotByRequest();
-
-        Map<String, Integer> reservedCountsByBackend =
-                reservedCounts(capacityReservations);
 
         Set<String> bootstrapTargets =
                 bootstrapTargets(bootstrapReservations);
@@ -106,7 +90,6 @@ public final class BackendOperationalSnapshotService {
                                 entry.getValue(),
                                 identities,
                                 healthyActivity,
-                                reservedCountsByBackend,
                                 bootstrapTargets
                         )
                 )
@@ -120,7 +103,6 @@ public final class BackendOperationalSnapshotService {
             BackendPolicyEntry policyEntry,
             Map<String, BackendIdentity> identities,
             Map<String, Instant> healthyActivity,
-            Map<String, Integer> reservedCountsByBackend,
             Set<String> bootstrapTargets
     ) {
         Optional<RegisteredServer> registeredServer =
@@ -153,30 +135,8 @@ public final class BackendOperationalSnapshotService {
                         healthyActivity.get(serverName)
                 ),
                 connectedPlayers,
-                reservedCountsByBackend.getOrDefault(
-                        serverName,
-                        0
-                ),
                 bootstrapTargets.contains(serverName)
         );
-    }
-
-    private Map<String, Integer> reservedCounts(
-            Map<UUID, BackendCapacityReservation> reservations
-    ) {
-        Map<String, Integer> counts = new HashMap<>();
-
-        reservations
-                .values()
-                .forEach(reservation ->
-                        counts.merge(
-                                reservation.backendName(),
-                                1,
-                                Math::addExact
-                        )
-                );
-
-        return Map.copyOf(counts);
     }
 
     private Set<String> bootstrapTargets(

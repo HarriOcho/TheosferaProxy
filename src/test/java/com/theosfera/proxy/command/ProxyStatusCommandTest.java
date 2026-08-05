@@ -166,9 +166,8 @@ class ProxyStatusCommandTest {
                         "● lobby-1 [LOBBY] — HEALTHY"
                                 + "\n  Velocity: Sí"
                                 + "  |  Autenticado: Sí"
-                                + "\n  Carga: 3/100"
-                                + "  |  Conectados: 2"
-                                + "  |  Reservados: 1"
+                                + "\n  Capacidad: 100"
+                                + "  |  Conectados en este proxy: 2"
                                 + "\n  Preferencia: 90"
                                 + "  |  Última salud: hace 30 s"
                 ),
@@ -377,7 +376,6 @@ class ProxyStatusCommandTest {
                 healthStatus,
                 lastHealthyActivity,
                 2,
-                1,
                 bootstrapReservationPresent
         );
     }

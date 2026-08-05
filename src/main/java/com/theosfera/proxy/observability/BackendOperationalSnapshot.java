@@ -17,7 +17,6 @@ public record BackendOperationalSnapshot(
         BackendHealthStatus healthStatus,
         Optional<Instant> lastHealthyActivity,
         int connectedPlayers,
-        int reservedCapacity,
         boolean bootstrapReservationPresent
 ) {
 
@@ -56,19 +55,6 @@ public record BackendOperationalSnapshot(
                     "connectedPlayers cannot be negative"
             );
         }
-
-        if (reservedCapacity < 0) {
-            throw new IllegalArgumentException(
-                    "reservedCapacity cannot be negative"
-            );
-        }
-    }
-
-    public int allocatedPlayers() {
-        return Math.addExact(
-                connectedPlayers,
-                reservedCapacity
-        );
     }
 
     private static String requireServerName(String serverName) {

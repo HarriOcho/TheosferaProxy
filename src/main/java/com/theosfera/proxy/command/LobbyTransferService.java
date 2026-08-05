@@ -19,47 +19,87 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 
+import static com.theosfera.proxy.ui.TheosferaPalette.AMBER;
+import static com.theosfera.proxy.ui.TheosferaPalette.GOLD;
+import static com.theosfera.proxy.ui.TheosferaPalette.LIGHT_GOLD;
+import static com.theosfera.proxy.ui.TheosferaPalette.SECONDARY_TEXT;
+
 public final class LobbyTransferService {
 
     static final Component AUTHENTICATION_REQUIRED_MESSAGE =
             Component.text(
-                    "Debes autenticarte antes de usar este comando."
+                    "Primero debes iniciar sesión.",
+                    AMBER
             );
 
     static final Component NO_CURRENT_SERVER_MESSAGE =
             Component.text(
-                    "No se pudo confirmar tu servidor actual."
-            );
+                    "No pudimos confirmar en qué servidor estás.",
+                    AMBER
+            ).append(Component.text(
+                    " Inténtalo de nuevo.",
+                    SECONDARY_TEXT
+            ));
 
     static final Component LOBBY_UNAVAILABLE_MESSAGE =
             Component.text(
-                    "El Lobby no está disponible ahora."
-            );
+                    "El Lobby no está disponible en este momento.",
+                    AMBER
+            ).append(Component.text(
+                    " Inténtalo de nuevo en unos segundos.",
+                    SECONDARY_TEXT
+            ));
 
     static final Component ALREADY_IN_LOBBY_MESSAGE =
             Component.text(
-                    "Ya estás en el Lobby."
-            );
+                    "Ya estás en el ",
+                    GOLD
+            ).append(Component.text(
+                    "Lobby",
+                    LIGHT_GOLD
+            )).append(Component.text(
+                    ".",
+                    SECONDARY_TEXT
+            ));
 
     static final Component TRANSFER_PENDING_MESSAGE =
             Component.text(
-                    "Ya tienes una transferencia pendiente."
-            );
+                    "Ya estamos procesando tu traslado.",
+                    GOLD
+            ).append(Component.text(
+                    " Espera un momento.",
+                    SECONDARY_TEXT
+            ));
 
     static final Component TRANSFER_SUCCESS_MESSAGE =
             Component.text(
-                    "Te enviamos al Lobby."
-            );
+                    "Has llegado al ",
+                    GOLD
+            ).append(Component.text(
+                    "Lobby",
+                    LIGHT_GOLD
+            )).append(Component.text(
+                    ".",
+                    SECONDARY_TEXT
+            ));
 
     static final Component TRANSFER_FAILED_MESSAGE =
             Component.text(
-                    "No se pudo enviarte al Lobby."
-            );
+                    "No pudimos llevarte al Lobby.",
+                    AMBER
+            ).append(Component.text(
+                    " Inténtalo de nuevo.",
+                    SECONDARY_TEXT
+            ));
 
     static final Component TRANSFER_TIMED_OUT_MESSAGE =
             Component.text(
-                    "El traslado al Lobby tardó demasiado."
-            );
+                    "El traslado al Lobby está tardando demasiado.",
+                    AMBER
+            ).append(Component.text(
+                    " Inténtalo de nuevo.",
+                    SECONDARY_TEXT
+            ));
 
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final DistributedPlayerTransferRetryCoordinator retryCoordinator;
