@@ -13,7 +13,7 @@ import static org.mockito.Mockito.mock;
 class DistributedBackendCapacityRuntimeTest {
 
     @Test
-    void createsSharedAllocationAndHandoffServicesFromAuthoritativeCoordinators() {
+    void createsSharedCapacityServicesFromAuthoritativeCoordinators() {
         BackendOccupancyCoordinator occupancyCoordinator =
                 mock(BackendOccupancyCoordinator.class);
         BackendCapacityCoordinator capacityCoordinator =
@@ -38,6 +38,7 @@ class DistributedBackendCapacityRuntimeTest {
                 runtime.capacityCoordinator()
         );
         assertNotNull(runtime.allocationService());
+        assertNotNull(runtime.releaseService());
         assertNotNull(runtime.handoffService());
     }
 }
