@@ -29,6 +29,25 @@ seguridad —por ejemplo, un motivo original de desconexión emitido por un
 backend— pueden conservar su componente original cuando modificarlo alteraría
 la semántica o eliminaría información necesaria.
 
+## Claridad para jugadores y staff
+
+Los mensajes normales de juego deben describir la acción, el estado o lo que
+el usuario puede hacer a continuación con lenguaje claro y directo.
+
+No deben exponer detalles internos de coordinación salvo en herramientas de
+diagnóstico o administración que los requieran expresamente. En particular,
+evitar en mensajes ordinarios:
+
+- `requestId`, `attemptId`, fencing tokens u otros identificadores internos;
+- nombres de clases, excepciones o componentes de infraestructura;
+- enums crudos como `SKYBLOCK` cuando pueda mostrarse `Skyblock`;
+- referencias a Redis, Plugin Messaging, leases o coordinación distribuida;
+- mensajes que obliguen al jugador a conocer la arquitectura de Theosfera.
+
+Los detalles técnicos deben conservarse donde sean útiles para operar o
+depurar el sistema: logs, métricas, comandos administrativos de diagnóstico o
+trazas controladas.
+
 ## Paleta oficial
 
 | Nombre | Hex |
