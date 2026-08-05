@@ -53,7 +53,6 @@ import com.theosfera.proxy.session.velocity.VelocityPlayerSessionAcquisitionTime
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionReleaseTimeoutScheduler;
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionRenewalScheduler;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
-import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.DistributedBackendCapacityReleaseService;
 import com.theosfera.proxy.transfer.DistributedBackendCapacityRuntime;
 import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
@@ -99,7 +98,6 @@ public final class TheosferaProxy {
     private final PlayerSessionLeaseBindingRegistry sessionLeaseBindingRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
-    private final BackendCapacityReservationRegistry capacityRegistry;
     private final BackendBootstrapRegistry bootstrapRegistry;
     private final PendingPlayerFailoverRegistry failoverRegistry;
     private final UUID incarnationId;
@@ -139,7 +137,6 @@ public final class TheosferaProxy {
         this.sessionLeaseBindingRegistry = new PlayerSessionLeaseBindingRegistry();
         this.presenceRegistry = new PlayerServerPresenceRegistry(sessionRegistry);
         this.transferRegistry = new PendingPlayerTransferRegistry();
-        this.capacityRegistry = new BackendCapacityReservationRegistry();
         this.bootstrapRegistry = new BackendBootstrapRegistry();
         this.failoverRegistry = new PendingPlayerFailoverRegistry();
 
@@ -285,7 +282,6 @@ public final class TheosferaProxy {
                 sessionLeaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
-                capacityRegistry,
                 sessionRegistry,
                 releaseService,
                 presenceRuntimeService,
@@ -459,7 +455,6 @@ public final class TheosferaProxy {
     private void clearRuntimeRegistries() {
         bootstrapRegistry.clear();
         failoverRegistry.clear();
-        capacityRegistry.clear();
         transferRegistry.clear();
         presenceRegistry.clear();
         if (releaseService != null) {
@@ -541,8 +536,7 @@ public final class TheosferaProxy {
                 proxyServer,
                 authorizationPolicy,
                 identityRegistry,
-                healthRegistry,
-                capacityRegistry
+                healthRegistry
         );
         initializeDistributedBackendCapacity(
                 authorizationPolicy,
@@ -604,7 +598,6 @@ public final class TheosferaProxy {
                         authorizationPolicy,
                         identityRegistry,
                         healthRegistry,
-                        capacityRegistry,
                         bootstrapRegistry
                 );
         proxyStatusCommandRegistration = new ProxyStatusCommandRegistration(
