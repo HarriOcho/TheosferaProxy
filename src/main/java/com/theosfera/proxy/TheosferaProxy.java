@@ -25,6 +25,7 @@ import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfi
 import com.theosfera.proxy.coordination.velocity.VelocityRedisCoordinationBootstrap;
 import com.theosfera.proxy.failover.BackendKickFailoverListener;
 import com.theosfera.proxy.failover.BackendKickFailoverService;
+import com.theosfera.proxy.failover.DistributedBackendKickFailoverCoordinator;
 import com.theosfera.proxy.failover.PendingPlayerFailoverRegistry;
 import com.theosfera.proxy.messaging.ProtocolChannel;
 import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
@@ -56,6 +57,7 @@ import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.DistributedBackendCapacityReleaseService;
 import com.theosfera.proxy.transfer.DistributedBackendCapacityRuntime;
 import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
+import com.theosfera.proxy.transfer.DistributedResolvedTargetAllocationService;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.TransferResultSender;
@@ -568,13 +570,26 @@ public final class TheosferaProxy {
                 distributedTransferRetryCoordinator
         );
 
+        DistributedResolvedTargetAllocationService kickFailoverAllocationService =
+                new DistributedResolvedTargetAllocationService(
+                        targetResolver,
+                        sessionLeaseBindingRegistry,
+                        distributedBackendCapacityRuntime.occupancyCoordinator(),
+                        distributedBackendCapacityRuntime.capacityCoordinator()
+                );
+        DistributedBackendKickFailoverCoordinator kickFailoverCoordinator =
+                new DistributedBackendKickFailoverCoordinator(
+                        kickFailoverAllocationService,
+                        failoverRegistry,
+                        distributedBackendCapacityRuntime.releaseService(),
+                        distributedBackendCapacityRuntime.handoffService(),
+                        logger
+                );
         backendKickFailoverListener = new BackendKickFailoverListener(
                 new BackendKickFailoverService(
                         sessionRegistry,
                         identityRegistry,
-                        targetResolver,
-                        bootstrapRegistry,
-                        failoverRegistry
+                        kickFailoverCoordinator
                 )
         );
         lobbyCommandRegistration = new LobbyCommandRegistration(
