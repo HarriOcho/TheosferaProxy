@@ -12,13 +12,13 @@ import java.util.Objects;
  *
  * <p>The bundle deliberately owns no Redis-specific implementation details.
  * The composition root supplies authoritative coordinator implementations and
- * consumers receive one shared allocation service and one shared handoff
- * service.</p>
+ * consumers receive shared allocation, exact-release and handoff services.</p>
  */
 public record DistributedBackendCapacityRuntime(
         BackendOccupancyCoordinator occupancyCoordinator,
         BackendCapacityCoordinator capacityCoordinator,
         DistributedPlayerTransferTargetAllocationService allocationService,
+        DistributedBackendCapacityReleaseService releaseService,
         BackendCapacityHandoffService handoffService
 ) {
 
@@ -34,6 +34,10 @@ public record DistributedBackendCapacityRuntime(
         Objects.requireNonNull(
                 allocationService,
                 "allocationService cannot be null"
+        );
+        Objects.requireNonNull(
+                releaseService,
+                "releaseService cannot be null"
         );
         Objects.requireNonNull(
                 handoffService,
@@ -59,6 +63,10 @@ public record DistributedBackendCapacityRuntime(
                         capacityCoordinator,
                         "capacityCoordinator cannot be null"
                 );
+        Logger nonNullLogger = Objects.requireNonNull(
+                logger,
+                "logger cannot be null"
+        );
 
         return new DistributedBackendCapacityRuntime(
                 nonNullOccupancy,
@@ -79,13 +87,14 @@ public record DistributedBackendCapacityRuntime(
                         nonNullOccupancy,
                         nonNullCapacity
                 ),
+                new DistributedBackendCapacityReleaseService(
+                        nonNullCapacity,
+                        nonNullLogger
+                ),
                 new BackendCapacityHandoffService(
                         nonNullCapacity,
                         new BackendCapacityHandoffRegistry(),
-                        Objects.requireNonNull(
-                                logger,
-                                "logger cannot be null"
-                        )
+                        nonNullLogger
                 )
         );
     }
