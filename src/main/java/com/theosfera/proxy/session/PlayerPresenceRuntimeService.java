@@ -1,5 +1,6 @@
 package com.theosfera.proxy.session;
 
+import com.theosfera.proxy.coordination.BackendCapacityHandoffLifecycle;
 import com.theosfera.proxy.coordination.PlayerPresenceCoordinator;
 import com.theosfera.proxy.coordination.PlayerPresencePublishRequest;
 import com.theosfera.proxy.coordination.PlayerPresencePublishResult;
@@ -15,7 +16,6 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 
 public final class PlayerPresenceRuntimeService {
@@ -28,6 +28,7 @@ public final class PlayerPresenceRuntimeService {
     private final Duration renewInterval;
     private final Logger logger;
 
+    private volatile BackendCapacityHandoffLifecycle capacityHandoffLifecycle;
     private PlayerPresenceRenewalScheduler.Handle renewalTask;
 
     public PlayerPresenceRuntimeService(
@@ -84,6 +85,25 @@ public final class PlayerPresenceRuntimeService {
         if (current != null) {
             current.cancel();
         }
+    }
+
+    public synchronized void configureCapacityHandoffLifecycle(
+            BackendCapacityHandoffLifecycle lifecycle
+    ) {
+        if (renewalTask != null) {
+            throw new IllegalStateException(
+                    "capacity handoff lifecycle must be configured before presence runtime starts"
+            );
+        }
+        if (capacityHandoffLifecycle != null) {
+            throw new IllegalStateException(
+                    "capacity handoff lifecycle is already configured"
+            );
+        }
+        capacityHandoffLifecycle = Objects.requireNonNull(
+                lifecycle,
+                "lifecycle cannot be null"
+        );
     }
 
     public PlayerPresenceUpdateResult publishReady(
@@ -207,16 +227,22 @@ public final class PlayerPresenceRuntimeService {
             }
 
             switch (result.status()) {
-                case RECORDED, UPDATED -> logger.debug(
-                        "Presencia Redis publicada para {} en {}.",
-                        presence.playerId(),
-                        presence.backendName()
-                );
-                case ALREADY_RECORDED -> logger.trace(
-                        "Presencia Redis renovada para {} en {}.",
-                        presence.playerId(),
-                        presence.backendName()
-                );
+                case RECORDED, UPDATED -> {
+                    logger.debug(
+                            "Presencia Redis publicada para {} en {}.",
+                            presence.playerId(),
+                            presence.backendName()
+                    );
+                    confirmCapacityHandoff(presence, lease);
+                }
+                case ALREADY_RECORDED -> {
+                    logger.trace(
+                            "Presencia Redis renovada para {} en {}.",
+                            presence.playerId(),
+                            presence.backendName()
+                    );
+                    confirmCapacityHandoff(presence, lease);
+                }
                 case COORDINATION_UNAVAILABLE -> logger.warn(
                         "No se pudo renovar/publicar presencia Redis para {} porque la coordinacion no esta disponible.",
                         presence.playerId()
@@ -233,6 +259,30 @@ public final class PlayerPresenceRuntimeService {
                 );
             }
         });
+    }
+
+    private void confirmCapacityHandoff(
+            PlayerServerPresence presence,
+            PlayerSessionLease lease
+    ) {
+        BackendCapacityHandoffLifecycle lifecycle = capacityHandoffLifecycle;
+        if (lifecycle == null) {
+            return;
+        }
+
+        try {
+            lifecycle.onPresenceConfirmed(
+                    lease,
+                    presence.backendName()
+            );
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "Presencia Redis confirmada para {} en {}, pero fallo el callback de handoff de capacidad.",
+                    presence.playerId(),
+                    presence.backendName(),
+                    exception
+            );
+        }
     }
 
     private static Duration requirePositive(Duration interval) {
