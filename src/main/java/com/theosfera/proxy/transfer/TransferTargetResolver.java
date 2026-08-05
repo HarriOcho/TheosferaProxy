@@ -225,7 +225,7 @@ public final class TransferTargetResolver {
 
         List<BackendTargetCandidate> activeCandidates =
                 configuredTargets.stream()
-                        .filter(server -> isAuthenticatedActiveTarget(
+                        .filter(server -> isAuthenticatedDistributedTarget(
                                 server,
                                 nonNullTargetType
                         ))
@@ -237,6 +237,10 @@ public final class TransferTargetResolver {
 
         List<BackendTargetCandidate> coldCandidates =
                 configuredTargets.stream()
+                        .filter(server -> !isAuthenticatedDistributedTarget(
+                                server,
+                                nonNullTargetType
+                        ))
                         .filter(server -> isEligibleColdTarget(
                                 server,
                                 nonNullTargetType
@@ -382,6 +386,14 @@ public final class TransferTargetResolver {
             RegisteredServer server,
             BackendType expectedType
     ) {
+        return isAuthenticatedDistributedTarget(server, expectedType)
+                && hasConnectedPlayers(server);
+    }
+
+    private boolean isAuthenticatedDistributedTarget(
+            RegisteredServer server,
+            BackendType expectedType
+    ) {
         String serverName = server.getServerInfo().getName();
         BackendPolicyEntry policyEntry = authorizationPolicy
                 .backendEntries()
@@ -403,8 +415,7 @@ public final class TransferTargetResolver {
 
         return authenticated
                 && healthRegistry.status(serverName)
-                == BackendHealthStatus.HEALTHY
-                && hasConnectedPlayers(server);
+                == BackendHealthStatus.HEALTHY;
     }
 
     private BackendTargetCandidate targetCandidate(
