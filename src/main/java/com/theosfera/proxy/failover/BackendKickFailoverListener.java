@@ -5,7 +5,9 @@ import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
+import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.NamedTextColor;
 
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -109,16 +111,18 @@ public final class BackendKickFailoverListener {
                 // Preserve Velocity's existing result.
             }
 
-            case REDIRECT -> event.setResult(
-                    KickedFromServerEvent.RedirectPlayer.create(
-                            resolution.redirectTarget()
-                                    .orElseThrow(() ->
-                                            new IllegalStateException(
-                                                    "redirect resolution has no target"
-                                            )
-                                    )
-                    )
-            );
+            case REDIRECT -> {
+                RegisteredServer target = resolution.redirectTarget()
+                        .orElseThrow(() -> new IllegalStateException(
+                                "redirect resolution has no target"
+                        ));
+                event.setResult(
+                        KickedFromServerEvent.RedirectPlayer.create(
+                                target,
+                                redirectMessage(target)
+                        )
+                );
+            }
 
             case DISCONNECT -> event.setResult(
                     KickedFromServerEvent.DisconnectPlayer.create(
@@ -131,6 +135,25 @@ public final class BackendKickFailoverListener {
                     )
             );
         }
+    }
+
+    private Component redirectMessage(RegisteredServer target) {
+        String serverName = target.getServerInfo().getName();
+        String displayName = Character.toUpperCase(serverName.charAt(0))
+                + serverName.substring(1);
+
+        return Component.text(
+                        "Redireccionando a ",
+                        NamedTextColor.GOLD
+                )
+                .append(Component.text(
+                        displayName,
+                        NamedTextColor.AQUA
+                ))
+                .append(Component.text(
+                        "...",
+                        NamedTextColor.GOLD
+                ));
     }
 
     private void applyFailClosed(KickedFromServerEvent event) {
