@@ -10,7 +10,6 @@ import org.slf4j.Logger;
 
 import java.util.HashSet;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletionStage;
@@ -19,37 +18,28 @@ import java.util.function.Consumer;
 /**
  * Non-blocking transfer retry coordinator backed by distributed capacity.
  *
- * <p>Retries are only allowed after an exact distributed capacity release is
- * positively confirmed. A successful connection never releases capacity
- * directly; ownership is transferred to {@link BackendCapacityHandoffService}
- * until authoritative destination presence is confirmed.</p>
+ * <p>Retries are only allowed after the attempt lifecycle positively confirms
+ * exact distributed capacity release. Successful connections are handed to
+ * the reservation-to-presence lifecycle instead of releasing capacity.</p>
  */
 public final class DistributedPlayerTransferRetryCoordinator {
 
     private final BackendBootstrapRegistry bootstrapRegistry;
-    private final PendingPlayerTransferRegistry transferRegistry;
     private final DistributedPlayerTransferTargetAllocationService allocationService;
     private final PlayerTransferExecutor transferExecutor;
-    private final DistributedBackendCapacityReleaseService capacityReleaseService;
-    private final BackendCapacityHandoffService handoffService;
+    private final DistributedPlayerTransferAttemptLifecycle attemptLifecycle;
     private final Logger logger;
 
     public DistributedPlayerTransferRetryCoordinator(
             BackendBootstrapRegistry bootstrapRegistry,
-            PendingPlayerTransferRegistry transferRegistry,
             DistributedPlayerTransferTargetAllocationService allocationService,
             PlayerTransferExecutor transferExecutor,
-            DistributedBackendCapacityReleaseService capacityReleaseService,
-            BackendCapacityHandoffService handoffService,
+            DistributedPlayerTransferAttemptLifecycle attemptLifecycle,
             Logger logger
     ) {
         this.bootstrapRegistry = Objects.requireNonNull(
                 bootstrapRegistry,
                 "bootstrapRegistry cannot be null"
-        );
-        this.transferRegistry = Objects.requireNonNull(
-                transferRegistry,
-                "transferRegistry cannot be null"
         );
         this.allocationService = Objects.requireNonNull(
                 allocationService,
@@ -59,13 +49,9 @@ public final class DistributedPlayerTransferRetryCoordinator {
                 transferExecutor,
                 "transferExecutor cannot be null"
         );
-        this.capacityReleaseService = Objects.requireNonNull(
-                capacityReleaseService,
-                "capacityReleaseService cannot be null"
-        );
-        this.handoffService = Objects.requireNonNull(
-                handoffService,
-                "handoffService cannot be null"
+        this.attemptLifecycle = Objects.requireNonNull(
+                attemptLifecycle,
+                "attemptLifecycle cannot be null"
         );
         this.logger = Objects.requireNonNull(
                 logger,
@@ -198,10 +184,10 @@ public final class DistributedPlayerTransferRetryCoordinator {
         if (exclusions.contains(targetBackendName)) {
             cleanupWithoutRetry(
                     request,
+                    lastFailure,
                     transfer,
                     capacityRequest,
-                    null,
-                    lastFailure
+                    null
             );
             return;
         }
@@ -260,10 +246,10 @@ public final class DistributedPlayerTransferRetryCoordinator {
             );
             cleanupWithoutRetry(
                     request,
+                    lastFailure,
                     transfer,
                     capacityRequest,
-                    null,
-                    lastFailure
+                    null
             );
             return;
         }
@@ -282,40 +268,42 @@ public final class DistributedPlayerTransferRetryCoordinator {
             return;
         }
 
-        Optional<PendingPlayerTransfer> removed =
-                transferRegistry.removeIfMatches(transfer);
+        attemptLifecycle.cleanupFailedAttempt(
+                transfer,
+                capacityRequest,
+                null
+        ).whenComplete((cleanup, failure) -> {
+            if (failure != null || cleanup == null) {
+                finishFailClosed(request, lastFailure);
+                return;
+            }
+            if (!cleanup.transferMatched()) {
+                request.lateResultHandler().accept(transfer);
+                return;
+            }
+            if (!cleanup.capacityReleased()) {
+                finishFailClosed(request, lastFailure);
+                return;
+            }
 
-        capacityReleaseService.releaseIfOwned(capacityRequest)
-                .whenComplete((released, failure) -> {
-                    if (removed.isEmpty()) {
-                        request.lateResultHandler().accept(transfer);
-                        return;
-                    }
-
-                    if (failure != null || !Boolean.TRUE.equals(released)) {
-                        finishFailClosed(request, lastFailure);
-                        return;
-                    }
-
-                    switch (result) {
-                        case TARGET_BUSY -> attempt(
-                                request,
-                                withExcluded(
-                                        exclusions,
-                                        transfer.targetBackendName()
-                                ),
-                                TerminalFailure.bootstrap(result)
-                        );
-                        case REQUEST_ID_CONFLICT, ALREADY_RESERVED ->
-                                finish(
-                                        request,
-                                        TerminalFailure.bootstrap(result)
-                                );
-                        case RESERVED -> throw new IllegalStateException(
-                                "reserved bootstrap was handled earlier"
-                        );
-                    }
-                });
+            switch (result) {
+                case TARGET_BUSY -> attempt(
+                        request,
+                        withExcluded(
+                                exclusions,
+                                transfer.targetBackendName()
+                        ),
+                        TerminalFailure.bootstrap(result)
+                );
+                case REQUEST_ID_CONFLICT, ALREADY_RESERVED -> finish(
+                        request,
+                        TerminalFailure.bootstrap(result)
+                );
+                case RESERVED -> throw new IllegalStateException(
+                        "reserved bootstrap was handled earlier"
+                );
+            }
+        });
     }
 
     private void executeAttempt(
@@ -381,119 +369,79 @@ public final class DistributedPlayerTransferRetryCoordinator {
             PlayerTransferCompletion completion
     ) {
         if (completion.status() == TransferResultStatus.SUCCESS) {
-            completeSuccessfulConnection(
-                    request,
-                    transfer,
-                    capacityRequest,
-                    completion
-            );
-            return;
-        }
-
-        Optional<PendingPlayerTransfer> removed =
-                transferRegistry.removeIfMatches(transfer);
-
-        if (bootstrapReservation != null) {
-            bootstrapRegistry.removeIfMatches(bootstrapReservation);
-        }
-
-        capacityReleaseService.releaseIfOwned(capacityRequest)
-                .whenComplete((released, failure) -> {
-                    if (removed.isEmpty()) {
-                        request.lateResultHandler().accept(transfer);
-                        return;
-                    }
-
-                    if (failure != null || !Boolean.TRUE.equals(released)) {
-                        finish(request, completion);
-                        return;
-                    }
-
-                    if (completion.status()
-                            == TransferResultStatus.TIMED_OUT) {
-                        finish(request, completion);
-                        return;
-                    }
-
-                    attempt(
-                            request,
-                            withExcluded(
-                                    exclusions,
-                                    transfer.targetBackendName()
-                            ),
-                            TerminalFailure.completion(completion)
+            DistributedPlayerTransferAttemptLifecycle
+                    .SuccessfulConnectionDisposition disposition =
+                    attemptLifecycle.completeSuccessfulConnection(
+                            transfer,
+                            capacityRequest
                     );
-                });
-    }
 
-    private void completeSuccessfulConnection(
-            TransferRetryRequest request,
-            PendingPlayerTransfer transfer,
-            BackendCapacityReserveRequest capacityRequest,
-            PlayerTransferCompletion completion
-    ) {
-        Optional<PendingPlayerTransfer> removed =
-                transferRegistry.removeIfMatches(transfer);
+            if (disposition
+                    == DistributedPlayerTransferAttemptLifecycle
+                    .SuccessfulConnectionDisposition.LATE_RESULT) {
+                request.lateResultHandler().accept(transfer);
+                return;
+            }
 
-        if (removed.isEmpty()) {
-            request.lateResultHandler().accept(transfer);
-            return;
-        }
-
-        BackendCapacityHandoffRegistrationResult handoffResult;
-        try {
-            handoffResult = handoffService
-                    .registerAfterConnectionSuccess(capacityRequest);
-        } catch (RuntimeException exception) {
-            logger.warn(
-                    "Conexion a {} confirmada para {}, pero no se pudo registrar el handoff de capacidad; la reserva Redis dependera de TTL.",
-                    transfer.targetBackendName(),
-                    transfer.playerId(),
-                    exception
-            );
             finish(request, completion);
             return;
         }
 
-        switch (handoffResult) {
-            case REGISTERED, ALREADY_REGISTERED -> logger.debug(
-                    "Reserva distribuida transferida a handoff para {} en {}.",
-                    transfer.playerId(),
-                    transfer.targetBackendName()
-            );
-            case PLAYER_BUSY, REQUEST_ID_CONFLICT -> logger.warn(
-                    "Conexion a {} confirmada para {}, pero el handoff de capacidad fue rechazado por {}; no se liberara la reserva y TTL actuara como fallback.",
-                    transfer.targetBackendName(),
-                    transfer.playerId(),
-                    handoffResult
-            );
-        }
+        attemptLifecycle.cleanupFailedAttempt(
+                transfer,
+                capacityRequest,
+                bootstrapReservation
+        ).whenComplete((cleanup, failure) -> {
+            if (failure != null || cleanup == null) {
+                finish(request, completion);
+                return;
+            }
+            if (!cleanup.transferMatched()) {
+                request.lateResultHandler().accept(transfer);
+                return;
+            }
+            if (!cleanup.capacityReleased()) {
+                finish(request, completion);
+                return;
+            }
+            if (completion.status() == TransferResultStatus.TIMED_OUT) {
+                finish(request, completion);
+                return;
+            }
 
-        finish(request, completion);
+            attempt(
+                    request,
+                    withExcluded(
+                            exclusions,
+                            transfer.targetBackendName()
+                    ),
+                    TerminalFailure.completion(completion)
+            );
+        });
     }
 
     private void cleanupWithoutRetry(
             TransferRetryRequest request,
+            TerminalFailure lastFailure,
             PendingPlayerTransfer transfer,
             BackendCapacityReserveRequest capacityRequest,
-            BackendBootstrapReservation bootstrapReservation,
-            TerminalFailure lastFailure
+            BackendBootstrapReservation bootstrapReservation
     ) {
-        Optional<PendingPlayerTransfer> removed =
-                transferRegistry.removeIfMatches(transfer);
-
-        if (bootstrapReservation != null) {
-            bootstrapRegistry.removeIfMatches(bootstrapReservation);
-        }
-
-        capacityReleaseService.releaseIfOwned(capacityRequest)
-                .whenComplete((released, failure) -> {
-                    if (removed.isEmpty()) {
-                        request.lateResultHandler().accept(transfer);
-                        return;
-                    }
-                    finishFailClosed(request, lastFailure);
-                });
+        attemptLifecycle.cleanupFailedAttempt(
+                transfer,
+                capacityRequest,
+                bootstrapReservation
+        ).whenComplete((cleanup, failure) -> {
+            if (failure != null || cleanup == null) {
+                finishFailClosed(request, lastFailure);
+                return;
+            }
+            if (!cleanup.transferMatched()) {
+                request.lateResultHandler().accept(transfer);
+                return;
+            }
+            finishFailClosed(request, lastFailure);
+        });
     }
 
     private void finish(
