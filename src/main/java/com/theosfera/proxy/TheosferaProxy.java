@@ -348,8 +348,21 @@ public final class TheosferaProxy {
                         ),
                         nonNullResolver,
                         transferRegistry,
-                        sessionLeaseBindingRegistry
+                        sessionLeaseBindingRegistry,
+                        logger
                 );
+    }
+
+    private void bindDistributedCapacityHandoff() {
+        requireOperationalSessionRuntime();
+        requireOperationalDistributedCapacityRuntime();
+
+        presenceRuntimeService.configureCapacityHandoffLifecycle(
+                distributedBackendCapacityRuntime.handoffService()
+        );
+        playerDisconnectListener.configureCapacityHandoffLifecycle(
+                distributedBackendCapacityRuntime.handoffService()
+        );
     }
 
     private void activateOperationalSurface() {
@@ -453,6 +466,9 @@ public final class TheosferaProxy {
         pendingPingRegistry.clear();
         healthRegistry.clear();
         identityRegistry.clear();
+        if (distributedBackendCapacityRuntime != null) {
+            distributedBackendCapacityRuntime.handoffService().clear();
+        }
         distributedBackendCapacityRuntime = null;
     }
 
@@ -528,6 +544,7 @@ public final class TheosferaProxy {
                 authorizationPolicy,
                 targetResolver
         );
+        bindDistributedCapacityHandoff();
 
         PlayerTransferExecutor transferExecutor = new PlayerTransferExecutor();
         TransferResultSender transferResultSender = new TransferResultSender(messageSender, logger);
