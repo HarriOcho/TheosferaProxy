@@ -265,7 +265,7 @@ HarriOcho -> lobby-1
 GirlOcho  -> lobby-2
 ambos mediante proxy-1
 lobby-1 HEALTHY
-a lobby-2 HEALTHY
+lobby-2 HEALTHY
 ```
 
 Se detuvo `lobby-1`.
@@ -507,9 +507,90 @@ y capturar el paquete/flujo exacto antes de modificar código.
 
 ---
 
-## Estado actual del milestone
+## Runtime PASS adicional: outage sostenido de Redis y fencing global
 
-Validado:
+Se ejecutó una prueba adicional con ambos Lobbies inicialmente activos, autenticados y `HEALTHY`:
+
+```text
+HarriOcho -> lobby-1
+GirlOcho  -> lobby-2
+Redis     -> PONG
+backend-capacity:* -> vacío
+```
+
+Redis fue detenido deliberadamente. Lettuce comenzó a fallar al reconectar contra `127.0.0.1:6379`.
+
+El Proxy mantuvo temporalmente a los jugadores conectados mientras todavía conservaba su ventana de autoridad. Posteriormente se observó explícitamente:
+
+```text
+[17:06:13 INFO] [theosferaproxy]: Estado de coordinacion distribuida: HEALTHY -> FENCED.
+[17:06:13 ERROR] [theosferaproxy]: El Proxy fue fenced; se desconectaran 2 jugadores para evitar autoridad distribuida obsoleta.
+```
+
+Ambos jugadores fueron desconectados con el mensaje:
+
+```text
+Este Proxy perdio su autoridad distribuida. Reconecta en unos momentos.
+```
+
+Los backends confirmaron la salida de ambos jugadores a las `17:06:13`.
+
+`lobby-1` no comenzó su apagado hasta las `17:06:28`, quince segundos después. Por tanto, esta prueba **no** demuestra directamente el flujo:
+
+```text
+backend kick
+-> DistributedBackendKickFailoverCoordinator
+-> COORDINATION_UNAVAILABLE
+-> disconnect
+```
+
+El fencing global preemptó el kick real del backend.
+
+Lo que sí queda validado directamente es:
+
+```text
+PASS  sustained Redis outage
+PASS  HEALTHY -> FENCED
+PASS  disconnect bajo pérdida definitiva de autoridad
+PASS  cero fallback local silencioso
+PASS  cleanup incierto conserva TTL como fallback
+```
+
+No se afirma observación runtime directa de un status terminal específico del kick coordinator cuando los logs no lo demuestran. La semántica terminal de `COORDINATION_UNAVAILABLE` permanece cubierta por pruebas automatizadas.
+
+Durante el cleanup, Redis continuó indisponible. La retirada de presencia no pudo confirmarse y el runtime registró que TTL actuaría como fallback. Los intentos posteriores de liberar los leases de sesión agotaron el timeout Redis; no se fingió una liberación exitosa.
+
+### Recuperación del laboratorio
+
+Después de la prueba:
+
+```text
+redis-cli ping
+PONG
+```
+
+El scan:
+
+```bash
+redis-cli --scan --pattern "theosfera:coordination:backend-capacity:*"
+```
+
+quedó sin salida.
+
+Tras reiniciar el Proxy y recuperar el laboratorio:
+
+```text
+lobby-1 -> HEALTHY, Autenticado: Sí
+lobby-2 -> HEALTHY, Autenticado: Sí
+```
+
+Redis volvió a estar saludable y no quedaron residuos de capacidad.
+
+---
+
+## Estado final del milestone
+
+Validado en runtime:
 
 ```text
 PASS  LOBBY -> LOBBY kick failover
@@ -520,30 +601,20 @@ PASS  destination handoff releases exact reservation
 PASS  zero residual backend-capacity keys
 PASS  branded redirect message with official palette
 PASS  no production local-capacity authority
+PASS  sustained Redis outage -> global fencing fail-closed
 ```
 
----
+Cobertura automatizada adicional confirma:
 
-## Casos runtime que todavía pueden aportar cobertura
+- `COORDINATION_UNAVAILABLE` es terminal y no degrada hacia Lobby;
+- ausencia o pérdida de `PlayerSessionLease` falla cerrada;
+- disconnect durante una reserva pendiente intenta release exacto;
+- fallos excepcionales de allocation limpian el pending marker y desconectan;
+- resultados corruptos, `null` o contract violations no se convierten en éxito.
 
-Pendientes opcionales/recomendados antes del PR final:
+Casos como stale/wrong-owner provocado deliberadamente, disconnect in-flight reproducido manualmente y concurrent multi-proxy kick race quedan como hardening adicional no bloqueante. La contención global multi-proxy de última plaza ya fue validada en el milestone de transferencias explícitas y no se repetirá artificialmente sin una razón concreta.
 
-1. **Redis down during kick while an active target otherwise exists**
-   - expectativa: disconnect fail-closed;
-   - jamás fallback local.
-
-2. **stale/wrong-owner session lease during kick**
-   - expectativa: terminal fail-closed;
-   - no Lobby fallback para ownership/fencing failure.
-
-3. **disconnect while a kick reservation is in flight**
-   - expectativa: exact release cuando ownership es seguro; TTL solo fallback ante incertidumbre/crash.
-
-4. **concurrent multi-proxy kick race**
-   - opcional si es razonablemente reproducible;
-   - la contención global de capacidad ya fue validada para transferencias explícitas en el milestone anterior.
-
-No reabrir los casos ya demostrados sin una razón concreta.
+Con esta matriz, el milestone **Distributed Redis Kick Failover Capacity** se considera funcionalmente cerrado y listo para gates finales y PR.
 
 ---
 
@@ -559,7 +630,7 @@ Razón:
 
 `/server` puede saltarse routing, health, capacity, session ownership y fencing de Theosfera.
 
-No mezclar ese hardening en esta rama salvo que se decida explícitamente continuar aquí después de cerrar la matriz de kick.
+No mezclar ese hardening en esta rama.
 
 Distributed transfer coordination y distributed backend bootstrap coordination permanecen fronteras separadas.
 
@@ -573,12 +644,12 @@ Antes de continuar:
 2. revisar `docs/THEOSFERA_VISUAL_MESSAGING_STANDARD.md`;
 3. confirmar rama `feature/redis-kick-failover-capacity`;
 4. confirmar que local y origin están sincronizados;
-5. no abrir PR hasta cerrar la matriz runtime elegida y recibir autorización explícita;
-6. si se continúa runtime, empezar por los casos pendientes listados arriba;
-7. si se cierra este milestone, actualizar `PROJECT_STATE.md` con este checkpoint y preparar el PR solo con autorización explícita.
+5. ejecutar gates finales antes del PR;
+6. no abrir PR sin autorización explícita;
+7. después de fusionar este milestone, continuar con el hardening de `/server` en una rama separada.
 
 Comando de contexto recomendado para un chat nuevo:
 
 ```text
-Broer, continuemos TheosferaProxy desde docs/REDIS_KICK_FAILOVER_RUNTIME_CHECKPOINT.md. Ya están validados LOBBY->LOBBY y SKYBLOCK->LOBBY por kick con capacidad Redis, handoff/release exacto y cero residuos. Revisa el checkpoint y sigamos desde los casos runtime pendientes o el cierre del milestone :3
+Broer, continuemos TheosferaProxy desde docs/REDIS_KICK_FAILOVER_RUNTIME_CHECKPOINT.md. El milestone Distributed Redis Kick Failover Capacity quedó cerrado en runtime con LOBBY->LOBBY, SKYBLOCK->LOBBY, cold refusal, handoff/release exacto, cero residuos y fencing global ante outage sostenido de Redis. Continuemos con los gates finales/PR o con el siguiente hardening de /server :3
 ```
