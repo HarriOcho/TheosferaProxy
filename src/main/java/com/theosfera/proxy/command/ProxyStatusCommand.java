@@ -248,33 +248,21 @@ public final class ProxyStatusCommand implements SimpleCommand {
 
         lines.add(
                 indent()
-                        .append(label("Carga: "))
+                        .append(label("Capacidad: "))
                         .append(
                                 value(
-                                        nonNullSnapshot
-                                                .allocatedPlayers()
-                                                + "/"
-                                                + nonNullSnapshot
-                                                        .capacity()
+                                        Integer.toString(
+                                                nonNullSnapshot.capacity()
+                                        )
                                 )
                         )
                         .append(separator())
-                        .append(label("Conectados: "))
+                        .append(label("Conectados en este proxy: "))
                         .append(
                                 value(
                                         Integer.toString(
                                                 nonNullSnapshot
                                                         .connectedPlayers()
-                                        )
-                                )
-                        )
-                        .append(separator())
-                        .append(label("Reservados: "))
-                        .append(
-                                value(
-                                        Integer.toString(
-                                                nonNullSnapshot
-                                                        .reservedCapacity()
                                         )
                                 )
                         )
@@ -420,6 +408,7 @@ public final class ProxyStatusCommand implements SimpleCommand {
 
         return result;
     }
+
     private static Component indent() {
         return Component.text("  ");
     }
