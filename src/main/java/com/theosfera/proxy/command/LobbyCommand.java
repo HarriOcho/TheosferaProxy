@@ -7,11 +7,14 @@ import net.kyori.adventure.text.Component;
 
 import java.util.Objects;
 
+import static com.theosfera.proxy.ui.TheosferaPalette.WARM_IVORY;
+
 public final class LobbyCommand implements SimpleCommand {
 
     static final Component PLAYER_ONLY_MESSAGE =
             Component.text(
-                    "Solo jugadores pueden usar este comando."
+                    "Este comando solo está disponible para jugadores.",
+                    WARM_IVORY
             );
 
     private final LobbyTransferService transferService;
