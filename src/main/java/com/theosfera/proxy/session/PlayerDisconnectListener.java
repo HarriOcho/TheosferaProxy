@@ -2,6 +2,7 @@ package com.theosfera.proxy.session;
 
 import com.theosfera.proxy.coordination.BackendCapacityHandoffLifecycle;
 import com.theosfera.proxy.coordination.PlayerSessionLease;
+import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.Subscribe;
@@ -78,6 +79,65 @@ public final class PlayerDisconnectListener {
         this.logger = Objects.requireNonNull(
                 logger,
                 "logger cannot be null"
+        );
+    }
+
+    /**
+     * Compatibility constructor for callers compiled against the pre-Redis
+     * capacity-cleanup signature. The supplied marker owns no capacity state
+     * and is deliberately ignored after null validation.
+     */
+    public PlayerDisconnectListener(
+            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
+            PlayerServerPresenceRegistry presenceRegistry,
+            PendingPlayerTransferRegistry transferRegistry,
+            BackendCapacityReservationRegistry ignoredCapacityRegistry,
+            AuthenticatedPlayerSessionRegistry sessionRegistry,
+            PlayerSessionReleaseService releaseService,
+            Logger logger
+    ) {
+        this(
+                leaseBindingRegistry,
+                presenceRegistry,
+                transferRegistry,
+                sessionRegistry,
+                releaseService,
+                null,
+                logger
+        );
+        Objects.requireNonNull(
+                ignoredCapacityRegistry,
+                "capacityRegistry cannot be null"
+        );
+    }
+
+    /**
+     * Compatibility constructor for callers compiled against the pre-Redis
+     * capacity-cleanup signature. The supplied marker owns no capacity state
+     * and is deliberately ignored after null validation.
+     */
+    public PlayerDisconnectListener(
+            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
+            PlayerServerPresenceRegistry presenceRegistry,
+            PendingPlayerTransferRegistry transferRegistry,
+            BackendCapacityReservationRegistry ignoredCapacityRegistry,
+            AuthenticatedPlayerSessionRegistry sessionRegistry,
+            PlayerSessionReleaseService releaseService,
+            PlayerPresenceRuntimeService presenceRuntimeService,
+            Logger logger
+    ) {
+        this(
+                leaseBindingRegistry,
+                presenceRegistry,
+                transferRegistry,
+                sessionRegistry,
+                releaseService,
+                presenceRuntimeService,
+                logger
+        );
+        Objects.requireNonNull(
+                ignoredCapacityRegistry,
+                "capacityRegistry cannot be null"
         );
     }
 
