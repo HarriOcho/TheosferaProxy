@@ -5,12 +5,6 @@ import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
-import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
-import com.theosfera.proxy.transfer.BackendBootstrapReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservation;
-import com.theosfera.proxy.transfer.BackendCapacityReservationResult;
-import com.theosfera.proxy.transfer.TransferTargetResolution;
-import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ServerConnection;
@@ -23,915 +17,208 @@ import org.junit.jupiter.api.Test;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class BackendKickFailoverServiceTest {
 
-    private static final UUID PLAYER_ID =
-            UUID.fromString(
-                    "5b8578de-76a6-467f-9211-399b3dfe723a"
-            );
+    private static final UUID PLAYER_ID = UUID.fromString(
+            "5b8578de-76a6-467f-9211-399b3dfe723a"
+    );
+    private static final Component REASON =
+            Component.text("Sin conexion con el backend.");
 
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
     private BackendIdentityRegistry identityRegistry;
-    private TransferTargetResolver targetResolver;
-    private BackendBootstrapRegistry bootstrapRegistry;
-    private PendingPlayerFailoverRegistry failoverRegistry;
+    private DistributedBackendKickFailoverCoordinator coordinator;
     private BackendKickFailoverService service;
     private Player player;
 
     @BeforeEach
     void setUp() {
-        sessionRegistry =
-                new AuthenticatedPlayerSessionRegistry();
-        identityRegistry =
-                new BackendIdentityRegistry();
-        targetResolver =
-                mock(TransferTargetResolver.class);
-
-        when(targetResolver.reserveCapacity(
-                any(BackendCapacityReservation.class),
-                any(RegisteredServer.class)
-        )).thenReturn(
-                BackendCapacityReservationResult.RESERVED
+        sessionRegistry = new AuthenticatedPlayerSessionRegistry();
+        identityRegistry = new BackendIdentityRegistry();
+        coordinator = mock(DistributedBackendKickFailoverCoordinator.class);
+        player = player(Optional.empty());
+        service = new BackendKickFailoverService(
+                sessionRegistry,
+                identityRegistry,
+                coordinator
         );
-
-        bootstrapRegistry =
-                new BackendBootstrapRegistry();
-        failoverRegistry =
-                new PendingPlayerFailoverRegistry();
-        player = mock(Player.class);
-
-        when(player.getUniqueId()).thenReturn(PLAYER_ID);
-        when(player.getCurrentServer()).thenReturn(Optional.empty());
-
-        service =
-                new BackendKickFailoverService(
-                        sessionRegistry,
-                        identityRegistry,
-                        targetResolver,
-                        bootstrapRegistry,
-                        failoverRegistry
-                );
     }
 
     @Test
     void ignoresKickDuringServerConnect() {
         authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
+        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
+
+        BackendKickFailoverResolution result = resolve(
+                event(player, server("skyblock-1"), true)
         );
 
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                true
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.IGNORED,
-                result.status()
-        );
-
-        verify(
-                targetResolver,
-                never()
-        ).resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        );
+        assertSame(BackendKickFailoverResolutionStatus.IGNORED, result.status());
+        verify(coordinator, never()).resolve(any(), any(), any(), any());
     }
 
     @Test
     void ignoresUnauthenticatedPlayer() {
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
+        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
+
+        BackendKickFailoverResolution result = resolve(
+                event(player, server("skyblock-1"), false)
         );
 
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.IGNORED,
-                result.status()
-        );
-
-        verify(
-                targetResolver,
-                never()
-        ).resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        );
+        assertSame(BackendKickFailoverResolutionStatus.IGNORED, result.status());
+        verify(coordinator, never()).resolve(any(), any(), any(), any());
     }
 
     @Test
-    void ignoresBackendWithoutIdentity() {
+    void disconnectsBackendWithoutIdentity() {
         authenticatePlayer();
 
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
+        BackendKickFailoverResolution result = resolve(
+                event(player, server("skyblock-1"), false)
         );
 
-        verify(
-                targetResolver,
-                never()
-        ).resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        );
+        assertSame(BackendKickFailoverResolutionStatus.DISCONNECT, result.status());
+        assertSame(REASON, result.reason().orElseThrow());
+        verify(coordinator, never()).resolve(any(), any(), any(), any());
     }
 
     @Test
-    void ignoresIdentityWithDifferentServerName() {
-        BackendIdentityRegistry mismatchedRegistry =
-                mock(BackendIdentityRegistry.class);
-
-        when(mismatchedRegistry.find("skyblock-1"))
-                .thenReturn(
-                        Optional.of(
-                                new BackendIdentity(
-                                        "skyblock-2",
-                                        BackendType.SKYBLOCK
-                                )
-                        )
-                );
-
+    void disconnectsIdentityWithDifferentServerName() {
+        BackendIdentityRegistry mismatchedRegistry = mock(BackendIdentityRegistry.class);
+        when(mismatchedRegistry.find("skyblock-1")).thenReturn(
+                Optional.of(new BackendIdentity("skyblock-2", BackendType.SKYBLOCK))
+        );
         BackendKickFailoverService mismatchedService =
                 new BackendKickFailoverService(
                         sessionRegistry,
                         mismatchedRegistry,
-                        targetResolver,
-                        bootstrapRegistry,
-                        failoverRegistry
+                        coordinator
                 );
-
         authenticatePlayer();
 
-        BackendKickFailoverResolution result =
-                mismatchedService.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-
-        verify(
-                targetResolver,
-                never()
-        ).resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        );
-    }
-
-    @Test
-    void ignoresAuthBackend() {
-        authenticatePlayer();
-        registerIdentity(
-                "auth-1",
-                BackendType.AUTH
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("auth-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-
-        verify(
-                targetResolver,
-                never()
-        ).resolve(
-                BackendType.AUTH,
-                Set.of("auth-1")
-        );
-    }
-
-    @Test
-    void resolvesAnotherResolvedBackendOfSameType() {
-        RegisteredServer target =
-                server("skyblock-2");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(target)
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.REDIRECT,
-                result.status()
-        );
-
-
-        assertSame(
-                target,
-                result.redirectTarget().orElseThrow()
-        );
-
-        assertTrue(
-                failoverRegistry.isReserved(PLAYER_ID)
-        );
-
-        verify(targetResolver).resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        );
-    }
-
-    @Test
-    void secondKickBeforeSuccessfulConnectionKeepsOriginalFlow() {
-        RegisteredServer target =
-                server("skyblock-2");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(target)
-        );
-
-        BackendKickFailoverResolution firstResult =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        BackendKickFailoverResolution secondResult =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.REDIRECT,
-                firstResult.status()
-        );
-
-
-        assertSame(
-                target,
-                firstResult.redirectTarget().orElseThrow()
-        );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.IGNORED,
-                secondResult.status()
-        );
-
-        verify(targetResolver, times(1)).resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        );
-    }
-
-    @Test
-    void successfulConnectionClearsPendingFailover() {
-        failoverRegistry.reserve(PLAYER_ID);
-
-        service.clearPendingFailover(PLAYER_ID);
-
-        assertTrue(
-                !failoverRegistry.isReserved(PLAYER_ID)
-        );
-    }
-
-    @Test
-    void coldLobbyDoesNotCreateFailoverReservation() {
-        RegisteredServer coldLobby =
-                server("lobby-1");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notConfigured()
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.bootstrapRequired(
-                        coldLobby
+        BackendKickFailoverResolution result = mismatchedService
+                .resolveFailoverTarget(
+                        event(player, server("skyblock-1"), false)
                 )
+                .toCompletableFuture()
+                .join();
+
+        assertSame(BackendKickFailoverResolutionStatus.DISCONNECT, result.status());
+        assertSame(REASON, result.reason().orElseThrow());
+        verify(coordinator, never()).resolve(any(), any(), any(), any());
+    }
+
+    @Test
+    void disconnectsAuthBackendWithoutDistributedAllocation() {
+        authenticatePlayer();
+        registerIdentity("auth-1", BackendType.AUTH);
+
+        BackendKickFailoverResolution result = resolve(
+                event(player, server("auth-1"), false)
         );
 
-        service.resolveFailoverTarget(
-                event(
-                        server("skyblock-1"),
-                        false
-                )
+        assertSame(BackendKickFailoverResolutionStatus.DISCONNECT, result.status());
+        verify(coordinator, never()).resolve(any(), any(), any(), any());
+    }
+
+    @Test
+    void delegatesAuthenticatedKickWithFailedAndCurrentServerExcluded() {
+        authenticatePlayer();
+        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
+        Player playerOnLobby = player(Optional.of("lobby-1"));
+        RegisteredServer target = server("skyblock-2");
+        BackendKickFailoverResolution expected =
+                BackendKickFailoverResolution.redirect(target);
+
+        when(coordinator.resolve(
+                eq(playerOnLobby),
+                eq(BackendType.SKYBLOCK),
+                eq(Set.of("skyblock-1", "lobby-1")),
+                eq(REASON)
+        )).thenReturn(CompletableFuture.completedFuture(expected));
+
+        BackendKickFailoverResolution result = resolve(
+                event(playerOnLobby, server("skyblock-1"), false)
         );
 
-        assertTrue(
-                !failoverRegistry.isReserved(PLAYER_ID)
-        );
-        assertTrue(
-                bootstrapRegistry
-                        .findByTarget("lobby-1")
-                        .isEmpty()
+        assertSame(expected, result);
+        verify(coordinator).resolve(
+                playerOnLobby,
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1", "lobby-1"),
+                REASON
         );
     }
 
     @Test
-    void disconnectAfterColdLobbyNeedsNoBootstrapCleanup() {
-        RegisteredServer coldLobby =
-                server("lobby-1");
-
+    void coordinatorFailureDisconnectsWithOriginalReason() {
         authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
+        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
+
+        when(coordinator.resolve(
+                eq(player),
+                eq(BackendType.SKYBLOCK),
+                eq(Set.of("skyblock-1")),
+                eq(REASON)
+        )).thenReturn(CompletableFuture.failedFuture(
+                new RuntimeException("redis unavailable")
+        ));
+
+        BackendKickFailoverResolution result = resolve(
+                event(player, server("skyblock-1"), false)
         );
 
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notConfigured()
+        assertSame(BackendKickFailoverResolutionStatus.DISCONNECT, result.status());
+        assertSame(REASON, result.reason().orElseThrow());
+    }
+
+    @Test
+    void nullCoordinatorStageDisconnectsWithOriginalReason() {
+        authenticatePlayer();
+        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
+
+        when(coordinator.resolve(
+                eq(player),
+                eq(BackendType.SKYBLOCK),
+                eq(Set.of("skyblock-1")),
+                eq(REASON)
+        )).thenReturn(null);
+
+        BackendKickFailoverResolution result = resolve(
+                event(player, server("skyblock-1"), false)
         );
 
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.bootstrapRequired(
-                        coldLobby
-                )
-        );
+        assertSame(BackendKickFailoverResolutionStatus.DISCONNECT, result.status());
+        assertSame(REASON, result.reason().orElseThrow());
+    }
 
-        service.resolveFailoverTarget(
-                event(
-                        server("skyblock-1"),
-                        false
-                )
-        );
+    @Test
+    void successfulConnectionDelegatesBackendName() {
+        service.completeSuccessfulConnection(PLAYER_ID, "skyblock-2");
 
+        verify(coordinator).completeSuccessfulConnection(
+                PLAYER_ID,
+                "skyblock-2"
+        );
+    }
+
+    @Test
+    void disconnectDelegatesPendingCleanup() {
         service.cancelPendingFailover(PLAYER_ID);
 
-        assertTrue(
-                !failoverRegistry.isReserved(PLAYER_ID)
-        );
-        assertEquals(0, bootstrapRegistry.size());
-    }
-
-    @Test
-    void allowsNewFailoverChainAfterSuccessfulConnection() {
-        RegisteredServer firstTarget =
-                server("skyblock-2");
-        RegisteredServer secondTarget =
-                server("skyblock-3");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(firstTarget),
-                TransferTargetResolution.resolved(secondTarget)
-        );
-
-        BackendKickFailoverResolution firstResult =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        service.clearPendingFailover(PLAYER_ID);
-
-        BackendKickFailoverResolution secondResult =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.REDIRECT,
-                firstResult.status()
-        );
-
-
-        assertSame(
-                firstTarget,
-                firstResult.redirectTarget().orElseThrow()
-        );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.REDIRECT,
-                secondResult.status()
-        );
-
-
-        assertSame(
-                secondTarget,
-                secondResult.redirectTarget().orElseThrow()
-        );
-
-        verify(targetResolver, times(2)).resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        );
-    }
-
-    @Test
-    void rejectsSameTypeBootstrapTargetWithoutOrchestrator() {
-        RegisteredServer coldTarget =
-                server("lobby-2");
-
-        authenticatePlayer();
-        registerIdentity(
-                "lobby-1",
-                BackendType.LOBBY
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("lobby-1")
-        )).thenReturn(
-                TransferTargetResolution.bootstrapRequired(coldTarget)
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("lobby-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-        assertTrue(result.redirectTarget().isEmpty());
-        assertTrue(!failoverRegistry.isReserved(PLAYER_ID));
-        assertEquals(0, bootstrapRegistry.size());
-    }
-
-    @Test
-    void doesNotReserveWhenNoSafeTargetExists() {
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notAuthenticated()
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notConfigured()
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-        assertTrue(
-                !failoverRegistry.isReserved(PLAYER_ID)
-        );
-    }
-
-    @Test
-    void usesResolvedLobbyFallbackForSkyblock() {
-        RegisteredServer lobby =
-                server("lobby-1");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notAuthenticated()
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(lobby)
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.REDIRECT,
-                result.status()
-        );
-
-
-        assertSame(
-                lobby,
-                result.redirectTarget().orElseThrow()
-        );
-    }
-
-    @Test
-    void rejectsLobbyFallbackWhenItIsCurrentServer() {
-        RegisteredServer currentLobby =
-                server("lobby-1");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-        setCurrentServer("lobby-1");
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notAuthenticated()
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(currentLobby)
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-        assertTrue(
-                !failoverRegistry.isReserved(PLAYER_ID)
-        );
-    }
-
-    @Test
-    void rejectsSameTypeTargetWhenItIsCurrentServer() {
-        RegisteredServer currentSkyblock =
-                server("skyblock-2");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-        setCurrentServer("skyblock-2");
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(currentSkyblock)
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notConfigured()
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-        assertTrue(
-                !failoverRegistry.isReserved(PLAYER_ID)
-        );
-    }
-
-    @Test
-    void acceptsTargetDifferentFromCurrentServer() {
-        RegisteredServer target =
-                server("skyblock-2");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-        setCurrentServer("lobby-1");
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(target)
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.REDIRECT,
-                result.status()
-        );
-
-
-        assertSame(
-                target,
-                result.redirectTarget().orElseThrow()
-        );
-        assertTrue(
-                failoverRegistry.isReserved(PLAYER_ID)
-        );
-    }
-
-    @Test
-    void doesNotAttemptLobbyFallbackWhenSourceIsLobby() {
-        authenticatePlayer();
-        registerIdentity(
-                "lobby-1",
-                BackendType.LOBBY
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("lobby-1")
-        )).thenReturn(
-                TransferTargetResolution.notConfigured()
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("lobby-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-
-        verify(targetResolver, times(1)).resolve(
-                BackendType.LOBBY,
-                Set.of("lobby-1")
-        );
-    }
-
-    @Test
-    void disconnectsInsteadOfRedirectingToColdLobby() {
-        RegisteredServer lobby =
-                server("lobby-1");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notConfigured()
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.bootstrapRequired(lobby)
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-        assertTrue(
-                !failoverRegistry.isReserved(PLAYER_ID)
-        );
-        assertEquals(0, bootstrapRegistry.size());
-    }
-
-    @Test
-    void disconnectsWhenColdLobbyBootstrapIsBusy() {
-        RegisteredServer lobby =
-                server("lobby-1");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        bootstrapRegistry.register(
-                new BackendBootstrapReservation(
-                        "lobby-1",
-                        UUID.fromString(
-                                "de4ac295-0a64-4eb3-b7c4-f7439e413032"
-                        ),
-                        UUID.fromString(
-                                "eaf692d8-1708-4138-a881-c096207668bf"
-                        ),
-                        System.currentTimeMillis()
-                )
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.notConfigured()
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.bootstrapRequired(lobby)
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                server("skyblock-1"),
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
-        assertTrue(
-                !failoverRegistry.isReserved(PLAYER_ID)
-        );
-        assertEquals(1, bootstrapRegistry.size());
-    }
-
-    @Test
-    void neverReturnsFailedServerAsTarget() {
-        RegisteredServer failed =
-                server("skyblock-1");
-
-        authenticatePlayer();
-        registerIdentity(
-                "skyblock-1",
-                BackendType.SKYBLOCK
-        );
-
-        when(targetResolver.resolve(
-                BackendType.SKYBLOCK,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(failed)
-        );
-
-        when(targetResolver.resolve(
-                BackendType.LOBBY,
-                Set.of("skyblock-1")
-        )).thenReturn(
-                TransferTargetResolution.resolved(failed)
-        );
-
-        BackendKickFailoverResolution result =
-                service.resolveFailoverTarget(
-                        event(
-                                failed,
-                                false
-                        )
-                );
-
-        assertSame(
-                BackendKickFailoverResolutionStatus.DISCONNECT,
-                result.status()
-        );
+        verify(coordinator).cancelPendingFailover(PLAYER_ID);
     }
 
     @Test
@@ -941,60 +228,35 @@ class BackendKickFailoverServiceTest {
                 () -> new BackendKickFailoverService(
                         null,
                         identityRegistry,
-                        targetResolver,
-                        bootstrapRegistry,
-                        failoverRegistry
+                        coordinator
                 )
         );
-
         assertThrows(
                 NullPointerException.class,
                 () -> new BackendKickFailoverService(
                         sessionRegistry,
                         null,
-                        targetResolver,
-                        bootstrapRegistry,
-                        failoverRegistry
+                        coordinator
                 )
         );
-
         assertThrows(
                 NullPointerException.class,
                 () -> new BackendKickFailoverService(
                         sessionRegistry,
                         identityRegistry,
-                        null,
-                        bootstrapRegistry,
-                        failoverRegistry
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> new BackendKickFailoverService(
-                        sessionRegistry,
-                        identityRegistry,
-                        targetResolver,
-                        null,
-                        failoverRegistry
-                )
-        );
-
-        assertThrows(
-                NullPointerException.class,
-                () -> new BackendKickFailoverService(
-                        sessionRegistry,
-                        identityRegistry,
-                        targetResolver,
-                        bootstrapRegistry,
                         null
                 )
         );
-
         assertThrows(
                 NullPointerException.class,
                 () -> service.resolveFailoverTarget(null)
         );
+    }
+
+    private BackendKickFailoverResolution resolve(KickedFromServerEvent event) {
+        return service.resolveFailoverTarget(event)
+                .toCompletableFuture()
+                .join();
     }
 
     private void authenticatePlayer() {
@@ -1007,26 +269,19 @@ class BackendKickFailoverServiceTest {
         );
     }
 
-    private void registerIdentity(
-            String serverName,
-            BackendType backendType
-    ) {
-        identityRegistry.register(
-                new BackendIdentity(
-                        serverName,
-                        backendType
-                )
-        );
+    private void registerIdentity(String serverName, BackendType type) {
+        identityRegistry.register(new BackendIdentity(serverName, type));
     }
 
     private KickedFromServerEvent event(
-            RegisteredServer server,
+            Player eventPlayer,
+            RegisteredServer failedServer,
             boolean kickedDuringConnect
     ) {
         return new KickedFromServerEvent(
-                player,
-                server,
-                Component.text("Sin conexi\u00f3n con el backend."),
+                eventPlayer,
+                failedServer,
+                REASON,
                 kickedDuringConnect,
                 KickedFromServerEvent.Notify.create(
                         Component.text("Destino no disponible.")
@@ -1034,35 +289,28 @@ class BackendKickFailoverServiceTest {
         );
     }
 
-    private void setCurrentServer(String serverName) {
-        ServerConnection connection =
-                mock(ServerConnection.class);
-        ServerInfo serverInfo =
-                mock(ServerInfo.class);
+    private Player player(Optional<String> currentServerName) {
+        Player result = mock(Player.class);
+        when(result.getUniqueId()).thenReturn(PLAYER_ID);
 
-        when(player.getCurrentServer())
-                .thenReturn(Optional.of(connection));
+        if (currentServerName.isEmpty()) {
+            when(result.getCurrentServer()).thenReturn(Optional.empty());
+            return result;
+        }
 
-        when(connection.getServerInfo())
-                .thenReturn(serverInfo);
-
-        when(serverInfo.getName())
-                .thenReturn(serverName);
+        ServerConnection connection = mock(ServerConnection.class);
+        ServerInfo info = mock(ServerInfo.class);
+        when(info.getName()).thenReturn(currentServerName.orElseThrow());
+        when(connection.getServerInfo()).thenReturn(info);
+        when(result.getCurrentServer()).thenReturn(Optional.of(connection));
+        return result;
     }
 
     private RegisteredServer server(String serverName) {
-        RegisteredServer server =
-                mock(RegisteredServer.class);
-
-        ServerInfo serverInfo =
-                mock(ServerInfo.class);
-
-        when(server.getServerInfo())
-                .thenReturn(serverInfo);
-
-        when(serverInfo.getName())
-                .thenReturn(serverName);
-
+        RegisteredServer server = mock(RegisteredServer.class);
+        ServerInfo info = mock(ServerInfo.class);
+        when(server.getServerInfo()).thenReturn(info);
+        when(info.getName()).thenReturn(serverName);
         return server;
     }
 }
