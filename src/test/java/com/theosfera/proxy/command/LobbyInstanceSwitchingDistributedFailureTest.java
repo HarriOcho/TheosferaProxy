@@ -5,9 +5,9 @@ import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.coordination.BackendCapacityCoordinator;
-import com.theosfera.proxy.coordination.BackendCapacityReserveRequest;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.coordination.BackendOccupancyCoordinator;
+import com.theosfera.proxy.coordination.BackendOccupancyReadResult;
 import com.theosfera.proxy.coordination.PlayerSessionLease;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
@@ -41,6 +41,7 @@ import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -79,7 +80,7 @@ class LobbyInstanceSwitchingDistributedFailureTest {
                 BackendType.LOBBY,
                 Set.of()
         );
-        verify(fixture.capacityCoordinator(), never()).reserve(any(), any(Integer.class));
+        verify(fixture.capacityCoordinator(), never()).reserve(any(), anyInt());
         verify(fixture.transferExecutor(), never()).execute(any(), any());
         verify(fixture.handoffService(), never()).registerAfterConnectionSuccess(any());
         verify(fixture.releaseService(), never()).releaseIfOwned(any());
@@ -107,8 +108,7 @@ class LobbyInstanceSwitchingDistributedFailureTest {
         )).thenReturn(TransferTargetCandidates.notConfigured());
         when(fixture.occupancyCoordinator().read("lobby-2"))
                 .thenReturn(CompletableFuture.completedFuture(
-                        com.theosfera.proxy.coordination
-                                .BackendOccupancyReadResult.available(100)
+                        BackendOccupancyReadResult.available(100)
                 ));
         when(fixture.capacityCoordinator().reservedCount("lobby-2"))
                 .thenReturn(CompletableFuture.completedFuture(0));
@@ -160,7 +160,7 @@ class LobbyInstanceSwitchingDistributedFailureTest {
 
         fixture.service().switchLobbyInstance(fixture.player());
 
-        verify(fixture.capacityCoordinator(), never()).reserve(any(), any(Integer.class));
+        verify(fixture.capacityCoordinator(), never()).reserve(any(), anyInt());
         verify(fixture.transferExecutor(), never()).execute(any(), any());
         verify(fixture.handoffService(), never()).registerAfterConnectionSuccess(any());
         verify(fixture.releaseService(), never()).releaseIfOwned(any());
