@@ -1,5 +1,6 @@
 package com.theosfera.proxy.session;
 
+import com.theosfera.proxy.coordination.BackendCapacityHandoffLifecycle;
 import com.theosfera.proxy.coordination.PlayerSessionLease;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransfer;
@@ -12,6 +13,7 @@ import org.slf4j.Logger;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CompletionStage;
 
 public final class PlayerDisconnectListener {
 
@@ -23,6 +25,8 @@ public final class PlayerDisconnectListener {
     private final BackendCapacityReservationRegistry capacityRegistry;
     private final PlayerPresenceRuntimeService presenceRuntimeService;
     private final Logger logger;
+
+    private volatile BackendCapacityHandoffLifecycle capacityHandoffLifecycle;
 
     public PlayerDisconnectListener(
             PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
@@ -106,6 +110,20 @@ public final class PlayerDisconnectListener {
         );
     }
 
+    public synchronized void configureCapacityHandoffLifecycle(
+            BackendCapacityHandoffLifecycle lifecycle
+    ) {
+        if (capacityHandoffLifecycle != null) {
+            throw new IllegalStateException(
+                    "capacity handoff lifecycle is already configured"
+            );
+        }
+        capacityHandoffLifecycle = Objects.requireNonNull(
+                lifecycle,
+                "lifecycle cannot be null"
+        );
+    }
+
     @Subscribe
     public void onDisconnect(DisconnectEvent event) {
         Objects.requireNonNull(event, "event cannot be null");
@@ -149,7 +167,11 @@ public final class PlayerDisconnectListener {
 
         PlayerSessionLease ownedLease = lease.orElseThrow();
         if (presenceRuntimeService == null || removedPresence.isEmpty()) {
-            releaseLease(ownedLease, playerId, localStateRemoved);
+            releaseCapacityHandoffThenLease(
+                    ownedLease,
+                    playerId,
+                    localStateRemoved
+            );
             return;
         }
 
@@ -172,7 +194,11 @@ public final class PlayerDisconnectListener {
                             playerId
                     );
                 }
-                releaseLease(ownedLease, playerId, localStateRemoved);
+                releaseCapacityHandoffThenLease(
+                        ownedLease,
+                        playerId,
+                        localStateRemoved
+                );
             });
         } catch (RuntimeException exception) {
             logger.warn(
@@ -180,8 +206,63 @@ public final class PlayerDisconnectListener {
                     playerId,
                     exception
             );
-            releaseLease(ownedLease, playerId, localStateRemoved);
+            releaseCapacityHandoffThenLease(
+                    ownedLease,
+                    playerId,
+                    localStateRemoved
+            );
         }
+    }
+
+    private void releaseCapacityHandoffThenLease(
+            PlayerSessionLease lease,
+            UUID playerId,
+            boolean localStateRemoved
+    ) {
+        BackendCapacityHandoffLifecycle lifecycle = capacityHandoffLifecycle;
+        if (lifecycle == null) {
+            releaseLease(lease, playerId, localStateRemoved);
+            return;
+        }
+
+        final CompletionStage<Boolean> stage;
+        try {
+            stage = lifecycle.releaseForDisconnect(lease);
+        } catch (RuntimeException exception) {
+            logger.warn(
+                    "No se pudo iniciar la liberacion del handoff de capacidad para {} durante disconnect; TTL actuara como fallback.",
+                    playerId,
+                    exception
+            );
+            releaseLease(lease, playerId, localStateRemoved);
+            return;
+        }
+
+        if (stage == null) {
+            logger.warn(
+                    "La liberacion del handoff de capacidad para {} devolvio un stage nulo durante disconnect; TTL actuara como fallback.",
+                    playerId
+            );
+            releaseLease(lease, playerId, localStateRemoved);
+            return;
+        }
+
+        stage.whenComplete((released, failure) -> {
+            if (failure != null) {
+                logger.warn(
+                        "Fallo la liberacion del handoff de capacidad para {} durante disconnect; TTL actuara como fallback.",
+                        playerId,
+                        failure
+                );
+            } else if (!Boolean.TRUE.equals(released)) {
+                logger.debug(
+                        "No se confirmo la liberacion exacta del handoff de capacidad para {} durante disconnect.",
+                        playerId
+                );
+            }
+
+            releaseLease(lease, playerId, localStateRemoved);
+        });
     }
 
     private void releaseLease(

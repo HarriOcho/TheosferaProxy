@@ -10,7 +10,8 @@ public record RedisCoordinationConfig(
         Duration membershipTtl,
         Duration membershipRenewInterval,
         Duration playerSessionTtl,
-        Duration playerSessionRenewInterval
+        Duration playerSessionRenewInterval,
+        Duration backendCapacityReservationTtl
 ) {
 
     public RedisCoordinationConfig {
@@ -30,6 +31,10 @@ public record RedisCoordinationConfig(
         playerSessionRenewInterval = requirePositive(
                 playerSessionRenewInterval,
                 "playerSessionRenewInterval"
+        );
+        backendCapacityReservationTtl = requirePositive(
+                backendCapacityReservationTtl,
+                "backendCapacityReservationTtl"
         );
 
         requireRenewShorterThanTtl(

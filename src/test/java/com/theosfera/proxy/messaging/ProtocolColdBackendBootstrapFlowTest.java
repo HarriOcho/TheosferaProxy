@@ -9,11 +9,12 @@ import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.PlayerServerReadyPayload;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
-import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
+import com.theosfera.proxy.coordination.PlayerSessionLease;
+import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
@@ -22,11 +23,13 @@ import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
+import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
+import com.theosfera.proxy.transfer.DistributedTransferTestRuntime;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.TransferResultSender;
-import com.theosfera.proxy.transfer.TransferTargetResolver;
+import com.theosfera.proxy.transfer.TransferTargetResolution;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -37,8 +40,6 @@ import com.velocitypowered.api.proxy.server.ServerInfo;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 
-import java.time.Clock;
-import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -97,12 +98,6 @@ class ProtocolColdBackendBootstrapFlowTest {
         BackendIdentityRegistry identityRegistry =
                 new BackendIdentityRegistry();
 
-        BackendHealthRegistry healthRegistry =
-                new BackendHealthRegistry(
-                        Clock.systemUTC(),
-                        Duration.ofSeconds(15)
-                );
-
         identityRegistry.register(
                 new BackendIdentity(
                         "lobby-1",
@@ -113,13 +108,13 @@ class ProtocolColdBackendBootstrapFlowTest {
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
 
-        sessionRegistry.register(
+        AuthenticatedPlayerSession session =
                 new AuthenticatedPlayerSession(
                         PLAYER_ID,
                         "HarriOcho",
                         1_000L
-                )
-        );
+                );
+        sessionRegistry.register(session);
 
         PlayerServerPresenceRegistry presenceRegistry =
                 new PlayerServerPresenceRegistry(
@@ -181,12 +176,31 @@ class ProtocolColdBackendBootstrapFlowTest {
                 )
         );
 
-        TransferTargetResolver targetResolver =
-                new TransferTargetResolver(
-                        proxyServer,
-                        policy,
-                        identityRegistry,
-                        healthRegistry
+        PlayerSessionLease lease = new PlayerSessionLease(
+                session,
+                new ProxyInstanceIdentity(
+                        "proxy-cold-bootstrap-test",
+                        UUID.fromString(
+                                "99999999-8888-7777-6666-555555555555"
+                        )
+                ),
+                1L
+        );
+
+        DistributedPlayerTransferRetryCoordinator retryCoordinator =
+                DistributedTransferTestRuntime.retryCoordinator(
+                        bootstrapRegistry,
+                        transferRegistry,
+                        transferExecutor,
+                        logger,
+                        player,
+                        TRANSFER_REQUEST_ID,
+                        "lobby-1",
+                        BackendType.SKYBLOCK,
+                        TransferTargetResolution.bootstrapRequired(
+                                skyblockTarget
+                        ),
+                        () -> lease
                 );
 
         TransferResultSender resultSender =
@@ -214,10 +228,7 @@ class ProtocolColdBackendBootstrapFlowTest {
                                         identityRegistry,
                                         sessionRegistry,
                                         presenceRegistry,
-                                        transferRegistry,
-                                        bootstrapRegistry,
-                                        targetResolver,
-                                        transferExecutor,
+                                        retryCoordinator,
                                         resultSender,
                                         logger
                                 )

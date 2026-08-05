@@ -53,6 +53,9 @@ import com.theosfera.proxy.session.velocity.VelocityPlayerSessionReleaseTimeoutS
 import com.theosfera.proxy.session.velocity.VelocityPlayerSessionRenewalScheduler;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendCapacityReservationRegistry;
+import com.theosfera.proxy.transfer.DistributedBackendCapacityReleaseService;
+import com.theosfera.proxy.transfer.DistributedBackendCapacityRuntime;
+import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.TransferResultSender;
@@ -69,6 +72,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -108,6 +112,7 @@ public final class TheosferaProxy {
     private PlayerSessionReleaseService releaseService;
     private PlayerSessionRenewalService sessionRenewalService;
     private PlayerSessionShutdownReleaseService shutdownReleaseService;
+    private DistributedBackendCapacityRuntime distributedBackendCapacityRuntime;
     private ProtocolMessageListener protocolMessageListener;
     private ProxyInstanceIdentity proxyInstanceIdentity;
     private BackendKickFailoverListener backendKickFailoverListener;
@@ -192,7 +197,7 @@ public final class TheosferaProxy {
 
         logger.info("Canal de protocolo registrado: {}.", ProtocolChannel.IDENTIFIER.getId());
         logger.info(
-                "TheosferaProxy iniciado correctamente con membership, sesiones y presencia Redis autoritativas."
+                "TheosferaProxy iniciado correctamente con membership, sesiones y presencia Redis autoritativas; capacidad distribuida preparada."
         );
     }
 
@@ -307,12 +312,68 @@ public final class TheosferaProxy {
         );
     }
 
+    private void initializeDistributedBackendCapacity(
+            BackendAuthorizationPolicy authorizationPolicy,
+            TransferTargetResolver targetResolver
+    ) {
+        BackendAuthorizationPolicy nonNullPolicy = Objects.requireNonNull(
+                authorizationPolicy,
+                "authorizationPolicy cannot be null"
+        );
+        TransferTargetResolver nonNullResolver = Objects.requireNonNull(
+                targetResolver,
+                "targetResolver cannot be null"
+        );
+
+        if (coordinationBootstrap == null
+                || coordinationBootstrap.state() != CoordinationState.HEALTHY) {
+            throw new IllegalStateException(
+                    "Distributed backend capacity requires healthy Redis coordination"
+            );
+        }
+
+        if (distributedBackendCapacityRuntime != null) {
+            throw new IllegalStateException(
+                    "Distributed backend capacity runtime is already initialized"
+            );
+        }
+
+        RedisCoordinationConfig config = coordinationBootstrap.config();
+
+        distributedBackendCapacityRuntime =
+                DistributedBackendCapacityRuntime.create(
+                        coordinationBootstrap.createBackendOccupancyCoordinator(
+                                nonNullPolicy.authorizedBackendNames()
+                        ),
+                        coordinationBootstrap.createBackendCapacityCoordinator(
+                                config.backendCapacityReservationTtl()
+                        ),
+                        nonNullResolver,
+                        transferRegistry,
+                        sessionLeaseBindingRegistry,
+                        logger
+                );
+    }
+
+    private void bindDistributedCapacityHandoff() {
+        requireOperationalSessionRuntime();
+        requireOperationalDistributedCapacityRuntime();
+
+        presenceRuntimeService.configureCapacityHandoffLifecycle(
+                distributedBackendCapacityRuntime.handoffService()
+        );
+        playerDisconnectListener.configureCapacityHandoffLifecycle(
+                distributedBackendCapacityRuntime.handoffService()
+        );
+    }
+
     private void activateOperationalSurface() {
         if (operationalSurfaceActive) {
             throw new IllegalStateException("Proxy operational surface is already active");
         }
 
         requireOperationalSessionRuntime();
+        requireOperationalDistributedCapacityRuntime();
         operationalSurfaceActive = true;
 
         channelRegistration.register();
@@ -407,6 +468,10 @@ public final class TheosferaProxy {
         pendingPingRegistry.clear();
         healthRegistry.clear();
         identityRegistry.clear();
+        if (distributedBackendCapacityRuntime != null) {
+            distributedBackendCapacityRuntime.handoffService().clear();
+        }
+        distributedBackendCapacityRuntime = null;
     }
 
     private void requireOperationalSessionRuntime() {
@@ -419,6 +484,14 @@ public final class TheosferaProxy {
                 || shutdownReleaseService == null) {
             throw new IllegalStateException(
                     "Distributed player session and presence runtime is not initialized"
+            );
+        }
+    }
+
+    private void requireOperationalDistributedCapacityRuntime() {
+        if (distributedBackendCapacityRuntime == null) {
+            throw new IllegalStateException(
+                    "Distributed backend capacity runtime is not initialized"
             );
         }
     }
@@ -469,7 +542,26 @@ public final class TheosferaProxy {
                 healthRegistry,
                 capacityRegistry
         );
+        initializeDistributedBackendCapacity(
+                authorizationPolicy,
+                targetResolver
+        );
+        bindDistributedCapacityHandoff();
+
         PlayerTransferExecutor transferExecutor = new PlayerTransferExecutor();
+        DistributedPlayerTransferRetryCoordinator distributedTransferRetryCoordinator =
+                new DistributedPlayerTransferRetryCoordinator(
+                        bootstrapRegistry,
+                        transferRegistry,
+                        distributedBackendCapacityRuntime.allocationService(),
+                        transferExecutor,
+                        new DistributedBackendCapacityReleaseService(
+                                distributedBackendCapacityRuntime.capacityCoordinator(),
+                                logger
+                        ),
+                        distributedBackendCapacityRuntime.handoffService(),
+                        logger
+                );
         TransferResultSender transferResultSender = new TransferResultSender(messageSender, logger);
         LobbyTransferService lobbyTransferService = new LobbyTransferService(
                 sessionRegistry,
@@ -538,10 +630,7 @@ public final class TheosferaProxy {
                                 identityRegistry,
                                 sessionRegistry,
                                 presenceRegistry,
-                                transferRegistry,
-                                bootstrapRegistry,
-                                targetResolver,
-                                transferExecutor,
+                                distributedTransferRetryCoordinator,
                                 transferResultSender,
                                 logger
                         )

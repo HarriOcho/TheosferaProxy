@@ -202,7 +202,8 @@ class RedisCoordinationRuntimeIntegrationTest {
                 Duration.ofSeconds(15),
                 Duration.ofSeconds(5),
                 Duration.ofSeconds(30),
-                Duration.ofSeconds(10)
+                Duration.ofSeconds(10),
+                Duration.ofSeconds(20)
         );
     }
 

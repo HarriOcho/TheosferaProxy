@@ -7,22 +7,18 @@ import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
 import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.messaging.ProtocolMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
-import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
-import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
+import com.theosfera.proxy.transfer.DistributedPlayerTransferRetryCoordinator;
 import com.theosfera.proxy.transfer.PlayerTransferCompletion;
-import com.theosfera.proxy.transfer.PlayerTransferExecutor;
 import com.theosfera.proxy.transfer.PlayerTransferRegistrationResult;
-import com.theosfera.proxy.transfer.PlayerTransferRetryCoordinator;
-import com.theosfera.proxy.transfer.PlayerTransferTargetAllocationService;
 import com.theosfera.proxy.transfer.TransferResultSender;
 import com.theosfera.proxy.transfer.TransferTargetResolution;
-import com.theosfera.proxy.transfer.TransferTargetResolver;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import org.slf4j.Logger;
@@ -39,12 +35,7 @@ public final class TransferRequestMessageHandler
     private final BackendIdentityRegistry identityRegistry;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
-    private final PendingPlayerTransferRegistry transferRegistry;
-    private final BackendBootstrapRegistry bootstrapRegistry;
-    private final TransferTargetResolver targetResolver;
-    private final PlayerTransferTargetAllocationService allocationService;
-    private final PlayerTransferRetryCoordinator retryCoordinator;
-    private final PlayerTransferExecutor transferExecutor;
+    private final DistributedPlayerTransferRetryCoordinator retryCoordinator;
     private final TransferResultSender resultSender;
     private final Logger logger;
     private final Clock clock;
@@ -54,10 +45,7 @@ public final class TransferRequestMessageHandler
             BackendIdentityRegistry identityRegistry,
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
-            PendingPlayerTransferRegistry transferRegistry,
-            BackendBootstrapRegistry bootstrapRegistry,
-            TransferTargetResolver targetResolver,
-            PlayerTransferExecutor transferExecutor,
+            DistributedPlayerTransferRetryCoordinator retryCoordinator,
             TransferResultSender resultSender,
             Logger logger
     ) {
@@ -66,10 +54,7 @@ public final class TransferRequestMessageHandler
                 identityRegistry,
                 sessionRegistry,
                 presenceRegistry,
-                transferRegistry,
-                bootstrapRegistry,
-                targetResolver,
-                transferExecutor,
+                retryCoordinator,
                 resultSender,
                 logger,
                 Clock.systemUTC()
@@ -81,10 +66,7 @@ public final class TransferRequestMessageHandler
             BackendIdentityRegistry identityRegistry,
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
-            PendingPlayerTransferRegistry transferRegistry,
-            BackendBootstrapRegistry bootstrapRegistry,
-            TransferTargetResolver targetResolver,
-            PlayerTransferExecutor transferExecutor,
+            DistributedPlayerTransferRetryCoordinator retryCoordinator,
             TransferResultSender resultSender,
             Logger logger,
             Clock clock
@@ -93,67 +75,30 @@ public final class TransferRequestMessageHandler
                 proxyServer,
                 "proxyServer cannot be null"
         );
-
         this.identityRegistry = Objects.requireNonNull(
                 identityRegistry,
                 "identityRegistry cannot be null"
         );
-
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
                 "sessionRegistry cannot be null"
         );
-
         this.presenceRegistry = Objects.requireNonNull(
                 presenceRegistry,
                 "presenceRegistry cannot be null"
         );
-
-        this.transferRegistry = Objects.requireNonNull(
-                transferRegistry,
-                "transferRegistry cannot be null"
+        this.retryCoordinator = Objects.requireNonNull(
+                retryCoordinator,
+                "retryCoordinator cannot be null"
         );
-
-        this.bootstrapRegistry = Objects.requireNonNull(
-                bootstrapRegistry,
-                "bootstrapRegistry cannot be null"
-        );
-
-        this.targetResolver = Objects.requireNonNull(
-                targetResolver,
-                "targetResolver cannot be null"
-        );
-
-        this.allocationService =
-                new PlayerTransferTargetAllocationService(
-                        this.targetResolver,
-                        this.transferRegistry
-                );
-
-        this.transferExecutor = Objects.requireNonNull(
-                transferExecutor,
-                "transferExecutor cannot be null"
-        );
-
-        this.retryCoordinator =
-                new PlayerTransferRetryCoordinator(
-                        this.bootstrapRegistry,
-                        this.targetResolver,
-                        this.transferRegistry,
-                        this.allocationService,
-                        this.transferExecutor
-                );
-
         this.resultSender = Objects.requireNonNull(
                 resultSender,
                 "resultSender cannot be null"
         );
-
         this.logger = Objects.requireNonNull(
                 logger,
                 "logger cannot be null"
         );
-
         this.clock = Objects.requireNonNull(
                 clock,
                 "clock cannot be null"
@@ -167,22 +112,16 @@ public final class TransferRequestMessageHandler
 
     @Override
     public void handle(ProtocolMessageContext context) {
-        Objects.requireNonNull(
-                context,
-                "context cannot be null"
+        Objects.requireNonNull(context, "context cannot be null");
+
+        TransferRequestPayload payload = requireTransferPayload(
+                context.envelope()
         );
-
-        TransferRequestPayload payload =
-                requireTransferPayload(
-                        context.envelope()
-                );
-
         UUID playerId = payload.playerId();
         String sourceBackendName = context.serverName();
 
         Optional<BackendIdentity> sourceIdentity =
                 identityRegistry.find(sourceBackendName);
-
         if (sourceIdentity.isEmpty()) {
             reject(
                     context,
@@ -194,7 +133,6 @@ public final class TransferRequestMessageHandler
 
         BackendType sourceBackendType =
                 sourceIdentity.orElseThrow().backendType();
-
         if (!isTransferAllowed(
                 sourceBackendType,
                 payload.targetBackendType()
@@ -208,9 +146,7 @@ public final class TransferRequestMessageHandler
         }
 
         if (!playerId.equals(
-                context.source()
-                        .getPlayer()
-                        .getUniqueId()
+                context.source().getPlayer().getUniqueId()
         )) {
             reject(
                     context,
@@ -232,7 +168,6 @@ public final class TransferRequestMessageHandler
         if (sourceBackendType != BackendType.AUTH) {
             Optional<PlayerServerPresence> presence =
                     presenceRegistry.find(playerId);
-
             if (presence.isEmpty()
                     || !presence.orElseThrow()
                     .backendName()
@@ -246,9 +181,7 @@ public final class TransferRequestMessageHandler
             }
         }
 
-        Optional<Player> onlinePlayer =
-                proxyServer.getPlayer(playerId);
-
+        Optional<Player> onlinePlayer = proxyServer.getPlayer(playerId);
         if (onlinePlayer.isEmpty()
                 || !isConnectedToSource(
                 onlinePlayer.orElseThrow(),
@@ -266,7 +199,8 @@ public final class TransferRequestMessageHandler
         Player player = onlinePlayer.orElseThrow();
 
         retryCoordinator.start(
-                new PlayerTransferRetryCoordinator.TransferRetryRequest(
+                new DistributedPlayerTransferRetryCoordinator
+                        .TransferRetryRequest(
                         context.envelope().requestId(),
                         playerId,
                         sourceBackendName,
@@ -287,6 +221,11 @@ public final class TransferRequestMessageHandler
                                 context,
                                 playerId,
                                 resolution
+                        ),
+                        status -> rejectCapacity(
+                                context,
+                                playerId,
+                                status
                         ),
                         result -> rejectBootstrapRegistration(
                                 context,
@@ -322,8 +261,7 @@ public final class TransferRequestMessageHandler
             String sourceBackendName,
             PlayerTransferCompletion completion
     ) {
-        if (completion.status()
-                == TransferResultStatus.SUCCESS) {
+        if (completion.status() == TransferResultStatus.SUCCESS) {
             presenceRegistry.removeIfBackend(
                     playerId,
                     sourceBackendName
@@ -347,8 +285,7 @@ public final class TransferRequestMessageHandler
         }
 
         return switch (sourceBackendType) {
-            case AUTH ->
-                    targetBackendType == BackendType.LOBBY;
+            case AUTH -> targetBackendType == BackendType.LOBBY;
             case LOBBY, SKYBLOCK -> true;
         };
     }
@@ -380,10 +317,9 @@ public final class TransferRequestMessageHandler
                     "Player already has a pending transfer";
             case REQUEST_ID_CONFLICT ->
                     "Transfer request identifier conflict";
-            case REGISTERED ->
-                    throw new IllegalStateException(
-                            "Registered transfer cannot be rejected"
-                    );
+            case REGISTERED -> throw new IllegalStateException(
+                    "Registered transfer cannot be rejected"
+            );
         };
 
         reject(context, playerId, message);
@@ -410,6 +346,33 @@ public final class TransferRequestMessageHandler
         reject(context, playerId, message);
     }
 
+    private void rejectCapacity(
+            ProtocolMessageContext context,
+            UUID playerId,
+            BackendCapacityReserveResult.Status status
+    ) {
+        String message = switch (status) {
+            case NO_CAPACITY ->
+                    "Target backend has no available capacity";
+            case REQUEST_ID_CONFLICT ->
+                    "Capacity reservation request identifier conflict";
+            case SESSION_NOT_FOUND ->
+                    "Player session lease is unavailable";
+            case NOT_SESSION_OWNER ->
+                    "Player session lease is no longer owned by this proxy";
+            case OCCUPANCY_UNAVAILABLE ->
+                    "Target backend occupancy is unavailable";
+            case COORDINATION_UNAVAILABLE ->
+                    "Backend capacity coordination is unavailable";
+            case RESERVED, ALREADY_RESERVED ->
+                    throw new IllegalStateException(
+                            "Successful capacity reservation cannot be rejected"
+                    );
+        };
+
+        reject(context, playerId, message);
+    }
+
     private void rejectBootstrapRegistration(
             ProtocolMessageContext context,
             UUID playerId,
@@ -422,10 +385,9 @@ public final class TransferRequestMessageHandler
                     "Bootstrap request identifier conflict";
             case ALREADY_RESERVED ->
                     "Bootstrap request is already pending";
-            case RESERVED ->
-                    throw new IllegalStateException(
-                            "Reserved bootstrap cannot be rejected"
-                    );
+            case RESERVED -> throw new IllegalStateException(
+                    "Reserved bootstrap cannot be rejected"
+            );
         };
 
         reject(context, playerId, message);
@@ -450,11 +412,9 @@ public final class TransferRequestMessageHandler
         if (!(envelope.payload()
                 instanceof TransferRequestPayload payload)) {
             throw new IllegalArgumentException(
-                    "TRANSFER_REQUEST envelope requires "
-                            + "TransferRequestPayload"
+                    "TRANSFER_REQUEST envelope requires TransferRequestPayload"
             );
         }
-
         return payload;
     }
 }

@@ -189,6 +189,74 @@ public final class TransferTargetResolver {
         return TransferTargetResolution.notAuthenticated();
     }
 
+    public TransferTargetCandidates candidates(
+            BackendType targetBackendType
+    ) {
+        return candidates(targetBackendType, Set.of());
+    }
+
+    public TransferTargetCandidates candidates(
+            BackendType targetBackendType,
+            Set<String> excludedServerNames
+    ) {
+        BackendType nonNullTargetType = Objects.requireNonNull(
+                targetBackendType,
+                "targetBackendType cannot be null"
+        );
+        Set<String> nonNullExcludedServerNames = Set.copyOf(
+                Objects.requireNonNull(
+                        excludedServerNames,
+                        "excludedServerNames cannot be null"
+                )
+        );
+
+        if (nonNullTargetType == BackendType.AUTH) {
+            return TransferTargetCandidates.notConfigured();
+        }
+
+        List<RegisteredServer> configuredTargets = configuredTargets(
+                nonNullTargetType,
+                nonNullExcludedServerNames
+        );
+
+        if (configuredTargets.isEmpty()) {
+            return TransferTargetCandidates.notConfigured();
+        }
+
+        List<BackendTargetCandidate> activeCandidates =
+                configuredTargets.stream()
+                        .filter(server -> isAuthenticatedDistributedTarget(
+                                server,
+                                nonNullTargetType
+                        ))
+                        .map(server -> targetCandidate(
+                                server,
+                                nonNullTargetType
+                        ))
+                        .toList();
+
+        List<BackendTargetCandidate> coldCandidates =
+                configuredTargets.stream()
+                        .filter(server -> !isAuthenticatedDistributedTarget(
+                                server,
+                                nonNullTargetType
+                        ))
+                        .filter(server -> isEligibleColdTarget(
+                                server,
+                                nonNullTargetType
+                        ))
+                        .map(server -> targetCandidate(
+                                server,
+                                nonNullTargetType
+                        ))
+                        .toList();
+
+        return TransferTargetCandidates.configured(
+                activeCandidates,
+                coldCandidates
+        );
+    }
+
     public BackendCapacityReservationResult reserveCapacity(
             BackendCapacityReservation reservation,
             RegisteredServer target
@@ -293,43 +361,15 @@ public final class TransferTargetResolver {
             RegisteredServer server,
             BackendType expectedType
     ) {
-        String serverName =
-                server.getServerInfo().getName();
-
-        BackendPolicyEntry policyEntry =
-                authorizationPolicy
-                        .backendEntries()
-                        .get(serverName);
-
-        if (policyEntry == null
-                || policyEntry.backendType() != expectedType) {
+        if (!isAuthenticatedActiveTarget(server, expectedType)) {
             return Optional.empty();
         }
 
-        boolean authenticated =
-                identityRegistry
-                        .find(serverName)
-                        .filter(identity ->
-                                matchesExpectedIdentity(
-                                        identity,
-                                        serverName,
-                                        expectedType
-                                )
-                        )
-                        .isPresent();
-
-        if (!authenticated
-                || healthRegistry.status(serverName)
-                != BackendHealthStatus.HEALTHY) {
-            return Optional.empty();
-        }
-
-        int connectedPlayers =
-                server.getPlayersConnected().size();
-
-        if (connectedPlayers == 0) {
-            return Optional.empty();
-        }
+        String serverName = server.getServerInfo().getName();
+        BackendPolicyEntry policyEntry = authorizationPolicy
+                .backendEntries()
+                .get(serverName);
+        int connectedPlayers = server.getPlayersConnected().size();
 
         return Optional.of(
                 new BackendLoadCandidate(
@@ -339,6 +379,65 @@ public final class TransferTargetResolver {
                         connectedPlayers,
                         capacityRegistry.reservedCount(serverName)
                 )
+        );
+    }
+
+    private boolean isAuthenticatedActiveTarget(
+            RegisteredServer server,
+            BackendType expectedType
+    ) {
+        return isAuthenticatedDistributedTarget(server, expectedType)
+                && hasConnectedPlayers(server);
+    }
+
+    private boolean isAuthenticatedDistributedTarget(
+            RegisteredServer server,
+            BackendType expectedType
+    ) {
+        String serverName = server.getServerInfo().getName();
+        BackendPolicyEntry policyEntry = authorizationPolicy
+                .backendEntries()
+                .get(serverName);
+
+        if (policyEntry == null
+                || policyEntry.backendType() != expectedType) {
+            return false;
+        }
+
+        boolean authenticated = identityRegistry
+                .find(serverName)
+                .filter(identity -> matchesExpectedIdentity(
+                        identity,
+                        serverName,
+                        expectedType
+                ))
+                .isPresent();
+
+        return authenticated
+                && healthRegistry.status(serverName)
+                == BackendHealthStatus.HEALTHY;
+    }
+
+    private BackendTargetCandidate targetCandidate(
+            RegisteredServer server,
+            BackendType expectedType
+    ) {
+        String serverName = server.getServerInfo().getName();
+        BackendPolicyEntry policyEntry = authorizationPolicy
+                .backendEntries()
+                .get(serverName);
+
+        if (policyEntry == null
+                || policyEntry.backendType() != expectedType) {
+            throw new TransferTargetResolutionContractViolationException(
+                    "candidate target does not match backend policy"
+            );
+        }
+
+        return new BackendTargetCandidate(
+                serverName,
+                server,
+                policyEntry
         );
     }
 
