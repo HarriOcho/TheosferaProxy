@@ -22,7 +22,6 @@ public final class PlayerDisconnectListener {
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final PendingPlayerTransferRegistry transferRegistry;
-    private final BackendCapacityReservationRegistry capacityRegistry;
     private final PlayerPresenceRuntimeService presenceRuntimeService;
     private final Logger logger;
 
@@ -40,7 +39,6 @@ public final class PlayerDisconnectListener {
                 leaseBindingRegistry,
                 presenceRegistry,
                 transferRegistry,
-                new BackendCapacityReservationRegistry(),
                 sessionRegistry,
                 releaseService,
                 null,
@@ -52,28 +50,6 @@ public final class PlayerDisconnectListener {
             PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             PendingPlayerTransferRegistry transferRegistry,
-            BackendCapacityReservationRegistry capacityRegistry,
-            AuthenticatedPlayerSessionRegistry sessionRegistry,
-            PlayerSessionReleaseService releaseService,
-            Logger logger
-    ) {
-        this(
-                leaseBindingRegistry,
-                presenceRegistry,
-                transferRegistry,
-                capacityRegistry,
-                sessionRegistry,
-                releaseService,
-                null,
-                logger
-        );
-    }
-
-    public PlayerDisconnectListener(
-            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
-            PlayerServerPresenceRegistry presenceRegistry,
-            PendingPlayerTransferRegistry transferRegistry,
-            BackendCapacityReservationRegistry capacityRegistry,
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerSessionReleaseService releaseService,
             PlayerPresenceRuntimeService presenceRuntimeService,
@@ -91,10 +67,6 @@ public final class PlayerDisconnectListener {
                 transferRegistry,
                 "transferRegistry cannot be null"
         );
-        this.capacityRegistry = Objects.requireNonNull(
-                capacityRegistry,
-                "capacityRegistry cannot be null"
-        );
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
                 "sessionRegistry cannot be null"
@@ -108,6 +80,61 @@ public final class PlayerDisconnectListener {
                 logger,
                 "logger cannot be null"
         );
+    }
+
+    /**
+     * Compatibility constructor for tests and callers compiled against the
+     * pre-Redis-capacity cleanup API. The local capacity registry is no longer
+     * an authority and is deliberately ignored.
+     */
+    @Deprecated(forRemoval = true)
+    public PlayerDisconnectListener(
+            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
+            PlayerServerPresenceRegistry presenceRegistry,
+            PendingPlayerTransferRegistry transferRegistry,
+            BackendCapacityReservationRegistry ignoredCapacityRegistry,
+            AuthenticatedPlayerSessionRegistry sessionRegistry,
+            PlayerSessionReleaseService releaseService,
+            Logger logger
+    ) {
+        this(
+                leaseBindingRegistry,
+                presenceRegistry,
+                transferRegistry,
+                requireLegacyRegistry(ignoredCapacityRegistry),
+                sessionRegistry,
+                releaseService,
+                null,
+                logger
+        );
+    }
+
+    /**
+     * Compatibility constructor for tests and callers compiled against the
+     * pre-Redis-capacity cleanup API. The local capacity registry is no longer
+     * an authority and is deliberately ignored.
+     */
+    @Deprecated(forRemoval = true)
+    public PlayerDisconnectListener(
+            PlayerSessionLeaseBindingRegistry leaseBindingRegistry,
+            PlayerServerPresenceRegistry presenceRegistry,
+            PendingPlayerTransferRegistry transferRegistry,
+            BackendCapacityReservationRegistry ignoredCapacityRegistry,
+            AuthenticatedPlayerSessionRegistry sessionRegistry,
+            PlayerSessionReleaseService releaseService,
+            PlayerPresenceRuntimeService presenceRuntimeService,
+            Logger logger
+    ) {
+        this(
+                leaseBindingRegistry,
+                presenceRegistry,
+                transferRegistry,
+                sessionRegistry,
+                releaseService,
+                presenceRuntimeService,
+                logger
+        );
+        requireLegacyRegistry(ignoredCapacityRegistry);
     }
 
     public synchronized void configureCapacityHandoffLifecycle(
@@ -133,9 +160,6 @@ public final class PlayerDisconnectListener {
 
         Optional<PendingPlayerTransfer> removedTransfer =
                 transferRegistry.removeByPlayer(playerId);
-        removedTransfer.ifPresent(transfer ->
-                capacityRegistry.removeByRequest(transfer.requestId())
-        );
 
         Optional<PlayerServerPresence> removedPresence =
                 presenceRegistry.remove(playerId);
@@ -333,6 +357,15 @@ public final class PlayerDisconnectListener {
         logger.debug(
                 "Estado de sesión eliminado para {} al desconectarse del proxy.",
                 playerId
+        );
+    }
+
+    private static BackendCapacityReservationRegistry requireLegacyRegistry(
+            BackendCapacityReservationRegistry registry
+    ) {
+        return Objects.requireNonNull(
+                registry,
+                "capacityRegistry cannot be null"
         );
     }
 }
