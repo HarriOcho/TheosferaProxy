@@ -3,6 +3,8 @@ package com.theosfera.proxy.control;
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.transport.ProtocolFrameCodec;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
+import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import org.slf4j.Logger;
 
 import javax.net.ssl.SSLContext;
@@ -54,11 +56,15 @@ public final class BackendControlRuntime implements AutoCloseable {
     public static BackendControlRuntime create(
             Path dataDirectory,
             BackendAuthorizationPolicy authorizationPolicy,
+            PendingBackendPingRegistry pendingPingRegistry,
+            BackendHealthRegistry healthRegistry,
             Logger logger
     ) {
         return create(
                 dataDirectory,
                 authorizationPolicy,
+                pendingPingRegistry,
+                healthRegistry,
                 logger,
                 System::getenv
         );
@@ -67,6 +73,8 @@ public final class BackendControlRuntime implements AutoCloseable {
     static BackendControlRuntime create(
             Path dataDirectory,
             BackendAuthorizationPolicy authorizationPolicy,
+            PendingBackendPingRegistry pendingPingRegistry,
+            BackendHealthRegistry healthRegistry,
             Logger logger,
             Function<String, String> environmentReader
     ) {
@@ -78,6 +86,16 @@ public final class BackendControlRuntime implements AutoCloseable {
                 Objects.requireNonNull(
                         authorizationPolicy,
                         "authorizationPolicy cannot be null"
+                );
+        PendingBackendPingRegistry nonNullPendingPingRegistry =
+                Objects.requireNonNull(
+                        pendingPingRegistry,
+                        "pendingPingRegistry cannot be null"
+                );
+        BackendHealthRegistry nonNullHealthRegistry =
+                Objects.requireNonNull(
+                        healthRegistry,
+                        "healthRegistry cannot be null"
                 );
         Logger nonNullLogger = Objects.requireNonNull(
                 logger,
@@ -165,8 +183,13 @@ public final class BackendControlRuntime implements AutoCloseable {
             AuthenticatedControlConnectionHandler authenticatedHandler =
                     new BoundAuthenticatedControlConnectionHandler(
                             messageSender,
-                            new RejectUnexpectedControlMessageHandler(
-                                    frameCodec
+                            new BackendControlPongHandler(
+                                    jsonCodec,
+                                    frameCodec,
+                                    sessionRegistry,
+                                    nonNullPendingPingRegistry,
+                                    nonNullHealthRegistry,
+                                    nonNullLogger
                             )
                     );
             ProxyControlServer server = new ProxyControlServer(
