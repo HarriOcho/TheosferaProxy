@@ -222,7 +222,10 @@ class BackendPingEmitterTest {
                 : BackendPingEmitter.class.getDeclaredFields()) {
             assertFalse(
                     field.getType()
-                            .equals(BackendPingConnectionResolver.class)
+                            .getName()
+                            .equals(
+                                    "com.theosfera.proxy.backend.BackendPingConnectionResolver"
+                            )
             );
             assertFalse(
                     field.getType()
