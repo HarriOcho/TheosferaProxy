@@ -42,6 +42,10 @@ class BackendControlRuntimeTest {
         assertFalse(runtime.enabled());
         assertFalse(runtime.started());
         assertFalse(environmentRead.get());
+        assertThrows(
+                IllegalStateException.class,
+                runtime::requireMessageSender
+        );
 
         runtime.start();
 
