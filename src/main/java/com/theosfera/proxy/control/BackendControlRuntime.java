@@ -118,59 +118,61 @@ public final class BackendControlRuntime implements AutoCloseable {
                         nonNullPolicy.authorizedBackendNames()
                 );
 
-        char[] keyStorePassword = passwordValue.toCharArray();
-        final SSLContext sslContext;
         try {
-            sslContext = new ControlTlsContextFactory()
-                    .createServerContext(
-                            config.keyStorePath(),
-                            keyStorePassword
+            char[] keyStorePassword = passwordValue.toCharArray();
+            final SSLContext sslContext;
+            try {
+                sslContext = new ControlTlsContextFactory()
+                        .createServerContext(
+                                config.keyStorePath(),
+                                keyStorePassword
+                        );
+            } finally {
+                Arrays.fill(keyStorePassword, '\0');
+            }
+
+            Clock clock = Clock.systemUTC();
+            ProtocolJsonCodec jsonCodec = new ProtocolJsonCodec();
+            ProtocolFrameCodec frameCodec = new ProtocolFrameCodec();
+            BackendControlSessionRegistry sessionRegistry =
+                    new BackendControlSessionRegistry();
+            ControlAuthenticationService authenticationService =
+                    new ControlAuthenticationService(
+                            clock,
+                            config.authenticationTimeout(),
+                            nonNullPolicy,
+                            secretProvider
                     );
+            ControlConnectionHandshakeHandler authenticator =
+                    new ControlConnectionHandshakeHandler(
+                            clock,
+                            jsonCodec,
+                            frameCodec,
+                            authenticationService,
+                            sessionRegistry
+                    );
+            ProxyControlServer server = new ProxyControlServer(
+                    sslContext,
+                    config.bindAddress(),
+                    config.authenticationTimeout(),
+                    authenticator,
+                    sessionRegistry,
+                    new RejectUnexpectedControlMessageHandler(frameCodec),
+                    nonNullLogger
+            );
+
+            return new BackendControlRuntime(
+                    config,
+                    authenticationService,
+                    sessionRegistry,
+                    secretProvider,
+                    server,
+                    nonNullLogger
+            );
         } catch (RuntimeException exception) {
             secretProvider.close();
             throw exception;
-        } finally {
-            Arrays.fill(keyStorePassword, '\0');
         }
-
-        Clock clock = Clock.systemUTC();
-        ProtocolJsonCodec jsonCodec = new ProtocolJsonCodec();
-        ProtocolFrameCodec frameCodec = new ProtocolFrameCodec();
-        BackendControlSessionRegistry sessionRegistry =
-                new BackendControlSessionRegistry();
-        ControlAuthenticationService authenticationService =
-                new ControlAuthenticationService(
-                        clock,
-                        config.authenticationTimeout(),
-                        nonNullPolicy,
-                        secretProvider
-                );
-        ControlConnectionHandshakeHandler authenticator =
-                new ControlConnectionHandshakeHandler(
-                        clock,
-                        jsonCodec,
-                        frameCodec,
-                        authenticationService,
-                        sessionRegistry
-                );
-        ProxyControlServer server = new ProxyControlServer(
-                sslContext,
-                config.bindAddress(),
-                config.authenticationTimeout(),
-                authenticator,
-                sessionRegistry,
-                new RejectUnexpectedControlMessageHandler(frameCodec),
-                nonNullLogger
-        );
-
-        return new BackendControlRuntime(
-                config,
-                authenticationService,
-                sessionRegistry,
-                secretProvider,
-                server,
-                nonNullLogger
-        );
     }
 
     public synchronized void start() {
@@ -196,14 +198,14 @@ public final class BackendControlRuntime implements AutoCloseable {
 
         try {
             server.start();
+            started = true;
         } catch (IOException exception) {
+            stop();
             throw new IllegalStateException(
                     "Could not start backend control TLS listener",
                     exception
             );
         }
-
-        started = true;
     }
 
     public synchronized void stop() {
