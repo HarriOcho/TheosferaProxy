@@ -68,6 +68,73 @@ class BackendControlSessionRegistryTest {
     }
 
     @Test
+    void rollbackRemovesFirstRegistration() {
+        BackendControlSessionRegistry registry =
+                new BackendControlSessionRegistry();
+        BackendControlSessionRegistration registration =
+                registry.register(
+                        UUID.randomUUID(),
+                        new BackendIdentity(
+                                "lobby-1",
+                                BackendType.LOBBY
+                        )
+                );
+
+        assertTrue(registry.rollback(registration));
+        assertTrue(registry.find("lobby-1").isEmpty());
+    }
+
+    @Test
+    void rollbackRestoresReplacedPreviousSession() {
+        BackendControlSessionRegistry registry =
+                new BackendControlSessionRegistry();
+        BackendIdentity identity = new BackendIdentity(
+                "lobby-1",
+                BackendType.LOBBY
+        );
+
+        BackendControlSession first = registry.register(
+                UUID.randomUUID(),
+                identity
+        ).current();
+        BackendControlSessionRegistration second = registry.register(
+                UUID.randomUUID(),
+                identity
+        );
+
+        assertTrue(registry.rollback(second));
+        assertTrue(registry.isCurrent(first));
+        assertEquals(first, registry.find("lobby-1").orElseThrow());
+    }
+
+    @Test
+    void staleRollbackCannotOverwriteNewerSession() {
+        BackendControlSessionRegistry registry =
+                new BackendControlSessionRegistry();
+        BackendIdentity identity = new BackendIdentity(
+                "lobby-1",
+                BackendType.LOBBY
+        );
+
+        BackendControlSessionRegistration first = registry.register(
+                UUID.randomUUID(),
+                identity
+        );
+        BackendControlSessionRegistration second = registry.register(
+                UUID.randomUUID(),
+                identity
+        );
+        BackendControlSession third = registry.register(
+                UUID.randomUUID(),
+                identity
+        ).current();
+
+        assertFalse(registry.rollback(second));
+        assertFalse(registry.rollback(first));
+        assertTrue(registry.isCurrent(third));
+    }
+
+    @Test
     void staleDisconnectCannotRemoveNewerSession() {
         BackendControlSessionRegistry registry =
                 new BackendControlSessionRegistry();
