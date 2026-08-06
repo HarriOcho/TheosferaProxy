@@ -531,6 +531,8 @@ public final class TheosferaProxy {
         backendControlRuntime = BackendControlRuntime.create(
                 dataDirectory,
                 authorizationPolicy,
+                pendingPingRegistry,
+                healthRegistry,
                 logger
         );
         BackendMessageAuthorizer messageAuthorizer = new BackendMessageAuthorizer(identityRegistry);
