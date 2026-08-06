@@ -48,9 +48,15 @@ class BackendControlRuntimeTest {
         assertFalse(runtime.enabled());
         assertFalse(runtime.started());
         assertFalse(environmentRead.get());
-        assertThrows(
-                IllegalStateException.class,
-                runtime::requireMessageSender
+        assertTrue(runtime.messageSender().isPresent());
+        assertTrue(
+                runtime.requireMessageSender()
+                        .findSession("lobby-1")
+                        .isEmpty()
+        );
+        assertTrue(
+                runtime.requireMessageSender()
+                        .boundSessionCount() == 0
         );
 
         runtime.start();
