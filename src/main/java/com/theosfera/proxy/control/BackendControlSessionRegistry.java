@@ -7,6 +7,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -58,6 +59,36 @@ public final class BackendControlSessionRegistry {
                 next,
                 previous.get()
         );
+    }
+
+    public boolean rollback(
+            BackendControlSessionRegistration registration
+    ) {
+        BackendControlSessionRegistration nonNullRegistration =
+                Objects.requireNonNull(
+                        registration,
+                        "registration cannot be null"
+                );
+
+        BackendControlSession current =
+                nonNullRegistration.current();
+        BackendControlSession previous =
+                nonNullRegistration.previous();
+        AtomicBoolean rolledBack = new AtomicBoolean();
+
+        sessions.compute(
+                current.identity().serverName(),
+                (serverName, existing) -> {
+                    if (!current.equals(existing)) {
+                        return existing;
+                    }
+
+                    rolledBack.set(true);
+                    return previous;
+                }
+        );
+
+        return rolledBack.get();
     }
 
     public Optional<BackendControlSession> find(
