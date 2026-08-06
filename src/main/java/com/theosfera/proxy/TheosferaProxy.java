@@ -35,10 +35,8 @@ import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
 import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
-import com.theosfera.proxy.messaging.handler.PingMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
-import com.theosfera.proxy.messaging.handler.PongMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
 import com.theosfera.proxy.observability.BackendOperationalSnapshotService;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
@@ -646,8 +644,6 @@ public final class TheosferaProxy {
                                 messageSender,
                                 logger
                         ),
-                        new PingMessageHandler(messageSender, logger),
-                        new PongMessageHandler(pendingPingRegistry, healthRegistry, logger),
                         new PlayerAuthenticatedMessageHandler(
                                 sessionCoordinator,
                                 sessionLeaseBindingRegistry,
