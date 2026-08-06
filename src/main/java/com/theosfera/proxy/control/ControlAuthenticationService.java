@@ -23,6 +23,9 @@ import java.util.function.Supplier;
 
 public final class ControlAuthenticationService {
 
+    private static final SecureRandom SECURE_RANDOM =
+            new SecureRandom();
+
     private final Clock clock;
     private final Duration authenticationTimeout;
     private final BackendAuthorizationPolicy authorizationPolicy;
@@ -223,8 +226,11 @@ public final class ControlAuthenticationService {
             );
         }
 
-        Optional<byte[]> secret = secretProvider.findSecret(
-                payload.backendName()
+        Optional<byte[]> secret = Objects.requireNonNull(
+                secretProvider.findSecret(
+                        payload.backendName()
+                ),
+                "secretProvider cannot return null"
         );
 
         if (secret.isEmpty()) {
@@ -233,10 +239,7 @@ public final class ControlAuthenticationService {
             );
         }
 
-        byte[] secretBytes = Objects.requireNonNull(
-                secret.orElseThrow(),
-                "secretProvider cannot return Optional containing null"
-        ).clone();
+        byte[] secretBytes = secret.orElseThrow().clone();
 
         final boolean validProof;
         try {
@@ -286,7 +289,7 @@ public final class ControlAuthenticationService {
         byte[] nonce = new byte[
                 ControlAuthChallengePayload.NONCE_BYTES
         ];
-        new SecureRandom().nextBytes(nonce);
+        SECURE_RANDOM.nextBytes(nonce);
         return nonce;
     }
 
