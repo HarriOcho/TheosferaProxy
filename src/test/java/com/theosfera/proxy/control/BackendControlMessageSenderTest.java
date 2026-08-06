@@ -13,10 +13,12 @@ import org.junit.jupiter.api.Test;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BackendControlMessageSenderTest {
@@ -95,34 +97,24 @@ class BackendControlMessageSenderTest {
     }
 
     @Test
-    void failedWriteDropsOnlyBoundOutput() {
+    void ioFailureDropsWriterButKeepsAuthenticatedSession() {
         BackendControlSession session = register("lobby-1");
-        ByteArrayOutputStream failingOutput =
-                new ByteArrayOutputStream() {
-                    @Override
-                    public synchronized void write(
-                            byte[] bytes,
-                            int offset,
-                            int length
-                    ) {
-                        throw new IllegalStateException("boom");
-                    }
-                };
+        OutputStream failingOutput = new OutputStream() {
+            @Override
+            public void write(int value) throws IOException {
+                throw new IOException("boom");
+            }
+        };
 
         assertTrue(sender.bind(session, failingOutput));
 
-        try {
-            sender.send(session, pingEnvelope());
-        } catch (IOException exception) {
-            throw new AssertionError(
-                    "ByteArrayOutputStream does not throw IOException here",
-                    exception
-            );
-        } catch (IllegalStateException expected) {
-            assertEquals("boom", expected.getMessage());
-        }
+        IOException failure = assertThrows(
+                IOException.class,
+                () -> sender.send(session, pingEnvelope())
+        );
 
-        assertEquals(1, sender.boundSessionCount());
+        assertEquals("boom", failure.getMessage());
+        assertEquals(0, sender.boundSessionCount());
         assertEquals(session, sender.findSession("lobby-1").orElseThrow());
     }
 
