@@ -265,6 +265,14 @@ public final class BackendControlRuntime implements AutoCloseable {
         return Optional.ofNullable(messageSender);
     }
 
+    public BackendControlMessageSender requireMessageSender() {
+        return messageSender().orElseThrow(() ->
+                new IllegalStateException(
+                        "Backend control channel must be enabled for backend health"
+                )
+        );
+    }
+
     public synchronized boolean started() {
         return started;
     }
