@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Function;
 
 public final class BackendControlRuntime implements AutoCloseable {
@@ -18,6 +19,7 @@ public final class BackendControlRuntime implements AutoCloseable {
     private final BackendControlConfig config;
     private final ControlAuthenticationService authenticationService;
     private final BackendControlSessionRegistry sessionRegistry;
+    private final BackendControlMessageSender messageSender;
     private final FileBackendControlSecretProvider secretProvider;
     private final ProxyControlServer server;
     private final Logger logger;
@@ -29,6 +31,7 @@ public final class BackendControlRuntime implements AutoCloseable {
             BackendControlConfig config,
             ControlAuthenticationService authenticationService,
             BackendControlSessionRegistry sessionRegistry,
+            BackendControlMessageSender messageSender,
             FileBackendControlSecretProvider secretProvider,
             ProxyControlServer server,
             Logger logger
@@ -39,6 +42,7 @@ public final class BackendControlRuntime implements AutoCloseable {
         );
         this.authenticationService = authenticationService;
         this.sessionRegistry = sessionRegistry;
+        this.messageSender = messageSender;
         this.secretProvider = secretProvider;
         this.server = server;
         this.logger = Objects.requireNonNull(
@@ -97,6 +101,7 @@ public final class BackendControlRuntime implements AutoCloseable {
                     null,
                     null,
                     null,
+                    null,
                     nonNullLogger
             );
         }
@@ -136,6 +141,12 @@ public final class BackendControlRuntime implements AutoCloseable {
             ProtocolFrameCodec frameCodec = new ProtocolFrameCodec();
             BackendControlSessionRegistry sessionRegistry =
                     new BackendControlSessionRegistry();
+            BackendControlMessageSender messageSender =
+                    new BackendControlMessageSender(
+                            jsonCodec,
+                            frameCodec,
+                            sessionRegistry
+                    );
             ControlAuthenticationService authenticationService =
                     new ControlAuthenticationService(
                             clock,
@@ -151,13 +162,20 @@ public final class BackendControlRuntime implements AutoCloseable {
                             authenticationService,
                             sessionRegistry
                     );
+            AuthenticatedControlConnectionHandler authenticatedHandler =
+                    new BoundAuthenticatedControlConnectionHandler(
+                            messageSender,
+                            new RejectUnexpectedControlMessageHandler(
+                                    frameCodec
+                            )
+                    );
             ProxyControlServer server = new ProxyControlServer(
                     sslContext,
                     config.bindAddress(),
                     config.authenticationTimeout(),
                     authenticator,
                     sessionRegistry,
-                    new RejectUnexpectedControlMessageHandler(frameCodec),
+                    authenticatedHandler,
                     nonNullLogger
             );
 
@@ -165,6 +183,7 @@ public final class BackendControlRuntime implements AutoCloseable {
                     config,
                     authenticationService,
                     sessionRegistry,
+                    messageSender,
                     secretProvider,
                     server,
                     nonNullLogger
@@ -216,6 +235,9 @@ public final class BackendControlRuntime implements AutoCloseable {
         if (server != null) {
             server.stop();
         }
+        if (messageSender != null) {
+            messageSender.clear();
+        }
         if (authenticationService != null) {
             authenticationService.clear();
         }
@@ -237,6 +259,10 @@ public final class BackendControlRuntime implements AutoCloseable {
 
     public boolean enabled() {
         return config.enabled();
+    }
+
+    public Optional<BackendControlMessageSender> messageSender() {
+        return Optional.ofNullable(messageSender);
     }
 
     public synchronized boolean started() {
