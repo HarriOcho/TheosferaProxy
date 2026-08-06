@@ -16,6 +16,7 @@ import com.theosfera.proxy.command.LobbyCommandRegistration;
 import com.theosfera.proxy.command.LobbyTransferService;
 import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
+import com.theosfera.proxy.command.RawServerCommandHardening;
 import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.PlayerPresenceCoordinator;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
@@ -104,6 +105,7 @@ public final class TheosferaProxy {
     private final VelocityPlayerSessionReleaseTimeoutScheduler releaseTimeoutScheduler;
     private final BackendHealthRegistry healthRegistry;
     private final PendingBackendPingRegistry pendingPingRegistry;
+    private final RawServerCommandHardening rawServerCommandHardening;
 
     private PlayerSessionCoordinator sessionCoordinator;
     private PlayerPresenceCoordinator presenceCoordinator;
@@ -139,6 +141,7 @@ public final class TheosferaProxy {
         this.transferRegistry = new PendingPlayerTransferRegistry();
         this.bootstrapRegistry = new BackendBootstrapRegistry();
         this.failoverRegistry = new PendingPlayerFailoverRegistry();
+        this.rawServerCommandHardening = new RawServerCommandHardening(proxyServer, this);
 
         Clock clock = Clock.systemUTC();
         this.healthRegistry = new BackendHealthRegistry(clock, Duration.ofSeconds(15));
@@ -149,6 +152,7 @@ public final class TheosferaProxy {
 
     @Subscribe
     public void onProxyInitialization(final ProxyInitializeEvent event) {
+        rawServerCommandHardening.install();
         initializeProxyInstanceIdentity();
 
         coordinationBootstrap = new VelocityRedisCoordinationBootstrap(
@@ -223,6 +227,7 @@ public final class TheosferaProxy {
             }
         }
 
+        rawServerCommandHardening.uninstall();
         logger.info("TheosferaProxy apagado correctamente.");
     }
 
