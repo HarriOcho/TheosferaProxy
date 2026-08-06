@@ -17,6 +17,7 @@ import com.theosfera.proxy.command.LobbyTransferService;
 import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
 import com.theosfera.proxy.command.RawServerCommandHardening;
+import com.theosfera.proxy.control.BackendControlRuntime;
 import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.PlayerPresenceCoordinator;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
@@ -115,6 +116,7 @@ public final class TheosferaProxy {
     private PlayerSessionRenewalService sessionRenewalService;
     private PlayerSessionShutdownReleaseService shutdownReleaseService;
     private DistributedBackendCapacityRuntime distributedBackendCapacityRuntime;
+    private BackendControlRuntime backendControlRuntime;
     private ProtocolMessageListener protocolMessageListener;
     private ProxyInstanceIdentity proxyInstanceIdentity;
     private BackendKickFailoverListener backendKickFailoverListener;
@@ -377,8 +379,14 @@ public final class TheosferaProxy {
 
         requireOperationalSessionRuntime();
         requireOperationalDistributedCapacityRuntime();
+        if (backendControlRuntime == null) {
+            throw new IllegalStateException(
+                    "Backend control runtime is not initialized"
+            );
+        }
         operationalSurfaceActive = true;
 
+        backendControlRuntime.start();
         channelRegistration.register();
         lobbyCommandRegistration.register();
         proxyStatusCommandRegistration.register();
@@ -401,6 +409,9 @@ public final class TheosferaProxy {
 
         operationalSurfaceActive = false;
 
+        if (backendControlRuntime != null) {
+            backendControlRuntime.stop();
+        }
         if (presenceRuntimeService != null) {
             presenceRuntimeService.stop();
         }
@@ -458,6 +469,10 @@ public final class TheosferaProxy {
     }
 
     private void clearRuntimeRegistries() {
+        if (backendControlRuntime != null) {
+            backendControlRuntime.stop();
+            backendControlRuntime = null;
+        }
         bootstrapRegistry.clear();
         failoverRegistry.clear();
         transferRegistry.clear();
@@ -499,8 +514,11 @@ public final class TheosferaProxy {
     }
 
     private void initializeProtocolMessaging() {
-        if (protocolMessageListener != null) {
-            throw new IllegalStateException("Protocol messaging is already initialized");
+        if (protocolMessageListener != null
+                || backendControlRuntime != null) {
+            throw new IllegalStateException(
+                    "Protocol messaging is already initialized"
+            );
         }
         if (proxyInstanceIdentity == null) {
             throw new IllegalStateException("Proxy instance identity must be initialized first");
@@ -510,6 +528,11 @@ public final class TheosferaProxy {
 
         BackendAuthorizationPolicy authorizationPolicy =
                 new BackendPolicyConfigLoader(dataDirectory).load();
+        backendControlRuntime = BackendControlRuntime.create(
+                dataDirectory,
+                authorizationPolicy,
+                logger
+        );
         BackendMessageAuthorizer messageAuthorizer = new BackendMessageAuthorizer(identityRegistry);
         ProtocolMessageSender messageSender = new ProtocolMessageSender();
         BackendPingConnectionResolver pingConnectionResolver = new BackendPingConnectionResolver(proxyServer);
