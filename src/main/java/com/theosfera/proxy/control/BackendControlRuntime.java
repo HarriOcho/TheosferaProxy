@@ -43,8 +43,14 @@ public final class BackendControlRuntime implements AutoCloseable {
                 "config cannot be null"
         );
         this.authenticationService = authenticationService;
-        this.sessionRegistry = sessionRegistry;
-        this.messageSender = messageSender;
+        this.sessionRegistry = Objects.requireNonNull(
+                sessionRegistry,
+                "sessionRegistry cannot be null"
+        );
+        this.messageSender = Objects.requireNonNull(
+                messageSender,
+                "messageSender cannot be null"
+        );
         this.secretProvider = secretProvider;
         this.server = server;
         this.logger = Objects.requireNonNull(
@@ -113,11 +119,20 @@ public final class BackendControlRuntime implements AutoCloseable {
                 ).load();
 
         if (!config.enabled()) {
+            BackendControlSessionRegistry sessionRegistry =
+                    new BackendControlSessionRegistry();
+            BackendControlMessageSender messageSender =
+                    new BackendControlMessageSender(
+                            new ProtocolJsonCodec(),
+                            new ProtocolFrameCodec(),
+                            sessionRegistry
+                    );
+
             return new BackendControlRuntime(
                     config,
                     null,
-                    null,
-                    null,
+                    sessionRegistry,
+                    messageSender,
                     null,
                     null,
                     nonNullLogger
@@ -258,15 +273,11 @@ public final class BackendControlRuntime implements AutoCloseable {
         if (server != null) {
             server.stop();
         }
-        if (messageSender != null) {
-            messageSender.clear();
-        }
+        messageSender.clear();
         if (authenticationService != null) {
             authenticationService.clear();
         }
-        if (sessionRegistry != null) {
-            sessionRegistry.clear();
-        }
+        sessionRegistry.clear();
         if (secretProvider != null) {
             secretProvider.close();
         }
@@ -285,15 +296,11 @@ public final class BackendControlRuntime implements AutoCloseable {
     }
 
     public Optional<BackendControlMessageSender> messageSender() {
-        return Optional.ofNullable(messageSender);
+        return Optional.of(messageSender);
     }
 
     public BackendControlMessageSender requireMessageSender() {
-        return messageSender().orElseThrow(() ->
-                new IllegalStateException(
-                        "Backend control channel must be enabled for backend health"
-                )
-        );
+        return messageSender;
     }
 
     public synchronized boolean started() {
