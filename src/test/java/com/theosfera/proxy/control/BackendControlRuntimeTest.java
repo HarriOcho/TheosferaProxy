@@ -2,7 +2,9 @@ package com.theosfera.proxy.control;
 
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
+import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
@@ -10,6 +12,8 @@ import org.slf4j.Logger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
+import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -30,6 +34,8 @@ class BackendControlRuntimeTest {
         BackendControlRuntime runtime = BackendControlRuntime.create(
                 tempDirectory,
                 policy(),
+                pendingPingRegistry(),
+                healthRegistry(),
                 mock(Logger.class),
                 name -> {
                     environmentRead.set(true);
@@ -80,9 +86,25 @@ class BackendControlRuntimeTest {
                 () -> BackendControlRuntime.create(
                         tempDirectory,
                         policy(),
+                        pendingPingRegistry(),
+                        healthRegistry(),
                         mock(Logger.class),
                         name -> null
                 )
+        );
+    }
+
+    private static PendingBackendPingRegistry pendingPingRegistry() {
+        return new PendingBackendPingRegistry(
+                Clock.systemUTC(),
+                Duration.ofSeconds(10)
+        );
+    }
+
+    private static BackendHealthRegistry healthRegistry() {
+        return new BackendHealthRegistry(
+                Clock.systemUTC(),
+                Duration.ofSeconds(15)
         );
     }
 
