@@ -108,7 +108,7 @@ class LobbyInstanceSwitchingDistributedFailureTest {
         )).thenReturn(TransferTargetCandidates.notConfigured());
         when(fixture.occupancyCoordinator().read("lobby-2"))
                 .thenReturn(CompletableFuture.completedFuture(
-                        BackendOccupancyReadResult.available(100)
+                        BackendOccupancyReadResult.available(99)
                 ));
         when(fixture.capacityCoordinator().reservedCount("lobby-2"))
                 .thenReturn(CompletableFuture.completedFuture(0));
