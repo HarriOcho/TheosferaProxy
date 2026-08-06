@@ -4,7 +4,6 @@ import com.theosfera.protocol.ProtocolVersion;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
 import com.theosfera.protocol.message.payload.PingPayload;
-import com.theosfera.proxy.messaging.ProtocolMessageSender;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -47,27 +46,6 @@ public final class BackendPingEmitter {
         this.logger = Objects.requireNonNull(
                 logger,
                 "logger cannot be null"
-        );
-    }
-
-    /**
-     * Temporary compatibility constructor while production wiring is moved
-     * from Plugin Messaging to the authenticated control transport.
-     */
-    public BackendPingEmitter(
-            Clock clock,
-            Supplier<UUID> requestIdGenerator,
-            PendingBackendPingRegistry pendingPingRegistry,
-            BackendPingConnectionResolver connectionResolver,
-            ProtocolMessageSender sender,
-            Logger logger
-    ) {
-        this(
-                clock,
-                requestIdGenerator,
-                pendingPingRegistry,
-                legacyTransport(connectionResolver, sender),
-                logger
         );
     }
 
@@ -131,31 +109,6 @@ public final class BackendPingEmitter {
                 requestId
         );
         return false;
-    }
-
-    private static BackendPingTransport legacyTransport(
-            BackendPingConnectionResolver connectionResolver,
-            ProtocolMessageSender sender
-    ) {
-        BackendPingConnectionResolver nonNullResolver =
-                Objects.requireNonNull(
-                        connectionResolver,
-                        "connectionResolver cannot be null"
-                );
-        ProtocolMessageSender nonNullSender = Objects.requireNonNull(
-                sender,
-                "sender cannot be null"
-        );
-
-        return (backendName, envelope) ->
-                nonNullResolver.resolve(backendName)
-                        .map(connection ->
-                                nonNullSender.send(
-                                        connection,
-                                        envelope
-                                )
-                        )
-                        .orElse(false);
     }
 
     private static String requireServerName(String serverName) {
