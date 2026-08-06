@@ -56,15 +56,26 @@ network:
 
 Generate all material locally. Never commit these files or values.
 
-The Proxy backend policy currently authorizes:
+### Authorized backend set is runtime-derived
+
+`control-secrets.properties` must contain one distinct valid Base64URL secret for **every backend currently authorized by the runtime `backends.properties` file**. Do not rely on repository defaults or an old list copied into documentation.
+
+Before provisioning, inspect the actual Proxy data directory:
+
+```powershell
+Get-Content .\backends.properties
+```
+
+For the current local development runtime observed on 2026-08-06, the authorized identities are:
 
 ```text
 auth-1
 lobby-1
+lobby-2
 skyblock-1
 ```
 
-Therefore `control-secrets.properties` must contain a distinct valid Base64URL secret for each authorized backend even if only `lobby-1` is started during the first runtime.
+That list is illustrative only. If `backends.properties` changes later, the secret file must change with it. Missing or extra unauthorized backend secrets are rejected fail-closed.
 
 ### PowerShell helper
 
@@ -82,17 +93,18 @@ function New-Base64UrlSecret([int]$Bytes = 32) {
 }
 ```
 
-Generate three distinct backend secrets and two independent local passwords:
+Generate one distinct secret per authorized backend plus two independent local passwords for the Proxy keystore and Core truststore. Do not print these values into logs or commit them.
+
+For the current four-backend development policy:
 
 ```powershell
 $AUTH_SECRET = New-Base64UrlSecret
 $LOBBY_SECRET = New-Base64UrlSecret
+$LOBBY2_SECRET = New-Base64UrlSecret
 $SKYBLOCK_SECRET = New-Base64UrlSecret
 $KEYSTORE_PASSWORD = New-Base64UrlSecret
 $TRUSTSTORE_PASSWORD = New-Base64UrlSecret
 ```
-
-Do not print these values into logs or commit them.
 
 ## Proxy provisioning
 
@@ -129,17 +141,28 @@ keytool -exportcert `
   -file control-server.crt
 ```
 
-Create the backend secret file without a UTF-8 BOM:
+Create the backend secret file without a UTF-8 BOM. The entries must exactly match the current runtime policy. For the current development policy:
 
 ```powershell
 @"
 auth-1=$AUTH_SECRET
 lobby-1=$LOBBY_SECRET
+lobby-2=$LOBBY2_SECRET
 skyblock-1=$SKYBLOCK_SECRET
 "@ | Set-Content -Encoding ASCII control-secrets.properties
 ```
 
-Enable `control.properties` and keep the first runtime on `127.0.0.1:25590`.
+Create or enable `control.properties` and keep the first runtime on `127.0.0.1:25590`:
+
+```properties
+enabled=true
+bind-host=127.0.0.1
+bind-port=25590
+authentication-timeout-seconds=5
+keystore-path=control-server.p12
+keystore-password-env=THEOSFERA_CONTROL_KEYSTORE_PASSWORD
+secrets-file=control-secrets.properties
+```
 
 ## Core provisioning
 
