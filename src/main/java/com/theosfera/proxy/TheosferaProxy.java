@@ -407,6 +407,9 @@ public final class TheosferaProxy {
 
         operationalSurfaceActive = false;
 
+        if (healthCheckScheduler != null) {
+            healthCheckScheduler.stop();
+        }
         if (backendControlRuntime != null) {
             backendControlRuntime.stop();
         }
@@ -415,9 +418,6 @@ public final class TheosferaProxy {
         }
         if (sessionRenewalService != null) {
             sessionRenewalService.stop();
-        }
-        if (healthCheckScheduler != null) {
-            healthCheckScheduler.stop();
         }
         if (protocolMessageListener != null) {
             proxyServer.getEventManager().unregisterListener(this, protocolMessageListener);
