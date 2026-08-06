@@ -7,7 +7,6 @@ import com.theosfera.proxy.backend.BackendHealthCheckTask;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
-import com.theosfera.proxy.backend.BackendPingConnectionResolver;
 import com.theosfera.proxy.backend.BackendPingEmitter;
 import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
 import com.theosfera.proxy.backend.PendingBackendPingRegistry;
@@ -17,6 +16,7 @@ import com.theosfera.proxy.command.LobbyTransferService;
 import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
 import com.theosfera.proxy.command.RawServerCommandHardening;
+import com.theosfera.proxy.control.BackendControlPingTransport;
 import com.theosfera.proxy.control.BackendControlRuntime;
 import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.PlayerPresenceCoordinator;
@@ -535,13 +535,13 @@ public final class TheosferaProxy {
         );
         BackendMessageAuthorizer messageAuthorizer = new BackendMessageAuthorizer(identityRegistry);
         ProtocolMessageSender messageSender = new ProtocolMessageSender();
-        BackendPingConnectionResolver pingConnectionResolver = new BackendPingConnectionResolver(proxyServer);
         BackendPingEmitter pingEmitter = new BackendPingEmitter(
                 Clock.systemUTC(),
                 UUID::randomUUID,
                 pendingPingRegistry,
-                pingConnectionResolver,
-                messageSender,
+                new BackendControlPingTransport(
+                        backendControlRuntime.requireMessageSender()
+                ),
                 logger
         );
         BackendHealthCheckTask healthCheckTask = new BackendHealthCheckTask(
