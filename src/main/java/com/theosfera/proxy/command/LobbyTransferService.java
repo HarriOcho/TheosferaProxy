@@ -2,6 +2,7 @@ package com.theosfera.proxy.command;
 
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
+import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
@@ -16,6 +17,7 @@ import net.kyori.adventure.text.Component;
 import java.time.Clock;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -44,6 +46,24 @@ public final class LobbyTransferService {
     static final Component LOBBY_UNAVAILABLE_MESSAGE =
             Component.text(
                     "El Lobby no está disponible en este momento.",
+                    AMBER
+            ).append(Component.text(
+                    " Inténtalo de nuevo en unos segundos.",
+                    SECONDARY_TEXT
+            ));
+
+    static final Component SWITCH_REQUIRES_LOBBY_MESSAGE =
+            Component.text(
+                    "Debes estar en el Lobby para cambiar de instancia.",
+                    AMBER
+            ).append(Component.text(
+                    " Usa /lobby para regresar al Lobby.",
+                    SECONDARY_TEXT
+            ));
+
+    static final Component SWITCH_UNAVAILABLE_MESSAGE =
+            Component.text(
+                    "No hay otro Lobby disponible en este momento.",
                     AMBER
             ).append(Component.text(
                     " Inténtalo de nuevo en unos segundos.",
@@ -101,17 +121,50 @@ public final class LobbyTransferService {
                     SECONDARY_TEXT
             ));
 
+    static final Component SWITCH_SUCCESS_MESSAGE =
+            Component.text(
+                    "Has cambiado a otro ",
+                    GOLD
+            ).append(Component.text(
+                    "Lobby",
+                    LIGHT_GOLD
+            )).append(Component.text(
+                    ".",
+                    SECONDARY_TEXT
+            ));
+
+    static final Component SWITCH_FAILED_MESSAGE =
+            Component.text(
+                    "No pudimos cambiarte de Lobby.",
+                    AMBER
+            ).append(Component.text(
+                    " Inténtalo de nuevo.",
+                    SECONDARY_TEXT
+            ));
+
+    static final Component SWITCH_TIMED_OUT_MESSAGE =
+            Component.text(
+                    "El cambio de Lobby está tardando demasiado.",
+                    AMBER
+            ).append(Component.text(
+                    " Inténtalo de nuevo.",
+                    SECONDARY_TEXT
+            ));
+
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
+    private final BackendIdentityRegistry identityRegistry;
     private final DistributedPlayerTransferRetryCoordinator retryCoordinator;
     private final Clock clock;
     private final Supplier<UUID> requestIdGenerator;
 
     public LobbyTransferService(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
+            BackendIdentityRegistry identityRegistry,
             DistributedPlayerTransferRetryCoordinator retryCoordinator
     ) {
         this(
                 sessionRegistry,
+                identityRegistry,
                 retryCoordinator,
                 Clock.systemUTC(),
                 UUID::randomUUID
@@ -120,6 +173,7 @@ public final class LobbyTransferService {
 
     LobbyTransferService(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
+            BackendIdentityRegistry identityRegistry,
             DistributedPlayerTransferRetryCoordinator retryCoordinator,
             Clock clock,
             Supplier<UUID> requestIdGenerator
@@ -127,6 +181,10 @@ public final class LobbyTransferService {
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
                 "sessionRegistry cannot be null"
+        );
+        this.identityRegistry = Objects.requireNonNull(
+                identityRegistry,
+                "identityRegistry cannot be null"
         );
         this.retryCoordinator = Objects.requireNonNull(
                 retryCoordinator,
@@ -147,24 +205,64 @@ public final class LobbyTransferService {
                 player,
                 "player cannot be null"
         );
-
-        UUID playerId = nonNullPlayer.getUniqueId();
-
-        if (!sessionRegistry.isAuthenticated(playerId)) {
-            nonNullPlayer.sendMessage(
-                    AUTHENTICATION_REQUIRED_MESSAGE
-            );
+        Optional<TransferSource> source = prepareSource(nonNullPlayer);
+        if (source.isEmpty()) {
             return;
         }
 
-        Optional<ServerConnection> currentServer =
-                nonNullPlayer.getCurrentServer();
+        TransferSource preparedSource = source.orElseThrow();
+        retryCoordinator.start(
+                requestFor(
+                        nonNullPlayer,
+                        preparedSource,
+                        LobbyTransferMode.RETURN_TO_LOBBY
+                )
+        );
+    }
 
-        if (currentServer.isEmpty()) {
-            nonNullPlayer.sendMessage(
-                    NO_CURRENT_SERVER_MESSAGE
-            );
+    public void switchLobbyInstance(Player player) {
+        Player nonNullPlayer = Objects.requireNonNull(
+                player,
+                "player cannot be null"
+        );
+        Optional<TransferSource> source = prepareSource(nonNullPlayer);
+        if (source.isEmpty()) {
             return;
+        }
+
+        TransferSource preparedSource = source.orElseThrow();
+        boolean currentBackendIsLobby = identityRegistry
+                .find(preparedSource.backendName())
+                .map(identity -> identity.backendType() == BackendType.LOBBY)
+                .orElse(false);
+
+        if (!currentBackendIsLobby) {
+            nonNullPlayer.sendMessage(SWITCH_REQUIRES_LOBBY_MESSAGE);
+            return;
+        }
+
+        retryCoordinator.start(
+                requestFor(
+                        nonNullPlayer,
+                        preparedSource,
+                        LobbyTransferMode.SWITCH_INSTANCE
+                ),
+                Set.of(preparedSource.backendName())
+        );
+    }
+
+    private Optional<TransferSource> prepareSource(Player player) {
+        UUID playerId = player.getUniqueId();
+
+        if (!sessionRegistry.isAuthenticated(playerId)) {
+            player.sendMessage(AUTHENTICATION_REQUIRED_MESSAGE);
+            return Optional.empty();
+        }
+
+        Optional<ServerConnection> currentServer = player.getCurrentServer();
+        if (currentServer.isEmpty()) {
+            player.sendMessage(NO_CURRENT_SERVER_MESSAGE);
+            return Optional.empty();
         }
 
         String sourceBackendName = currentServer
@@ -172,42 +270,36 @@ public final class LobbyTransferService {
                 .getServerInfo()
                 .getName();
 
-        retryCoordinator.start(
-                new DistributedPlayerTransferRetryCoordinator
-                        .TransferRetryRequest(
-                        requestIdGenerator.get(),
-                        playerId,
-                        sourceBackendName,
-                        BackendType.LOBBY,
-                        clock.millis(),
-                        nonNullPlayer,
-                        () -> nonNullPlayer.sendMessage(
-                                ALREADY_IN_LOBBY_MESSAGE
-                        ),
-                        result -> handleRegistrationRejected(
-                                nonNullPlayer,
-                                result
-                        ),
-                        resolution -> handleUnavailable(
-                                nonNullPlayer,
-                                resolution
-                        ),
-                        status -> handleCapacityRejected(
-                                nonNullPlayer,
-                                status
-                        ),
-                        result -> handleBootstrapRejected(
-                                nonNullPlayer,
-                                result
-                        ),
-                        ignored -> {
-                        },
-                        completion -> nonNullPlayer.sendMessage(
-                                messageFor(completion.status())
-                        ),
-                        ignored -> {
-                        }
-                )
+        return Optional.of(
+                new TransferSource(playerId, sourceBackendName)
+        );
+    }
+
+    private DistributedPlayerTransferRetryCoordinator.TransferRetryRequest
+    requestFor(
+            Player player,
+            TransferSource source,
+            LobbyTransferMode mode
+    ) {
+        return new DistributedPlayerTransferRetryCoordinator.TransferRetryRequest(
+                requestIdGenerator.get(),
+                source.playerId(),
+                source.backendName(),
+                BackendType.LOBBY,
+                clock.millis(),
+                player,
+                () -> player.sendMessage(sameTargetMessageFor(mode)),
+                result -> handleRegistrationRejected(player, result),
+                resolution -> handleUnavailable(player, resolution, mode),
+                status -> handleCapacityRejected(player, status, mode),
+                result -> handleBootstrapRejected(player, result, mode),
+                ignored -> {
+                },
+                completion -> player.sendMessage(
+                        messageFor(completion.status(), mode)
+                ),
+                ignored -> {
+                }
         );
     }
 
@@ -226,11 +318,12 @@ public final class LobbyTransferService {
 
     private void handleUnavailable(
             Player player,
-            TransferTargetResolution resolution
+            TransferTargetResolution resolution,
+            LobbyTransferMode mode
     ) {
         switch (resolution.status()) {
             case NOT_CONFIGURED, NOT_AUTHENTICATED, NO_CAPACITY ->
-                    player.sendMessage(LOBBY_UNAVAILABLE_MESSAGE);
+                    player.sendMessage(unavailableMessageFor(mode));
             case RESOLVED, BOOTSTRAP_REQUIRED ->
                     throw new IllegalStateException(
                             "Resolved Lobby target cannot be rejected as unavailable"
@@ -240,7 +333,8 @@ public final class LobbyTransferService {
 
     private void handleCapacityRejected(
             Player player,
-            BackendCapacityReserveResult.Status status
+            BackendCapacityReserveResult.Status status,
+            LobbyTransferMode mode
     ) {
         switch (status) {
             case NO_CAPACITY,
@@ -249,7 +343,7 @@ public final class LobbyTransferService {
                     NOT_SESSION_OWNER,
                     OCCUPANCY_UNAVAILABLE,
                     COORDINATION_UNAVAILABLE ->
-                    player.sendMessage(LOBBY_UNAVAILABLE_MESSAGE);
+                    player.sendMessage(unavailableMessageFor(mode));
             case RESERVED, ALREADY_RESERVED ->
                     throw new IllegalStateException(
                             "Successful capacity reservation cannot be rejected"
@@ -259,24 +353,61 @@ public final class LobbyTransferService {
 
     private void handleBootstrapRejected(
             Player player,
-            BackendBootstrapRegistrationResult result
+            BackendBootstrapRegistrationResult result,
+            LobbyTransferMode mode
     ) {
         switch (result) {
             case TARGET_BUSY, REQUEST_ID_CONFLICT, ALREADY_RESERVED ->
-                    player.sendMessage(LOBBY_UNAVAILABLE_MESSAGE);
+                    player.sendMessage(unavailableMessageFor(mode));
             case RESERVED -> throw new IllegalStateException(
                     "Reserved bootstrap cannot be rejected"
             );
         }
     }
 
+    private Component sameTargetMessageFor(LobbyTransferMode mode) {
+        return mode == LobbyTransferMode.SWITCH_INSTANCE
+                ? SWITCH_UNAVAILABLE_MESSAGE
+                : ALREADY_IN_LOBBY_MESSAGE;
+    }
+
+    private Component unavailableMessageFor(LobbyTransferMode mode) {
+        return mode == LobbyTransferMode.SWITCH_INSTANCE
+                ? SWITCH_UNAVAILABLE_MESSAGE
+                : LOBBY_UNAVAILABLE_MESSAGE;
+    }
+
     private Component messageFor(
-            TransferResultStatus status
+            TransferResultStatus status,
+            LobbyTransferMode mode
     ) {
+        if (mode == LobbyTransferMode.SWITCH_INSTANCE) {
+            return switch (status) {
+                case SUCCESS -> SWITCH_SUCCESS_MESSAGE;
+                case TIMED_OUT -> SWITCH_TIMED_OUT_MESSAGE;
+                case REJECTED, FAILED -> SWITCH_FAILED_MESSAGE;
+            };
+        }
+
         return switch (status) {
             case SUCCESS -> TRANSFER_SUCCESS_MESSAGE;
             case TIMED_OUT -> TRANSFER_TIMED_OUT_MESSAGE;
             case REJECTED, FAILED -> TRANSFER_FAILED_MESSAGE;
         };
+    }
+
+    private enum LobbyTransferMode {
+        RETURN_TO_LOBBY,
+        SWITCH_INSTANCE
+    }
+
+    private record TransferSource(
+            UUID playerId,
+            String backendName
+    ) {
+        private TransferSource {
+            Objects.requireNonNull(playerId, "playerId cannot be null");
+            Objects.requireNonNull(backendName, "backendName cannot be null");
+        }
     }
 }

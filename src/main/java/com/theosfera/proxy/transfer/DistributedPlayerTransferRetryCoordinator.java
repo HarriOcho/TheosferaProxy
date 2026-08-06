@@ -84,12 +84,24 @@ public final class DistributedPlayerTransferRetryCoordinator {
     }
 
     public void start(TransferRetryRequest request) {
+        start(request, Set.of());
+    }
+
+    public void start(
+            TransferRetryRequest request,
+            Set<String> initialExcludedServerNames
+    ) {
         attempt(
                 Objects.requireNonNull(
                         request,
                         "request cannot be null"
                 ),
-                Set.of(),
+                Set.copyOf(
+                        Objects.requireNonNull(
+                                initialExcludedServerNames,
+                                "initialExcludedServerNames cannot be null"
+                        )
+                ),
                 null
         );
     }
