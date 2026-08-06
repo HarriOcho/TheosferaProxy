@@ -5,12 +5,11 @@ import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
 import com.theosfera.protocol.message.payload.PingPayload;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
-import com.velocitypowered.api.proxy.ServerConnection;
 import org.slf4j.Logger;
 
+import java.io.IOException;
 import java.time.Clock;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Supplier;
 
@@ -19,16 +18,14 @@ public final class BackendPingEmitter {
     private final Clock clock;
     private final Supplier<UUID> requestIdGenerator;
     private final PendingBackendPingRegistry pendingPingRegistry;
-    private final BackendPingConnectionResolver connectionResolver;
-    private final ProtocolMessageSender sender;
+    private final BackendPingTransport transport;
     private final Logger logger;
 
     public BackendPingEmitter(
             Clock clock,
             Supplier<UUID> requestIdGenerator,
             PendingBackendPingRegistry pendingPingRegistry,
-            BackendPingConnectionResolver connectionResolver,
-            ProtocolMessageSender sender,
+            BackendPingTransport transport,
             Logger logger
     ) {
         this.clock = Objects.requireNonNull(
@@ -43,13 +40,9 @@ public final class BackendPingEmitter {
                 pendingPingRegistry,
                 "pendingPingRegistry cannot be null"
         );
-        this.connectionResolver = Objects.requireNonNull(
-                connectionResolver,
-                "connectionResolver cannot be null"
-        );
-        this.sender = Objects.requireNonNull(
-                sender,
-                "sender cannot be null"
+        this.transport = Objects.requireNonNull(
+                transport,
+                "transport cannot be null"
         );
         this.logger = Objects.requireNonNull(
                 logger,
@@ -57,21 +50,29 @@ public final class BackendPingEmitter {
         );
     }
 
+    /**
+     * Temporary compatibility constructor while production wiring is moved
+     * from Plugin Messaging to the authenticated control transport.
+     */
+    public BackendPingEmitter(
+            Clock clock,
+            Supplier<UUID> requestIdGenerator,
+            PendingBackendPingRegistry pendingPingRegistry,
+            BackendPingConnectionResolver connectionResolver,
+            ProtocolMessageSender sender,
+            Logger logger
+    ) {
+        this(
+                clock,
+                requestIdGenerator,
+                pendingPingRegistry,
+                legacyTransport(connectionResolver, sender),
+                logger
+        );
+    }
+
     public boolean emit(String serverName) {
         String normalizedServerName = requireServerName(serverName);
-
-        Optional<ServerConnection> connection =
-                connectionResolver.resolve(normalizedServerName);
-
-        if (connection.isEmpty()) {
-            logger.debug(
-                    "No se envio PING a {}: no hay conexion "
-                            + "backend disponible.",
-                    normalizedServerName
-            );
-            return false;
-        }
-
         long sentAt = clock.millis();
         UUID requestId = requestIdGenerator.get();
 
@@ -107,10 +108,10 @@ public final class BackendPingEmitter {
                 );
 
         try {
-            if (sender.send(connection.orElseThrow(), envelope)) {
+            if (transport.send(normalizedServerName, envelope)) {
                 return true;
             }
-        } catch (RuntimeException exception) {
+        } catch (IOException | RuntimeException exception) {
             pendingPingRegistry.removeIfMatches(pendingPing);
             logger.warn(
                     "Error al enviar PING a {} (requestId: {}).",
@@ -122,13 +123,39 @@ public final class BackendPingEmitter {
         }
 
         pendingPingRegistry.removeIfMatches(pendingPing);
-        logger.warn(
-                "Velocity rechazo el envio de PING a {} "
+        logger.debug(
+                "No se envio PING a {}: el transporte de health "
+                        + "no tiene una sesion disponible "
                         + "(requestId: {}).",
                 normalizedServerName,
                 requestId
         );
         return false;
+    }
+
+    private static BackendPingTransport legacyTransport(
+            BackendPingConnectionResolver connectionResolver,
+            ProtocolMessageSender sender
+    ) {
+        BackendPingConnectionResolver nonNullResolver =
+                Objects.requireNonNull(
+                        connectionResolver,
+                        "connectionResolver cannot be null"
+                );
+        ProtocolMessageSender nonNullSender = Objects.requireNonNull(
+                sender,
+                "sender cannot be null"
+        );
+
+        return (backendName, envelope) ->
+                nonNullResolver.resolve(backendName)
+                        .map(connection ->
+                                nonNullSender.send(
+                                        connection,
+                                        envelope
+                                )
+                        )
+                        .orElse(false);
     }
 
     private static String requireServerName(String serverName) {
