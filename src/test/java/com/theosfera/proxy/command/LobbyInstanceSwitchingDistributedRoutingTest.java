@@ -67,7 +67,19 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
     private static final long NOW = 1_750_000_000_000L;
 
     @Test
-    void switchExcludesCurrentLobbyAndRoutesThroughDistributedCapacity() {
+    void switchesFromLobby1ToLobby2ThroughDistributedCapacity() {
+        assertDistributedSwitch("lobby-1", "lobby-2");
+    }
+
+    @Test
+    void switchesFromLobby2ToLobby1ThroughDistributedCapacity() {
+        assertDistributedSwitch("lobby-2", "lobby-1");
+    }
+
+    private void assertDistributedSwitch(
+            String sourceLobbyName,
+            String targetLobbyName
+    ) {
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
         BackendIdentityRegistry identityRegistry =
@@ -78,10 +90,10 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
                 new BackendBootstrapRegistry();
 
         Player player = mock(Player.class);
-        ServerConnection lobby1Connection = serverConnection("lobby-1");
+        ServerConnection sourceConnection = serverConnection(sourceLobbyName);
         when(player.getUniqueId()).thenReturn(PLAYER_ID);
         when(player.getCurrentServer()).thenReturn(
-                Optional.of(lobby1Connection)
+                Optional.of(sourceConnection)
         );
 
         AuthenticatedPlayerSession session =
@@ -92,7 +104,7 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
                 );
         sessionRegistry.register(session);
         identityRegistry.register(
-                new BackendIdentity("lobby-1", BackendType.LOBBY)
+                new BackendIdentity(sourceLobbyName, BackendType.LOBBY)
         );
 
         PlayerSessionLease lease = new PlayerSessionLease(
@@ -104,10 +116,10 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
                 mock(PlayerSessionLeaseBindingRegistry.class);
         when(sessionLeaseBindings.find(player)).thenReturn(Optional.of(lease));
 
-        RegisteredServer lobby2 = server("lobby-2");
-        BackendTargetCandidate lobby2Candidate = new BackendTargetCandidate(
-                "lobby-2",
-                lobby2,
+        RegisteredServer targetLobby = server(targetLobbyName);
+        BackendTargetCandidate targetCandidate = new BackendTargetCandidate(
+                targetLobbyName,
+                targetLobby,
                 new BackendPolicyEntry(
                         BackendType.LOBBY,
                         100,
@@ -118,24 +130,24 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
         TransferTargetResolver resolver = mock(TransferTargetResolver.class);
         when(resolver.candidates(
                 BackendType.LOBBY,
-                Set.of("lobby-1")
+                Set.of(sourceLobbyName)
         )).thenReturn(
                 TransferTargetCandidates.configured(
-                        List.of(lobby2Candidate),
+                        List.of(targetCandidate),
                         List.of()
                 )
         );
 
         BackendOccupancyCoordinator occupancyCoordinator =
                 mock(BackendOccupancyCoordinator.class);
-        when(occupancyCoordinator.read("lobby-2"))
+        when(occupancyCoordinator.read(targetLobbyName))
                 .thenReturn(CompletableFuture.completedFuture(
                         BackendOccupancyReadResult.available(12)
                 ));
 
         BackendCapacityCoordinator capacityCoordinator =
                 mock(BackendCapacityCoordinator.class);
-        when(capacityCoordinator.reservedCount("lobby-2"))
+        when(capacityCoordinator.reservedCount(targetLobbyName))
                 .thenReturn(CompletableFuture.completedFuture(0));
         when(capacityCoordinator.reserve(any(), eq(100)))
                 .thenAnswer(invocation -> {
@@ -160,7 +172,7 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
 
         PlayerTransferExecutor transferExecutor =
                 mock(PlayerTransferExecutor.class);
-        when(transferExecutor.execute(player, lobby2))
+        when(transferExecutor.execute(player, targetLobby))
                 .thenReturn(CompletableFuture.completedFuture(
                         PlayerTransferCompletion.success()
                 ));
@@ -200,13 +212,13 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
 
         verify(resolver).candidates(
                 BackendType.LOBBY,
-                Set.of("lobby-1")
+                Set.of(sourceLobbyName)
         );
         verify(resolver, never()).candidates(
                 BackendType.LOBBY,
                 Set.of()
         );
-        verify(transferExecutor).execute(player, lobby2);
+        verify(transferExecutor).execute(player, targetLobby);
 
         ArgumentCaptor<BackendCapacityReserveRequest> capacityRequestCaptor =
                 ArgumentCaptor.forClass(
@@ -229,7 +241,7 @@ class LobbyInstanceSwitchingDistributedRoutingTest {
                 capacityRequest.reservation().playerId()
         );
         assertEquals(
-                "lobby-2",
+                targetLobbyName,
                 capacityRequest.reservation().backendName()
         );
 
