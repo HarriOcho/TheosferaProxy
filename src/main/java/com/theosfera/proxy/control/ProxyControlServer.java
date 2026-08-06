@@ -218,14 +218,19 @@ public final class ProxyControlServer implements AutoCloseable {
             );
         }
 
-        requireTls13(sslServerSocket.getSupportedProtocols());
-        sslServerSocket.setEnabledProtocols(
-                new String[]{REQUIRED_TLS_PROTOCOL}
-        );
-        sslServerSocket.setUseClientMode(false);
-        sslServerSocket.setNeedClientAuth(false);
-        sslServerSocket.setReuseAddress(true);
-        return sslServerSocket;
+        try {
+            requireTls13(sslServerSocket.getSupportedProtocols());
+            sslServerSocket.setEnabledProtocols(
+                    new String[]{REQUIRED_TLS_PROTOCOL}
+            );
+            sslServerSocket.setUseClientMode(false);
+            sslServerSocket.setNeedClientAuth(false);
+            sslServerSocket.setReuseAddress(true);
+            return sslServerSocket;
+        } catch (RuntimeException exception) {
+            closeQuietly(sslServerSocket);
+            throw exception;
+        }
     }
 
     private void acceptLoop() {
