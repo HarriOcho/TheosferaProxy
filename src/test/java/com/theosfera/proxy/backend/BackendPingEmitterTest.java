@@ -4,20 +4,18 @@ import com.theosfera.protocol.ProtocolVersion;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
 import com.theosfera.protocol.message.payload.PingPayload;
-import com.theosfera.proxy.messaging.ProtocolMessageSender;
-import com.velocitypowered.api.proxy.ServerConnection;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.slf4j.Logger;
 
+import java.io.IOException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
-import java.util.Optional;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -44,9 +42,7 @@ class BackendPingEmitterTest {
 
     private MutableClock clock;
     private PendingBackendPingRegistry pendingRegistry;
-    private BackendPingConnectionResolver resolver;
-    private ProtocolMessageSender sender;
-    private ServerConnection connection;
+    private BackendPingTransport transport;
     private Logger logger;
     private BackendPingEmitter emitter;
 
@@ -57,22 +53,19 @@ class BackendPingEmitterTest {
                 clock,
                 TIMEOUT
         );
-        resolver = mock(BackendPingConnectionResolver.class);
-        sender = mock(ProtocolMessageSender.class);
-        connection = mock(ServerConnection.class);
+        transport = mock(BackendPingTransport.class);
         logger = mock(Logger.class);
         emitter = new BackendPingEmitter(
                 clock,
                 () -> REQUEST_ID,
                 pendingRegistry,
-                resolver,
-                sender,
+                transport,
                 logger
         );
     }
 
     @Test
-    void registersBeforeSending() {
+    void registersBeforeSending() throws Exception {
         PendingBackendPingRegistry registry =
                 mock(PendingBackendPingRegistry.class);
         BackendPingEmitter orderedEmitter =
@@ -80,37 +73,35 @@ class BackendPingEmitterTest {
                         clock,
                         () -> REQUEST_ID,
                         registry,
-                        resolver,
-                        sender,
+                        transport,
                         logger
                 );
 
-        when(resolver.resolve("lobby-1"))
-                .thenReturn(Optional.of(connection));
         when(registry.registerIfAbsentOrExpired(any()))
                 .thenReturn(
                         BackendPingRegistrationResult.REGISTERED
                 );
-        when(sender.send(
-                eq(connection),
+        when(transport.send(
+                eq("lobby-1"),
                 any(ProtocolEnvelope.class)
         )).thenReturn(true);
 
         orderedEmitter.emit("lobby-1");
 
-        InOrder inOrder = inOrder(registry, sender);
+        InOrder inOrder = inOrder(registry, transport);
         inOrder.verify(registry)
                 .registerIfAbsentOrExpired(any());
-        inOrder.verify(sender)
-                .send(eq(connection), any(ProtocolEnvelope.class));
+        inOrder.verify(transport)
+                .send(
+                        eq("lobby-1"),
+                        any(ProtocolEnvelope.class)
+                );
     }
 
     @Test
-    void sendsDeterministicPingEnvelope() {
-        when(resolver.resolve("lobby-1"))
-                .thenReturn(Optional.of(connection));
-        when(sender.send(
-                eq(connection),
+    void sendsDeterministicPingEnvelope() throws Exception {
+        when(transport.send(
+                eq("lobby-1"),
                 any(ProtocolEnvelope.class)
         )).thenReturn(true);
 
@@ -119,8 +110,8 @@ class BackendPingEmitterTest {
         ArgumentCaptor<ProtocolEnvelope<?>> envelopeCaptor =
                 ArgumentCaptor.forClass(ProtocolEnvelope.class);
 
-        verify(sender).send(
-                eq(connection),
+        verify(transport).send(
+                eq("lobby-1"),
                 envelopeCaptor.capture()
         );
 
@@ -146,20 +137,20 @@ class BackendPingEmitterTest {
     }
 
     @Test
-    void doesNotRegisterOrSendWithoutConnection() {
-        when(resolver.resolve("lobby-1"))
-                .thenReturn(Optional.empty());
+    void rollsBackChallengeWhenTransportIsUnavailable()
+            throws Exception {
+        when(transport.send(
+                eq("lobby-1"),
+                any(ProtocolEnvelope.class)
+        )).thenReturn(false);
 
         assertFalse(emitter.emit("lobby-1"));
         assertTrue(pendingRegistry.snapshot().isEmpty());
-        verify(sender, never()).send(
-                any(ServerConnection.class),
-                any(ProtocolEnvelope.class)
-        );
     }
 
     @Test
-    void doesNotSendWhenActiveChallengeExists() {
+    void doesNotSendWhenActiveChallengeExists()
+            throws Exception {
         pendingRegistry.register(
                 new PendingBackendPing(
                         "lobby-1",
@@ -168,18 +159,16 @@ class BackendPingEmitterTest {
                 )
         );
 
-        when(resolver.resolve("lobby-1"))
-                .thenReturn(Optional.of(connection));
-
         assertFalse(emitter.emit("lobby-1"));
-        verify(sender, never()).send(
-                any(ServerConnection.class),
+        verify(transport, never()).send(
+                any(),
                 any(ProtocolEnvelope.class)
         );
     }
 
     @Test
-    void replacesExpiredChallengeAndSendsNewPing() {
+    void replacesExpiredChallengeAndSendsNewPing()
+            throws Exception {
         long oldSentAt = clock.millis();
 
         pendingRegistry.register(
@@ -192,10 +181,8 @@ class BackendPingEmitterTest {
 
         clock.advance(TIMEOUT.plusMillis(1));
 
-        when(resolver.resolve("lobby-1"))
-                .thenReturn(Optional.of(connection));
-        when(sender.send(
-                eq(connection),
+        when(transport.send(
+                eq("lobby-1"),
                 any(ProtocolEnvelope.class)
         )).thenReturn(true);
 
@@ -209,27 +196,13 @@ class BackendPingEmitterTest {
     }
 
     @Test
-    void rollsBackExactChallengeWhenSendReturnsFalse() {
-        when(resolver.resolve("lobby-1"))
-                .thenReturn(Optional.of(connection));
-        when(sender.send(
-                eq(connection),
-                any(ProtocolEnvelope.class)
-        )).thenReturn(false);
+    void rollsBackExactChallengeWhenTransportThrowsIo()
+            throws Exception {
+        IOException exception =
+                new IOException("send failed");
 
-        assertFalse(emitter.emit("lobby-1"));
-        assertTrue(pendingRegistry.snapshot().isEmpty());
-    }
-
-    @Test
-    void rollsBackExactChallengeWhenSendThrowsException() {
-        RuntimeException exception =
-                new RuntimeException("send failed");
-
-        when(resolver.resolve("lobby-1"))
-                .thenReturn(Optional.of(connection));
-        when(sender.send(
-                eq(connection),
+        when(transport.send(
+                eq("lobby-1"),
                 any(ProtocolEnvelope.class)
         )).thenThrow(exception);
 
@@ -244,15 +217,20 @@ class BackendPingEmitterTest {
     }
 
     @Test
-    void doesNotUseHealthRegistryDirectly() {
-        assertFalse(
-                BackendPingEmitter.class
-                        .getDeclaredFields()
-                        .length == 0
-        );
-
+    void doesNotOwnVelocityConnectionOrHealthState() {
         for (java.lang.reflect.Field field
                 : BackendPingEmitter.class.getDeclaredFields()) {
+            assertFalse(
+                    field.getType()
+                            .equals(BackendPingConnectionResolver.class)
+            );
+            assertFalse(
+                    field.getType()
+                            .getName()
+                            .equals(
+                                    "com.theosfera.proxy.messaging.ProtocolMessageSender"
+                            )
+            );
             assertFalse(
                     field.getType()
                             .equals(BackendHealthRegistry.class)
