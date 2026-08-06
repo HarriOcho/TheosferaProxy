@@ -17,7 +17,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
-public final class ControlConnectionHandshakeHandler {
+public final class ControlConnectionHandshakeHandler
+        implements ControlConnectionAuthenticator {
 
     private static final String ACCEPTED_MESSAGE =
             "Backend control authentication accepted";
@@ -59,6 +60,7 @@ public final class ControlConnectionHandshakeHandler {
         );
     }
 
+    @Override
     public Optional<BackendControlSessionRegistration> authenticate(
             UUID connectionId,
             InputStream input,
