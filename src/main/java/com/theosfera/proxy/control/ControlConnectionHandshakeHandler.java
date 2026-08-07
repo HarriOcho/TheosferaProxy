@@ -8,6 +8,7 @@ import com.theosfera.protocol.message.payload.ControlAuthChallengePayload;
 import com.theosfera.protocol.message.payload.ControlAuthResponsePayload;
 import com.theosfera.protocol.message.payload.ControlAuthResultPayload;
 import com.theosfera.protocol.transport.ProtocolFrameCodec;
+import com.theosfera.proxy.backend.BackendIdentity;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -16,6 +17,7 @@ import java.time.Clock;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.function.Consumer;
 
 public final class ControlConnectionHandshakeHandler
         implements ControlConnectionAuthenticator {
@@ -30,6 +32,7 @@ public final class ControlConnectionHandshakeHandler
     private final ProtocolFrameCodec frameCodec;
     private final ControlAuthenticationService authenticationService;
     private final BackendControlSessionRegistry sessionRegistry;
+    private final Consumer<BackendIdentity> authenticatedIdentityListener;
 
     public ControlConnectionHandshakeHandler(
             Clock clock,
@@ -37,6 +40,25 @@ public final class ControlConnectionHandshakeHandler
             ProtocolFrameCodec frameCodec,
             ControlAuthenticationService authenticationService,
             BackendControlSessionRegistry sessionRegistry
+    ) {
+        this(
+                clock,
+                jsonCodec,
+                frameCodec,
+                authenticationService,
+                sessionRegistry,
+                identity -> {
+                }
+        );
+    }
+
+    public ControlConnectionHandshakeHandler(
+            Clock clock,
+            ProtocolJsonCodec jsonCodec,
+            ProtocolFrameCodec frameCodec,
+            ControlAuthenticationService authenticationService,
+            BackendControlSessionRegistry sessionRegistry,
+            Consumer<BackendIdentity> authenticatedIdentityListener
     ) {
         this.clock = Objects.requireNonNull(
                 clock,
@@ -57,6 +79,10 @@ public final class ControlConnectionHandshakeHandler
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
                 "sessionRegistry cannot be null"
+        );
+        this.authenticatedIdentityListener = Objects.requireNonNull(
+                authenticatedIdentityListener,
+                "authenticatedIdentityListener cannot be null"
         );
     }
 
@@ -114,12 +140,15 @@ public final class ControlConnectionHandshakeHandler
                 return Optional.empty();
             }
 
+            BackendIdentity authenticatedIdentity =
+                    authenticationResult
+                            .identityOptional()
+                            .orElseThrow();
+
             BackendControlSessionRegistration registration =
                     sessionRegistry.register(
                             nonNullConnectionId,
-                            authenticationResult
-                                    .identityOptional()
-                                    .orElseThrow()
+                            authenticatedIdentity
                     );
 
             try {
@@ -133,6 +162,7 @@ public final class ControlConnectionHandshakeHandler
                 throw exception;
             }
 
+            authenticatedIdentityListener.accept(authenticatedIdentity);
             return Optional.of(registration);
         } catch (IOException | RuntimeException exception) {
             if (challengePending) {
