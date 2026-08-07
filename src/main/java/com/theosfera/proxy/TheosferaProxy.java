@@ -577,7 +577,7 @@ public final class TheosferaProxy {
         bindDistributedCapacityHandoff();
 
         PlayerTransferExecutor transferExecutor = new PlayerTransferExecutor();
-        DistributedPlayerTransferRetryCoordinator distributedTransferRetryCoordinator =
+        DistributedPlayerTransferRetryCoordinator distributedPlayerTransferRetryCoordinator =
                 new DistributedPlayerTransferRetryCoordinator(
                         bootstrapRegistry,
                         transferRegistry,
