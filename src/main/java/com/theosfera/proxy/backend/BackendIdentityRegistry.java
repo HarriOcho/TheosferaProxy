@@ -6,7 +6,8 @@ import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
-public final class BackendIdentityRegistry {
+public final class BackendIdentityRegistry
+        implements BackendIdentityProvider {
 
     private final Map<String, BackendIdentity> identities =
             new ConcurrentHashMap<>();
@@ -51,6 +52,7 @@ public final class BackendIdentityRegistry {
         return result.get();
     }
 
+    @Override
     public Optional<BackendIdentity> find(
             String serverName
     ) {
@@ -64,15 +66,7 @@ public final class BackendIdentityRegistry {
         );
     }
 
-    public boolean isRegistered(String serverName) {
-        Objects.requireNonNull(
-                serverName,
-                "serverName cannot be null"
-        );
-
-        return identities.containsKey(serverName);
-    }
-
+    @Override
     public Map<String, BackendIdentity> snapshot() {
         return Map.copyOf(identities);
     }
