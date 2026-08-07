@@ -85,7 +85,7 @@ public final class BackendControlRuntime implements AutoCloseable {
         );
     }
 
-    public static BackendControlRuntime create(
+    public static BackendControlRuntime createWithAuthenticationListener(
             Path dataDirectory,
             BackendAuthorizationPolicy authorizationPolicy,
             PendingBackendPingRegistry pendingPingRegistry,
