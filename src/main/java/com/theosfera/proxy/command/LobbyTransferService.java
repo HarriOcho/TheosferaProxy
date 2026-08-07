@@ -2,7 +2,7 @@ package com.theosfera.proxy.command;
 
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistrationResult;
@@ -152,19 +152,19 @@ public final class LobbyTransferService {
             ));
 
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
-    private final BackendIdentityRegistry identityRegistry;
+    private final BackendIdentityProvider identityProvider;
     private final DistributedPlayerTransferRetryCoordinator retryCoordinator;
     private final Clock clock;
     private final Supplier<UUID> requestIdGenerator;
 
     public LobbyTransferService(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
-            BackendIdentityRegistry identityRegistry,
+            BackendIdentityProvider identityProvider,
             DistributedPlayerTransferRetryCoordinator retryCoordinator
     ) {
         this(
                 sessionRegistry,
-                identityRegistry,
+                identityProvider,
                 retryCoordinator,
                 Clock.systemUTC(),
                 UUID::randomUUID
@@ -173,7 +173,7 @@ public final class LobbyTransferService {
 
     LobbyTransferService(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
-            BackendIdentityRegistry identityRegistry,
+            BackendIdentityProvider identityProvider,
             DistributedPlayerTransferRetryCoordinator retryCoordinator,
             Clock clock,
             Supplier<UUID> requestIdGenerator
@@ -182,9 +182,9 @@ public final class LobbyTransferService {
                 sessionRegistry,
                 "sessionRegistry cannot be null"
         );
-        this.identityRegistry = Objects.requireNonNull(
-                identityRegistry,
-                "identityRegistry cannot be null"
+        this.identityProvider = Objects.requireNonNull(
+                identityProvider,
+                "identityProvider cannot be null"
         );
         this.retryCoordinator = Objects.requireNonNull(
                 retryCoordinator,
@@ -231,7 +231,7 @@ public final class LobbyTransferService {
         }
 
         TransferSource preparedSource = source.orElseThrow();
-        boolean currentBackendIsLobby = identityRegistry
+        boolean currentBackendIsLobby = identityProvider
                 .find(preparedSource.backendName())
                 .map(identity -> identity.backendType() == BackendType.LOBBY)
                 .orElse(false);
