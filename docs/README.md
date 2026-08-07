@@ -11,7 +11,7 @@ Para continuar desarrollo:
 1. `../AGENTS.md`;
 2. `../CONTRIBUTING.md`;
 3. `../PROJECT_STATE.md`;
-4. checkpoint del milestone activo;
+4. checkpoint/diseño del milestone activo;
 5. documentos específicos de la frontera que se va a modificar.
 
 ## Estado y arquitectura distribuida
@@ -39,12 +39,11 @@ Para continuar desarrollo:
   - rollout de capacidad distribuida.
 
 - `DISTRIBUTED_BACKEND_BOOTSTRAP_FOUNDATION_CHECKPOINT.md`
-  - milestone activo en `feature/distributed-backend-bootstrap`;
+  - foundation A.1–A.8 fusionado mediante PR `#74`;
   - ownership Redis de bootstrap;
   - membership/bootstrap fencing;
   - TTL/renew lifecycle;
-  - A.1–A.8;
-  - siguiente frontera: Backend Orchestration Provider.
+  - frontera previa al Backend Orchestration Provider.
 
 ## Runtime acceptance y superficies productivas
 
@@ -70,6 +69,20 @@ Para continuar desarrollo:
   - retiro de `BACKEND_HELLO`;
   - zero-player identity/health;
   - reconnect/fencing y runtime final.
+
+## Diseño futuro aprobado para recordar
+
+- `ADMINISTRATIVE_PLAYER_TRANSFER_DESIGN.md`
+  - raw Velocity `/send` debe dejar de ser una ruta administrativa de movimiento;
+  - `/theosfera send <player> <BackendType>` como superficie oficial futura;
+  - selección automática de instancia por policy/preference/health/capacity;
+  - autenticación y `PlayerSessionLease` exactos como precondición absoluta;
+  - sesión inconsistente -> reject + disconnect para forzar revalidación Auth/nLogin;
+  - ejecución cross-proxy fenced;
+  - TAB y descubribilidad condicionados por permisos;
+  - ningún auth bypass administrativo.
+
+Este documento registra una feature futura; no significa que `/theosfera send` o el hardening de raw `/send` ya estén implementados.
 
 ## Operación y estándares
 
@@ -116,12 +129,33 @@ código fusionado / rama activa validada
 
 ## Punto actual
 
-A fecha de esta consolidación:
+Estado fusionado:
 
 ```text
-main @ da0f065
-feature/distributed-backend-bootstrap
-Distributed Backend Bootstrap Foundation A.1–A.8: implementado y validado
-PR del foundation: pendiente
-siguiente milestone después del merge: Backend Orchestration Provider
+main @ ddc082319243da621d4e5364d4c4957f8d088b0d
+PR #74: feat: add distributed backend bootstrap foundation
+Distributed Backend Bootstrap Foundation A.1–A.8: MERGED
 ```
+
+Rama activa:
+
+```text
+feature/backend-orchestration-provider
+```
+
+Siguiente frontera técnica:
+
+```text
+Backend Orchestration Provider
+```
+
+Regla central del milestone activo:
+
+```text
+bootstrap ownership
+    != process running
+    != TLS/HMAC control authentication
+    != backend HEALTHY
+```
+
+El provider debe recibir la autoridad/fencing de bootstrap suficiente para impedir side effects de owners stale.
