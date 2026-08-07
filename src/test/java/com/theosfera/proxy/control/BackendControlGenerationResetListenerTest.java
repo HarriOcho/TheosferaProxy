@@ -43,10 +43,10 @@ class BackendControlGenerationResetListenerTest {
 
         healthRegistry.markHealthy("lobby-2");
         pendingRegistry.register(new PendingBackendPing(
+                "lobby-2",
                 UUID.fromString(
                         "00000000-0000-0000-0000-000000000001"
                 ),
-                "lobby-2",
                 now
         ));
 
