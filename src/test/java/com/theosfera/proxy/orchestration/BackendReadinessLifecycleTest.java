@@ -161,7 +161,7 @@ class BackendReadinessLifecycleTest {
                 new CompletableFuture<>();
         when(ownership.termination()).thenReturn(termination);
         when(ownership.hasAuthority()).thenReturn(true);
-        when(ownership.currentLease()).thenReturn(first, replacement);
+        when(ownership.currentLease()).thenReturn(first, first, replacement);
         when(ownership.stop()).thenReturn(
                 CompletableFuture.completedFuture(Optional.empty())
         );
