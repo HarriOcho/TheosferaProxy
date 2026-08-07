@@ -3,7 +3,6 @@ package com.theosfera.proxy.control;
 import com.theosfera.protocol.ProtocolVersion;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
-import com.theosfera.protocol.message.payload.BackendHelloPayload;
 import com.theosfera.protocol.message.payload.ControlAuthChallengePayload;
 import com.theosfera.protocol.message.payload.ControlAuthResponsePayload;
 import com.theosfera.protocol.security.ControlAuthProof;
@@ -214,10 +213,7 @@ public final class ControlAuthenticationService {
         Optional<BackendIdentity> authorizedIdentity =
                 authorizationPolicy.authorize(
                         payload.backendName(),
-                        new BackendHelloPayload(
-                                payload.backendName(),
-                                payload.backendType()
-                        )
+                        payload.backendType()
                 );
 
         if (authorizedIdentity.isEmpty()) {
