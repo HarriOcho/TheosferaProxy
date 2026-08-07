@@ -31,19 +31,20 @@ class BackendControlRuntimeTest {
     void disabledDefaultDoesNotReadEnvironmentOrTlsMaterial() {
         AtomicBoolean environmentRead = new AtomicBoolean();
 
-        BackendControlRuntime runtime = BackendControlRuntime.create(
-                tempDirectory,
-                policy(),
-                pendingPingRegistry(),
-                healthRegistry(),
-                mock(Logger.class),
-                name -> {
-                    environmentRead.set(true);
-                    throw new AssertionError(
-                            "disabled runtime must not read environment"
-                    );
-                }
-        );
+        BackendControlRuntime runtime =
+                BackendControlRuntime.createWithEnvironmentReader(
+                        tempDirectory,
+                        policy(),
+                        pendingPingRegistry(),
+                        healthRegistry(),
+                        mock(Logger.class),
+                        name -> {
+                            environmentRead.set(true);
+                            throw new AssertionError(
+                                    "disabled runtime must not read environment"
+                            );
+                        }
+                );
 
         assertFalse(runtime.enabled());
         assertFalse(runtime.started());
@@ -89,7 +90,7 @@ class BackendControlRuntimeTest {
 
         assertThrows(
                 IllegalStateException.class,
-                () -> BackendControlRuntime.create(
+                () -> BackendControlRuntime.createWithEnvironmentReader(
                         tempDirectory,
                         policy(),
                         pendingPingRegistry(),
