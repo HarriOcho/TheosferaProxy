@@ -241,6 +241,12 @@ public final class BackendControlRuntime implements AutoCloseable {
                             nonNullPolicy,
                             secretProvider
                     );
+            Consumer<BackendIdentity> generationResetListener =
+                    new BackendControlGenerationResetListener(
+                            nonNullHealthRegistry,
+                            nonNullPendingPingRegistry,
+                            nonNullAuthenticatedIdentityListener
+                    );
             ControlConnectionHandshakeHandler authenticator =
                     new ControlConnectionHandshakeHandler(
                             clock,
@@ -248,7 +254,7 @@ public final class BackendControlRuntime implements AutoCloseable {
                             frameCodec,
                             authenticationService,
                             sessionRegistry,
-                            nonNullAuthenticatedIdentityListener
+                            generationResetListener
                     );
             AuthenticatedControlConnectionHandler authenticatedHandler =
                     new BoundAuthenticatedControlConnectionHandler(
