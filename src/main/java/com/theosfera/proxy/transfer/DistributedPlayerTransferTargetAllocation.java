@@ -87,9 +87,10 @@ public record DistributedPlayerTransferTargetAllocation(
                         "successful capacity status requires allocation artifacts"
                 );
             }
-        } else if (targetResolution.resolvedTarget().isPresent()) {
+        } else if (targetResolution.resolvedTarget().isPresent()
+                && !targetResolution.requiresBootstrap()) {
             throw new IllegalArgumentException(
-                    "target resolution requires an allocation outcome"
+                    "resolved target requires an allocation outcome"
             );
         }
     }
@@ -99,6 +100,30 @@ public record DistributedPlayerTransferTargetAllocation(
     ) {
         return new DistributedPlayerTransferTargetAllocation(
                 resolution,
+                null,
+                null,
+                null,
+                null,
+                false
+        );
+    }
+
+    public static DistributedPlayerTransferTargetAllocation bootstrapRequired(
+            TransferTargetResolution resolution
+    ) {
+        TransferTargetResolution nonNullResolution = Objects.requireNonNull(
+                resolution,
+                "resolution cannot be null"
+        );
+        requireTarget(nonNullResolution);
+        if (!nonNullResolution.requiresBootstrap()) {
+            throw new IllegalArgumentException(
+                    "bootstrap-required allocation requires bootstrap resolution"
+            );
+        }
+
+        return new DistributedPlayerTransferTargetAllocation(
+                nonNullResolution,
                 null,
                 null,
                 null,
@@ -184,6 +209,14 @@ public record DistributedPlayerTransferTargetAllocation(
 
     public boolean isAllocated() {
         return transfer != null;
+    }
+
+    public boolean isBootstrapRequired() {
+        return !isAllocated()
+                && !sameTarget
+                && registrationResult == null
+                && capacityStatus == null
+                && targetResolution.requiresBootstrap();
     }
 
     public boolean isSameTarget() {
