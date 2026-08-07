@@ -1,6 +1,5 @@
 package com.theosfera.proxy.backend;
 
-import com.theosfera.protocol.message.payload.BackendHelloPayload;
 import com.theosfera.protocol.message.payload.BackendType;
 import org.junit.jupiter.api.Test;
 
@@ -43,10 +42,7 @@ class BackendAuthorizationPolicyTest {
         Optional<BackendIdentity> authorized =
                 policy.authorize(
                         "lobby-1",
-                        new BackendHelloPayload(
-                                "lobby-1",
-                                BackendType.LOBBY
-                        )
+                        BackendType.LOBBY
                 );
 
         assertTrue(authorized.isPresent());
@@ -60,28 +56,11 @@ class BackendAuthorizationPolicyTest {
     }
 
     @Test
-    void rejectsMismatchedDeclaredName() {
-        Optional<BackendIdentity> authorized =
-                policy.authorize(
-                        "auth-1",
-                        new BackendHelloPayload(
-                                "lobby-1",
-                                BackendType.AUTH
-                        )
-                );
-
-        assertTrue(authorized.isEmpty());
-    }
-
-    @Test
     void rejectsMismatchedBackendType() {
         Optional<BackendIdentity> authorized =
                 policy.authorize(
                         "auth-1",
-                        new BackendHelloPayload(
-                                "auth-1",
-                                BackendType.LOBBY
-                        )
+                        BackendType.LOBBY
                 );
 
         assertTrue(authorized.isEmpty());
@@ -92,10 +71,7 @@ class BackendAuthorizationPolicyTest {
         Optional<BackendIdentity> authorized =
                 policy.authorize(
                         "unknown-1",
-                        new BackendHelloPayload(
-                                "unknown-1",
-                                BackendType.LOBBY
-                        )
+                        BackendType.LOBBY
                 );
 
         assertTrue(authorized.isEmpty());
@@ -166,10 +142,7 @@ class BackendAuthorizationPolicyTest {
         assertTrue(
                 normalized.authorize(
                         "lobby-1",
-                        new BackendHelloPayload(
-                                "lobby-1",
-                                BackendType.LOBBY
-                        )
+                        BackendType.LOBBY
                 ).isPresent()
         );
     }
@@ -208,10 +181,7 @@ class BackendAuthorizationPolicyTest {
                 NullPointerException.class,
                 () -> policy.authorize(
                         null,
-                        new BackendHelloPayload(
-                                "lobby-1",
-                                BackendType.LOBBY
-                        )
+                        BackendType.LOBBY
                 )
         );
 
