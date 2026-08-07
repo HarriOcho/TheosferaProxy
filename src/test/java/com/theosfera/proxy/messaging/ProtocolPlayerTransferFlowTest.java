@@ -4,21 +4,18 @@ import com.theosfera.protocol.ProtocolVersion;
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
-import com.theosfera.protocol.message.payload.BackendHelloPayload;
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.PlayerAuthenticatedPayload;
 import com.theosfera.protocol.message.payload.PlayerServerReadyPayload;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
-import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
-import com.theosfera.proxy.backend.BackendPolicyEntry;
+import com.theosfera.proxy.backend.MutableBackendIdentityProvider;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
-import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
@@ -47,7 +44,6 @@ import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -92,32 +88,26 @@ class ProtocolPlayerTransferFlowTest {
         PlayerTransferExecutor transferExecutor =
                 mock(PlayerTransferExecutor.class);
 
-        BackendAuthorizationPolicy policy =
-                new BackendAuthorizationPolicy(
-                        Map.of(
-                                "auth-1",
-                                new BackendPolicyEntry(
-                                        BackendType.AUTH,
-                                        1,
-                                        100
-                                ),
-                                "lobby-1",
-                                new BackendPolicyEntry(
-                                        BackendType.LOBBY,
-                                        100,
-                                        100
-                                ),
-                                "skyblock-1",
-                                new BackendPolicyEntry(
-                                        BackendType.SKYBLOCK,
-                                        200,
-                                        100
-                                )
-                        )
-                );
-
-        BackendIdentityRegistry identityRegistry =
-                new BackendIdentityRegistry();
+        MutableBackendIdentityProvider identityProvider =
+                new MutableBackendIdentityProvider();
+        identityProvider.register(
+                new BackendIdentity(
+                        "auth-1",
+                        BackendType.AUTH
+                )
+        );
+        identityProvider.register(
+                new BackendIdentity(
+                        "lobby-1",
+                        BackendType.LOBBY
+                )
+        );
+        identityProvider.register(
+                new BackendIdentity(
+                        "skyblock-1",
+                        BackendType.SKYBLOCK
+                )
+        );
 
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
@@ -148,9 +138,6 @@ class ProtocolPlayerTransferFlowTest {
 
         ServerConnection lobbySource =
                 serverConnection("lobby-1");
-
-        ServerConnection skyblockSource =
-                serverConnection("skyblock-1");
 
         RegisteredServer skyblockTarget =
                 registeredServer("skyblock-1");
@@ -236,13 +223,6 @@ class ProtocolPlayerTransferFlowTest {
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
-                                new BackendHelloMessageHandler(
-                                        policy,
-                                        identityRegistry,
-                                        bootstrapRegistry,
-                                        messageSender,
-                                        logger
-                                ),
                                 new PlayerAuthenticatedMessageHandler(
                                         sessionCoordinator,
                                         leaseBindingRegistry,
@@ -259,7 +239,7 @@ class ProtocolPlayerTransferFlowTest {
                                 ),
                                 new TransferRequestMessageHandler(
                                         proxyServer,
-                                        identityRegistry,
+                                        identityProvider,
                                         sessionRegistry,
                                         presenceRegistry,
                                         retryCoordinator,
@@ -273,46 +253,10 @@ class ProtocolPlayerTransferFlowTest {
                 new ProtocolMessageListener(
                         logger,
                         new BackendMessageAuthorizer(
-                                identityRegistry
+                                identityProvider
                         ),
                         dispatcher
                 );
-
-        send(
-                listener,
-                authSource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "auth-1",
-                                BackendType.AUTH
-                        )
-                )
-        );
-
-        send(
-                listener,
-                lobbySource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "lobby-1",
-                                BackendType.LOBBY
-                        )
-                )
-        );
-
-        send(
-                listener,
-                skyblockSource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "skyblock-1",
-                                BackendType.SKYBLOCK
-                        )
-                )
-        );
 
         send(
                 listener,
