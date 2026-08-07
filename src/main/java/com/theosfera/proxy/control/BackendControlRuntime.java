@@ -4,6 +4,7 @@ import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.transport.ProtocolFrameCodec;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
+import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import org.slf4j.Logger;
@@ -15,6 +16,7 @@ import java.time.Clock;
 import java.util.Arrays;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 public final class BackendControlRuntime implements AutoCloseable {
@@ -77,6 +79,27 @@ public final class BackendControlRuntime implements AutoCloseable {
                 pendingPingRegistry,
                 healthRegistry,
                 logger,
+                identity -> {
+                },
+                System::getenv
+        );
+    }
+
+    public static BackendControlRuntime create(
+            Path dataDirectory,
+            BackendAuthorizationPolicy authorizationPolicy,
+            PendingBackendPingRegistry pendingPingRegistry,
+            BackendHealthRegistry healthRegistry,
+            Logger logger,
+            Consumer<BackendIdentity> authenticatedIdentityListener
+    ) {
+        return create(
+                dataDirectory,
+                authorizationPolicy,
+                pendingPingRegistry,
+                healthRegistry,
+                logger,
+                authenticatedIdentityListener,
                 System::getenv
         );
     }
@@ -87,6 +110,27 @@ public final class BackendControlRuntime implements AutoCloseable {
             PendingBackendPingRegistry pendingPingRegistry,
             BackendHealthRegistry healthRegistry,
             Logger logger,
+            Function<String, String> environmentReader
+    ) {
+        return create(
+                dataDirectory,
+                authorizationPolicy,
+                pendingPingRegistry,
+                healthRegistry,
+                logger,
+                identity -> {
+                },
+                environmentReader
+        );
+    }
+
+    static BackendControlRuntime create(
+            Path dataDirectory,
+            BackendAuthorizationPolicy authorizationPolicy,
+            PendingBackendPingRegistry pendingPingRegistry,
+            BackendHealthRegistry healthRegistry,
+            Logger logger,
+            Consumer<BackendIdentity> authenticatedIdentityListener,
             Function<String, String> environmentReader
     ) {
         Path nonNullDataDirectory = Objects.requireNonNull(
@@ -112,6 +156,11 @@ public final class BackendControlRuntime implements AutoCloseable {
                 logger,
                 "logger cannot be null"
         );
+        Consumer<BackendIdentity> nonNullAuthenticatedIdentityListener =
+                Objects.requireNonNull(
+                        authenticatedIdentityListener,
+                        "authenticatedIdentityListener cannot be null"
+                );
         Function<String, String> nonNullEnvironmentReader =
                 Objects.requireNonNull(
                         environmentReader,
@@ -198,7 +247,8 @@ public final class BackendControlRuntime implements AutoCloseable {
                             jsonCodec,
                             frameCodec,
                             authenticationService,
-                            sessionRegistry
+                            sessionRegistry,
+                            nonNullAuthenticatedIdentityListener
                     );
             AuthenticatedControlConnectionHandler authenticatedHandler =
                     new BoundAuthenticatedControlConnectionHandler(
