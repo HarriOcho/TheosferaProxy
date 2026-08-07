@@ -7,10 +7,10 @@ Antes de proponer o implementar cambios:
 1. leer este archivo;
 2. leer `CONTRIBUTING.md`;
 3. leer `PROJECT_STATE.md`;
-4. revisar `docs/README.md` y el checkpoint del milestone activo;
+4. revisar `docs/README.md` y el checkpoint/diseño del milestone activo;
 5. verificar el código y estado Git reales.
 
-No reconstruir el estado actual desde checkpoints antiguos si `PROJECT_STATE.md`, un checkpoint posterior o el código fusionado ya los supersedió.
+No reconstruir el estado actual desde checkpoints antiguos si `PROJECT_STATE.md`, un checkpoint posterior, `docs/README.md` o el código fusionado ya los supersedió.
 
 ## Identidad
 
@@ -43,9 +43,17 @@ El runtime actual ya incluye:
 - `/hub`, `/lobby`, Lobby switching;
 - kick failover distribuido;
 - raw Velocity `/server` bloqueado para jugadores;
-- observabilidad administrativa.
+- observabilidad administrativa;
+- Distributed Backend Bootstrap Foundation A.1–A.8 fusionado mediante PR `#74`.
 
-La rama `feature/distributed-backend-bootstrap` añade el foundation A.1–A.8 de ownership distribuido de bootstrap. Todavía no arranca procesos reales.
+La rama técnica activa es:
+
+```text
+feature/backend-orchestration-provider
+```
+
+B.1 define los contratos del provider y ya fue validado localmente.
+B.2 introduce trusted target mapping y la frontera de actuation que exige fencing atómico con la aceptación/emisión del start side effect. Todavía no existe un start real de procesos.
 
 ## Invariantes obligatorios
 
@@ -61,7 +69,7 @@ Esto aplica a:
 - backend health/freshness;
 - capacity;
 - bootstrap ownership;
-- futuros side effects de orchestration.
+- side effects de orchestration.
 
 Nunca introducir fallback productivo local silencioso cuando Redis es la autoridad distribuida.
 
@@ -149,6 +157,8 @@ Disconnect/shutdown debe respetar el orden seguro de presence cleanup y session 
 
 No habilitar features sociales o movimientos que requieran identidad global antes de autenticar al jugador.
 
+La futura transferencia administrativa `/theosfera send <player> <BackendType>` tampoco podrá bypassear autenticación: sesión no demostrable o inconsistente debe fallar cerrada y forzar revalidación mediante disconnect/reconnect Auth/nLogin.
+
 ## Routing, capacity y transfers
 
 Capacity Redis ya es productiva.
@@ -175,6 +185,8 @@ Las transferencias oficiales deben pasar por Theosfera y conservar:
 
 Raw Velocity `/server` no es una ruta válida para jugadores y no tiene bypass de staff.
 
+Raw Velocity `/send` está planificado para hardening futuro; la superficie administrativa prevista será `/theosfera send <player> <BackendType>` con routing automático y permisos/TAB stealth. No asumir que esa feature ya está implementada.
+
 ## Kick failover
 
 Mantener:
@@ -187,9 +199,11 @@ Mantener:
 
 No conservar identidad stale para resolver esa carrera.
 
-## Distributed Backend Bootstrap — rama activa
+## Distributed Backend Bootstrap — foundation fusionado
 
-Foundation A.1–A.8 implementado:
+Foundation A.1–A.8 está fusionado en `main` mediante PR `#74`.
+
+Incluye:
 
 - public contracts;
 - Redis keyspace/store;
@@ -215,9 +229,33 @@ No prueba:
 - capacity;
 - player readiness.
 
-No cablear todavía side effects de process startup sin diseñar el `Backend Orchestration Provider`.
+## Backend Orchestration Provider — milestone activo
 
-El provider futuro debe recibir suficiente autoridad/fencing para rechazar órdenes stale.
+Leer:
+
+```text
+docs/BACKEND_ORCHESTRATION_PROVIDER_DESIGN.md
+```
+
+B.1:
+
+- `BackendOrchestrationProvider`;
+- `BackendStartRequest` conserva el `BackendBootstrapLease` exacto;
+- resultados explícitos y fail-closed.
+
+B.2:
+
+- `BackendStartTargetResolver` separa backend lógico de target del orchestrator;
+- ningún input de jugador/admin puede convertirse directamente en target de proceso;
+- `BackendStartActuationRequest` exige target/lease del mismo backend;
+- `BackendStartActuator.startIfCurrent(...)` es la frontera que debe combinar fencing y aceptación/emisión del side effect de forma atómica;
+- un pre-check Redis separado seguido de un start unfenced es inválido por TOCTOU;
+- replay exacto debe ser idempotente;
+- autoridad stale o conflictiva debe producir cero side effects.
+
+No seleccionar todavía Docker/systemd/panel/cloud dentro de routing o transfer services.
+
+No considerar `BackendStartResult.ACCEPTED` como readiness.
 
 Cuando exista true cold startup, capacity debe reservarse después de control authentication + fresh health/revalidation; no mantener la reservation TTL actual durante el tiempo de boot.
 
@@ -236,7 +274,7 @@ No introducir:
 
 ## Sistemas futuros
 
-Maintenance, Drain, Friends, Parties, Squads, Matchmaking, perfiles y otros sistemas previstos deben planificarse antes de escribir implementación.
+Maintenance, Drain, Administrative Player Transfer, Friends, Parties, Squads, Matchmaking, perfiles y otros sistemas previstos deben planificarse antes de escribir implementación.
 
 Definir para cada uno:
 
@@ -288,12 +326,13 @@ Nunca versionar ni registrar:
 ## Punto de continuación actual
 
 ```text
-Distributed Backend Bootstrap Foundation
-→ rama feature/distributed-backend-bootstrap
-→ A.1–A.8 implementado y validado
-→ checkpoint creado
-→ pendiente PR/squash merge
-→ siguiente milestone: Backend Orchestration Provider
+main @ ddc0823
+Distributed Backend Bootstrap Foundation (#74)    MERGED
+Backend Orchestration Provider B.1                VALIDATED
+Backend Orchestration Provider B.2                ACTIVE / local gate pending
+Backend Orchestration Provider B.3                NEXT after B.2 gate
 ```
+
+B.3 debe diseñar el startup operation lifecycle, bounded retry/timeout y fencing de callbacks tardíos. Readiness por Control Channel + HEALTHY queda para B.4.
 
 No saltar directamente a Maintenance o sistemas sociales dentro del mismo cambio técnico salvo repriorización explícita del propietario.
