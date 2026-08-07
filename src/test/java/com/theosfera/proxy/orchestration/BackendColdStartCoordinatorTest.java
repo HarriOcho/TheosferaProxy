@@ -207,8 +207,7 @@ class BackendColdStartCoordinatorTest {
                 new BackendStartupPolicy(
                         Duration.ofSeconds(20),
                         Duration.ofSeconds(1),
-                        Duration.ofSeconds(4),
-                        2.0
+                        Duration.ofSeconds(4)
                 ),
                 readinessProbe,
                 readinessScheduler,
