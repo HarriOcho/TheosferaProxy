@@ -2,6 +2,7 @@ package com.theosfera.proxy.command;
 
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendIdentity;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
@@ -81,7 +82,7 @@ class LobbyTransferServiceTest {
     }
 
     @Test
-    void dependsOnDistributedRetryWithoutDirectResolverCoupling() {
+    void dependsOnDistributedRetryAndIdentityProviderWithoutDirectResolverCoupling() {
         Set<Class<?>> fieldTypes = Arrays.stream(
                         LobbyTransferService.class.getDeclaredFields()
                 )
@@ -93,7 +94,8 @@ class LobbyTransferServiceTest {
                         DistributedPlayerTransferRetryCoordinator.class
                 )
         );
-        assertTrue(fieldTypes.contains(BackendIdentityRegistry.class));
+        assertTrue(fieldTypes.contains(BackendIdentityProvider.class));
+        assertFalse(fieldTypes.contains(BackendIdentityRegistry.class));
         assertFalse(fieldTypes.contains(TransferTargetResolver.class));
     }
 
