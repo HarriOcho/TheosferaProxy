@@ -3,19 +3,16 @@ package com.theosfera.proxy.messaging;
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
-import com.theosfera.protocol.message.payload.BackendHelloPayload;
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.PlayerAuthenticatedAckPayload;
 import com.theosfera.protocol.message.payload.PlayerAuthenticatedPayload;
 import com.theosfera.protocol.message.payload.PlayerServerReadyPayload;
-import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendIdentity;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
-import com.theosfera.proxy.backend.BackendPolicyEntry;
+import com.theosfera.proxy.backend.MutableBackendIdentityProvider;
 import com.theosfera.proxy.coordination.PlayerSessionCoordinator;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.local.LocalPlayerSessionCoordinator;
-import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
@@ -26,7 +23,6 @@ import com.theosfera.proxy.session.PlayerServerPresence;
 import com.theosfera.proxy.session.PlayerServerPresenceRegistry;
 import com.theosfera.proxy.session.PlayerSessionLeaseBindingRegistry;
 import com.theosfera.proxy.session.PlayerSessionReleaseService;
-import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.PendingPlayerTransferRegistry;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
@@ -39,7 +35,6 @@ import org.mockito.ArgumentCaptor;
 import org.slf4j.Logger;
 
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -47,7 +42,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -73,26 +67,20 @@ class ProtocolPlayerSessionFlowTest {
         ProtocolMessageSender sender =
                 mock(ProtocolMessageSender.class);
 
-        BackendAuthorizationPolicy policy =
-                new BackendAuthorizationPolicy(
-                        Map.of(
-                                "auth-1",
-                                new BackendPolicyEntry(
-                                        BackendType.AUTH,
-                                        1,
-                                        100
-                                ),
-                                "lobby-1",
-                                new BackendPolicyEntry(
-                                        BackendType.LOBBY,
-                                        100,
-                                        100
-                                )
-                        )
-                );
-
-        BackendIdentityRegistry identityRegistry =
-                new BackendIdentityRegistry();
+        MutableBackendIdentityProvider identityProvider =
+                new MutableBackendIdentityProvider();
+        identityProvider.register(
+                new BackendIdentity(
+                        "auth-1",
+                        BackendType.AUTH
+                )
+        );
+        identityProvider.register(
+                new BackendIdentity(
+                        "lobby-1",
+                        BackendType.LOBBY
+                )
+        );
 
         AuthenticatedPlayerSessionRegistry sessionRegistry =
                 new AuthenticatedPlayerSessionRegistry();
@@ -115,7 +103,7 @@ class ProtocolPlayerSessionFlowTest {
 
         BackendMessageAuthorizer authorizer =
                 new BackendMessageAuthorizer(
-                        identityRegistry
+                        identityProvider
                 );
 
         PlayerAuthenticationAckSender acknowledgementSender =
@@ -136,13 +124,6 @@ class ProtocolPlayerSessionFlowTest {
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
-                                new BackendHelloMessageHandler(
-                                        policy,
-                                        identityRegistry,
-                                        new BackendBootstrapRegistry(),
-                                        sender,
-                                        logger
-                                ),
                                 new PlayerAuthenticatedMessageHandler(
                                         sessionCoordinator,
                                         leaseBindingRegistry,
@@ -202,30 +183,6 @@ class ProtocolPlayerSessionFlowTest {
                 any(ProtocolEnvelope.class)
         )).thenReturn(true);
 
-        send(
-                listener,
-                authSource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "auth-1",
-                                BackendType.AUTH
-                        )
-                )
-        );
-
-        send(
-                listener,
-                lobbySource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "lobby-1",
-                                BackendType.LOBBY
-                        )
-                )
-        );
-
         ProtocolEnvelope<PlayerAuthenticatedPayload>
                 authenticationRequest =
                 ProtocolEnvelope.create(
@@ -269,15 +226,13 @@ class ProtocolPlayerSessionFlowTest {
                         ProtocolEnvelope.class
                 );
 
-        verify(sender, times(3)).send(
+        verify(sender).send(
                 any(ServerConnection.class),
                 envelopeCaptor.capture()
         );
 
         ProtocolEnvelope<?> acknowledgement =
-                envelopeCaptor
-                        .getAllValues()
-                        .get(2);
+                envelopeCaptor.getValue();
 
         assertEquals(
                 ProtocolMessageType
