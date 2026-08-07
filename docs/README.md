@@ -2,7 +2,7 @@
 
 Este directorio conserva diseño, runbooks y evidencia de milestones de TheosferaProxy.
 
-`PROJECT_STATE.md` en la raíz es la fuente principal para conocer el **estado vigente**. Los documentos de este directorio deben usarse para ampliar una decisión concreta, consultar evidencia runtime o recuperar historia técnica sin volver a inflar `PROJECT_STATE.md`.
+`PROJECT_STATE.md` en la raíz es la fuente principal para conocer el **estado fusionado vigente**. Durante una rama activa, el checkpoint/diseño más reciente del milestone complementa ese estado hasta su consolidación final.
 
 ## Orden recomendado de lectura
 
@@ -46,12 +46,20 @@ Para continuar desarrollo:
   - frontera previa al Backend Orchestration Provider.
 
 - `BACKEND_ORCHESTRATION_PROVIDER_DESIGN.md`
-  - milestone activo en `feature/backend-orchestration-provider`;
-  - B.1 provider contracts validado;
-  - B.2 trusted target mapping + atomic fenced actuator strategy;
-  - `BackendBootstrapLease` exacto atraviesa la frontera del side effect;
-  - `ACCEPTED` no equivale a backend ready;
-  - B.3 startup operation lifecycle es el siguiente incremento.
+  - diseño base del milestone de orchestration;
+  - provider contracts;
+  - trusted target mapping;
+  - atomic fenced actuator strategy;
+  - startup lifecycle y separación de readiness.
+
+- `BACKEND_ORCHESTRATION_PROVIDER_PRE_RUNTIME_CHECKPOINT.md`
+  - checkpoint incremental más reciente de la rama activa;
+  - B.1, B.2 y B.3 localmente validados;
+  - B.4 readiness por current Control Channel + fresh HEALTHY implementado;
+  - invalidación de health/PING al cambiar generación de Control Channel;
+  - B.5 provider-neutral cold-start foundation y schedulers Velocity;
+  - product cold path todavía sin reemplazar;
+  - B.6 runtime pendiente de seleccionar un actuator real.
 
 ## Runtime acceptance y superficies productivas
 
@@ -97,6 +105,12 @@ Este documento registra una feature futura; no significa que `/theosfera send` o
 - `BACKEND_CONTROL_CHANNEL_RUNBOOK.md`
   - provisioning y operación del Control Channel.
 
+- `INSTANCE_PROVISIONING_POLICY.md`
+  - naming de instancias;
+  - capacity/preference derivadas;
+  - unicidad de Proxy identity;
+  - provisioning baseline.
+
 - `THEOSFERA_VISUAL_MESSAGING_STANDARD.md`
   - estándar visual/mensajería de Theosfera para superficies del Proxy.
 
@@ -120,12 +134,12 @@ Ante una contradicción:
 
 ```text
 código fusionado / rama activa validada
-        > PROJECT_STATE vigente
-        > checkpoint posterior
+        > checkpoint activo más reciente
+        > PROJECT_STATE fusionado
         > checkpoint histórico anterior
 ```
 
-## Política documental a partir de la consolidación
+## Política documental
 
 - No añadir cronologías extensas a `PROJECT_STATE.md`.
 - Un checkpoint específico puede conservar logs, hashes, matrices runtime y debugging.
@@ -151,12 +165,21 @@ Rama activa:
 feature/backend-orchestration-provider
 ```
 
-Estado del milestone:
+Estado exacto de continuidad:
 
 ```text
-B.1 provider contracts                    VALIDATED
-B.2 fenced provider / actuator strategy   PENDING LOCAL GATE
-B.3 startup operation lifecycle           NEXT
+B.1 provider contracts                         VALIDATED
+B.2 fenced provider / actuator strategy        VALIDATED
+B.3 startup operation lifecycle                VALIDATED
+B.4 Control Channel readiness bridge           IMPLEMENTED / LOCAL GATE PENDING
+B.5 provider-neutral cold-start foundation     IMPLEMENTED / LOCAL GATE PENDING
+B.6 real runtime acceptance                    BLOCKED ON REAL ACTUATOR
+```
+
+Leer primero:
+
+```text
+docs/BACKEND_ORCHESTRATION_PROVIDER_PRE_RUNTIME_CHECKPOINT.md
 ```
 
 Regla central:
@@ -166,9 +189,10 @@ bootstrap ownership
     != process running
     != TLS/HMAC control authentication
     != backend HEALTHY
+    != capacity reserved
 ```
 
-Y para B.2 específicamente:
+Y para el side effect de arranque:
 
 ```text
 fencing comparison
@@ -176,4 +200,4 @@ fencing comparison
 = one atomic actuator/orchestrator decision
 ```
 
-Un pre-check Redis separado no autoriza un side effect posterior sin fencing.
+No activar el nuevo cold-start productivo mediante un fallback local o un provider ficticio. El siguiente paso real requiere seleccionar la infraestructura de orchestration y demostrar sus garantías de fencing/idempotencia.
