@@ -1,5 +1,6 @@
 package com.theosfera.proxy.coordination.distributed.redis;
 
+import com.theosfera.proxy.coordination.BackendBootstrapLeasePolicy;
 import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.CoordinationStateRegistry;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
@@ -186,6 +187,24 @@ public final class RedisCoordinationRuntime {
             return new RedisBackendCapacityCoordinator(
                     connection.async(),
                     nonNullTtl
+            );
+        }
+    }
+
+    public RedisBackendBootstrapCoordinator createBackendBootstrapCoordinator(
+            BackendBootstrapLeasePolicy leasePolicy
+    ) {
+        BackendBootstrapLeasePolicy nonNullPolicy = Objects.requireNonNull(
+                leasePolicy,
+                "leasePolicy cannot be null"
+        );
+        synchronized (lock) {
+            requireHealthyRuntime(
+                    "Redis backend bootstrap coordinator requires a healthy runtime"
+            );
+            return new RedisBackendBootstrapCoordinator(
+                    connection.async(),
+                    nonNullPolicy.ttl()
             );
         }
     }

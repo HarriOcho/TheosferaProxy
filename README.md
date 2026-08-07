@@ -1,26 +1,64 @@
 # TheosferaProxy
 
-Proxy y coordinador global de la network Theosfera.
+Proxy Velocity y coordinador global de la network Theosfera.
 
-## Propósito
+## Estado actual
 
-TheosferaProxy es el componente Velocity encargado de coordinar servicios
-globales entre Auth, Lobby, Skyblock y futuras modalidades.
+TheosferaProxy ya no es una fundación inicial. El runtime productivo incluye coordinación distribuida y superficies cross-server reales.
 
-Responsabilidades previstas:
+Capacidades principales fusionadas en `main`:
 
-- presencia global;
-- servidor y modalidad actual;
-- sesiones autenticadas;
-- movimiento entre servidores;
-- comunicación con TheosferaCore;
-- amigos;
-- parties;
-- escuadrones;
-- eventos distribuidos.
+- TheosferaProtocol v2;
+- Backend Control Channel persistente TLS 1.3 + HMAC-SHA256;
+- identidad live de backends desde la sesión de control autenticada;
+- health PING/PONG sobre Control Channel, sin player carrier;
+- Redis Coordination Runtime;
+- Proxy membership con TTL, renew y fencing;
+- player-session ownership Redis;
+- player presence Redis;
+- occupancy global por backend;
+- capacity reservations Redis atómicas;
+- transferencias distribuidas con retry y exact handoff;
+- Auth → Lobby;
+- `/hub` y `/lobby`;
+- `/hub switch` y `/lobby switch`;
+- backend kick failover fail-closed;
+- hardening de raw Velocity `/server`;
+- observabilidad administrativa mediante `/theosferaproxy status`.
 
-La lógica específica de Paper, mundos o modalidades no pertenece a este
-repositorio.
+Rama activa:
+
+```text
+feature/distributed-backend-bootstrap
+```
+
+En esa rama está implementado el foundation A.1–A.8 de ownership distribuido para bootstrap de backends. Ese foundation todavía no arranca procesos reales; el siguiente milestone después de su merge es diseñar el `Backend Orchestration Provider`.
+
+## Arquitectura
+
+Principios centrales:
+
+- fail-closed;
+- ownership y fencing explícitos;
+- cleanup exact-match;
+- Redis como coordinación temporal, no base durable de perfiles/progreso;
+- sin fallback local silencioso cuando Redis es autoridad;
+- sin I/O bloqueante de red/Redis en threads de Velocity;
+- identidad, health, capacity, bootstrap ownership y process state son conceptos separados;
+- Plugin Messaging queda reservado para tráfico player-scoped;
+- backend identity y health pertenecen al Control Channel autenticado;
+- no introducir lógica Paper/Bukkit o específica de una modalidad en el Proxy.
+
+Invariante útil:
+
+```text
+TCP connected
+    != authenticated control identity
+    != HEALTHY
+    != bootstrap ownership
+    != capacity reserved
+    != player ready
+```
 
 ## Tecnología
 
@@ -28,53 +66,61 @@ repositorio.
 - Gradle Kotlin DSL
 - Gradle Wrapper
 - Velocity API 3.5.0-SNAPSHOT
+- Lettuce Redis
+- JUnit 5 / Mockito
+- Testcontainers para integración Redis
 - GitHub Actions
-- Gradle Configuration Cache
+- Shadow JAR
 
 ## Construcción
 
-### Windows PowerShell
+Windows PowerShell:
 
 ```powershell
+.\gradlew.bat test --no-daemon
 .\gradlew.bat clean build --no-daemon
+git diff --check
 ```
 
-### Linux o macOS
+Linux/macOS:
 
 ```bash
+./gradlew test --no-daemon
 ./gradlew clean build --no-daemon
+git diff --check
 ```
 
-El JAR se genera en:
+Artefacto:
 
 ```text
-build/libs/
+build/libs/TheosferaProxy-0.1.0-SNAPSHOT.jar
 ```
 
-## Flujo de desarrollo
+## Documentación
 
-1. Actualizar `main`.
-2. Crear una rama enfocada.
-3. Implementar un único cambio.
-4. Ejecutar el build.
-5. Revisar el diff.
-6. Crear un commit descriptivo.
-7. Hacer push.
-8. Abrir un Pull Request.
-9. Esperar GitHub Actions.
-10. Fusionar mediante Squash and merge.
+Antes de modificar el proyecto:
 
-Consulta `AGENTS.md` y `CONTRIBUTING.md` antes de modificar el
-proyecto.
+1. `AGENTS.md`
+2. `CONTRIBUTING.md`
+3. `PROJECT_STATE.md`
+4. `docs/README.md`
+5. checkpoint del milestone que se va a tocar
 
-## Estado inicial
+`PROJECT_STATE.md` describe el estado vigente. Los checkpoints bajo `docs/` conservan evidencia runtime, decisiones, hashes y contexto histórico específico.
 
-La fundación Velocity contiene únicamente:
+## Responsabilidades previstas a futuro
 
-- metadata mediante `@Plugin`;
-- inyección de `ProxyServer`, logger y directorio de datos;
-- eventos de inicialización y apagado;
-- build compatible con Java 21.
+Theosfera contempla sistemas globales como Maintenance/Drain, amigos, parties, escuadrones, matchmaking y otras operaciones cross-server, pero su aparición en la visión del proyecto **no significa que su diseño interno esté aprobado**.
 
-Redis, base de datos, comunicación Core–Proxy y sistemas sociales se
-implementarán en ramas independientes.
+Cada sistema importante debe planificarse primero: owner, source of truth, persistencia, coordinación, fallos, seguridad, dependencias y runtime acceptance.
+
+## Seguridad
+
+No versionar:
+
+- secretos HMAC;
+- claves privadas;
+- passwords de keystore/truststore;
+- credenciales Redis productivas;
+- tokens de providers/orchestrators;
+- datos sensibles de jugadores.
