@@ -613,7 +613,7 @@ public final class TheosferaProxy {
         backendKickFailoverListener = new BackendKickFailoverListener(
                 new BackendKickFailoverService(
                         sessionRegistry,
-                        controlIdentityProvider,
+                        authorizationPolicy,
                         kickFailoverCoordinator
                 )
         );
