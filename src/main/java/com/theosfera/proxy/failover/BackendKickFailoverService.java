@@ -2,7 +2,7 @@ package com.theosfera.proxy.failover;
 
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.proxy.backend.BackendIdentity;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.proxy.Player;
@@ -26,21 +26,21 @@ public final class BackendKickFailoverService {
             );
 
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
-    private final BackendIdentityRegistry identityRegistry;
+    private final BackendIdentityProvider identityProvider;
     private final DistributedBackendKickFailoverCoordinator coordinator;
 
     public BackendKickFailoverService(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
-            BackendIdentityRegistry identityRegistry,
+            BackendIdentityProvider identityProvider,
             DistributedBackendKickFailoverCoordinator coordinator
     ) {
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
                 "sessionRegistry cannot be null"
         );
-        this.identityRegistry = Objects.requireNonNull(
-                identityRegistry,
-                "identityRegistry cannot be null"
+        this.identityProvider = Objects.requireNonNull(
+                identityProvider,
+                "identityProvider cannot be null"
         );
         this.coordinator = Objects.requireNonNull(
                 coordinator,
@@ -73,7 +73,7 @@ public final class BackendKickFailoverService {
                 .getName();
 
         Optional<BackendIdentity> identityOptional =
-                identityRegistry.find(failedServerName);
+                identityProvider.find(failedServerName);
 
         if (identityOptional.isEmpty()) {
             return completed(disconnect(nonNullEvent));
