@@ -1,6 +1,5 @@
 package com.theosfera.proxy.backend;
 
-import com.theosfera.protocol.message.payload.BackendHelloPayload;
 import com.theosfera.protocol.message.payload.BackendType;
 
 import java.util.LinkedHashMap;
@@ -58,35 +57,29 @@ public final class BackendAuthorizationPolicy {
 
     public Optional<BackendIdentity> authorize(
             String sourceServerName,
-            BackendHelloPayload helloPayload
+            BackendType backendType
     ) {
-        Objects.requireNonNull(
+        String nonNullSourceServerName = Objects.requireNonNull(
                 sourceServerName,
                 "sourceServerName cannot be null"
         );
-        Objects.requireNonNull(
-                helloPayload,
-                "helloPayload cannot be null"
+        BackendType nonNullBackendType = Objects.requireNonNull(
+                backendType,
+                "backendType cannot be null"
         );
 
-        if (!sourceServerName.equals(
-                helloPayload.backendName()
-        )) {
-            return Optional.empty();
-        }
-
         BackendPolicyEntry expectedEntry =
-                backendEntries.get(sourceServerName);
+                backendEntries.get(nonNullSourceServerName);
 
         if (expectedEntry == null
                 || expectedEntry.backendType()
-                != helloPayload.backendType()) {
+                != nonNullBackendType) {
             return Optional.empty();
         }
 
         return Optional.of(
                 new BackendIdentity(
-                        sourceServerName,
+                        nonNullSourceServerName,
                         expectedEntry.backendType()
                 )
         );
