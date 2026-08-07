@@ -24,7 +24,7 @@ class ProtocolMessageDecoderTest {
     void decodesRegisteredProtocolMessage() {
         String json = """
                 {
-                  "version": 1,
+                  "version": 2,
                   "type": "PING",
                   "requestId": "417e98b4-74a1-467e-b453-a15be3af8996",
                   "timestamp": 1750000000000,
@@ -55,7 +55,7 @@ class ProtocolMessageDecoderTest {
     void rejectsUnknownProtocolMessage() {
         String json = """
                 {
-                  "version": 1,
+                  "version": 2,
                   "type": "UNKNOWN_MESSAGE",
                   "requestId": "417e98b4-74a1-467e-b453-a15be3af8996",
                   "timestamp": 1750000000000,
