@@ -45,6 +45,14 @@ Para continuar desarrollo:
   - TTL/renew lifecycle;
   - frontera previa al Backend Orchestration Provider.
 
+- `BACKEND_ORCHESTRATION_PROVIDER_DESIGN.md`
+  - milestone activo en `feature/backend-orchestration-provider`;
+  - B.1 provider contracts validado;
+  - B.2 trusted target mapping + atomic fenced actuator strategy;
+  - `BackendBootstrapLease` exacto atraviesa la frontera del side effect;
+  - `ACCEPTED` no equivale a backend ready;
+  - B.3 startup operation lifecycle es el siguiente incremento.
+
 ## Runtime acceptance y superficies productivas
 
 - `REDIS_LOBBY_TRANSFER_CAPACITY_CHECKPOINT.md`
@@ -143,13 +151,15 @@ Rama activa:
 feature/backend-orchestration-provider
 ```
 
-Siguiente frontera técnica:
+Estado del milestone:
 
 ```text
-Backend Orchestration Provider
+B.1 provider contracts                    VALIDATED
+B.2 fenced provider / actuator strategy   PENDING LOCAL GATE
+B.3 startup operation lifecycle           NEXT
 ```
 
-Regla central del milestone activo:
+Regla central:
 
 ```text
 bootstrap ownership
@@ -158,4 +168,12 @@ bootstrap ownership
     != backend HEALTHY
 ```
 
-El provider debe recibir la autoridad/fencing de bootstrap suficiente para impedir side effects de owners stale.
+Y para B.2 específicamente:
+
+```text
+fencing comparison
++ process-start side-effect acceptance
+= one atomic actuator/orchestrator decision
+```
+
+Un pre-check Redis separado no autoriza un side effect posterior sin fencing.
