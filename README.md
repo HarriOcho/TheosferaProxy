@@ -24,15 +24,26 @@ Capacidades principales fusionadas en `main`:
 - `/hub switch` y `/lobby switch`;
 - backend kick failover fail-closed;
 - hardening de raw Velocity `/server`;
+- Distributed Backend Bootstrap Foundation A.1–A.8, fusionado mediante PR `#74`;
 - observabilidad administrativa mediante `/theosferaproxy status`.
 
-Rama activa:
+Rama técnica activa:
 
 ```text
-feature/distributed-backend-bootstrap
+feature/backend-orchestration-provider
 ```
 
-En esa rama está implementado el foundation A.1–A.8 de ownership distribuido para bootstrap de backends. Ese foundation todavía no arranca procesos reales; el siguiente milestone después de su merge es diseñar el `Backend Orchestration Provider`.
+Milestone activo: `Backend Orchestration Provider`.
+
+Estado incremental:
+
+```text
+B.1 provider contracts                    VALIDATED
+B.2 fenced provider / actuator strategy   PENDING LOCAL GATE
+B.3 startup operation lifecycle           NEXT
+```
+
+Todavía no se arrancan procesos reales ni se altera el flujo productivo de cold startup.
 
 ## Arquitectura
 
@@ -56,9 +67,20 @@ TCP connected
     != authenticated control identity
     != HEALTHY
     != bootstrap ownership
+    != process-start accepted
     != capacity reserved
     != player ready
 ```
+
+Para orchestration, además:
+
+```text
+fencing comparison
++ process-start side-effect acceptance
+= atomic actuator/orchestrator decision
+```
+
+Un pre-check remoto separado seguido de un start unfenced no es una implementación válida.
 
 ## Tecnología
 
@@ -104,13 +126,18 @@ Antes de modificar el proyecto:
 2. `CONTRIBUTING.md`
 3. `PROJECT_STATE.md`
 4. `docs/README.md`
-5. checkpoint del milestone que se va a tocar
+5. checkpoint/diseño del milestone que se va a tocar
 
-`PROJECT_STATE.md` describe el estado vigente. Los checkpoints bajo `docs/` conservan evidencia runtime, decisiones, hashes y contexto histórico específico.
+`PROJECT_STATE.md` describe el estado consolidado vigente. Durante un milestone activo, `docs/README.md`, el diseño específico de la rama y el código real deben revisarse también antes de asumir el punto incremental exacto.
+
+Diseños activos/futuros relevantes:
+
+- `docs/BACKEND_ORCHESTRATION_PROVIDER_DESIGN.md` — milestone técnico activo;
+- `docs/ADMINISTRATIVE_PLAYER_TRANSFER_DESIGN.md` — feature futura aprobada para recordar: raw `/send` hardening + `/theosfera send <player> <BackendType>` con routing automático, autenticación obligatoria y TAB permission-aware/stealth.
 
 ## Responsabilidades previstas a futuro
 
-Theosfera contempla sistemas globales como Maintenance/Drain, amigos, parties, escuadrones, matchmaking y otras operaciones cross-server, pero su aparición en la visión del proyecto **no significa que su diseño interno esté aprobado**.
+Theosfera contempla sistemas globales como Maintenance/Drain, Administrative Player Transfer, amigos, parties, escuadrones, matchmaking y otras operaciones cross-server, pero su aparición en la visión del proyecto **no significa que su implementación interna esté terminada**.
 
 Cada sistema importante debe planificarse primero: owner, source of truth, persistencia, coordinación, fallos, seguridad, dependencias y runtime acceptance.
 
