@@ -1,8 +1,11 @@
 package com.theosfera.proxy.coordination.velocity;
 
+import com.theosfera.proxy.coordination.BackendBootstrapLeasePolicy;
+import com.theosfera.proxy.coordination.BackendBootstrapOwnershipLifecycleFactory;
 import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.CoordinationStateRegistry;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
+import com.theosfera.proxy.coordination.ProxyMembershipLifecycle;
 import com.theosfera.proxy.coordination.distributed.redis.RedisBackendCapacityCoordinator;
 import com.theosfera.proxy.coordination.distributed.redis.RedisBackendOccupancyCoordinator;
 import com.theosfera.proxy.coordination.distributed.redis.RedisCoordinationConfig;
@@ -102,6 +105,36 @@ public final class VelocityRedisCoordinationBootstrap {
             Duration reservationTtl
     ) {
         return requireRuntime().createBackendCapacityCoordinator(reservationTtl);
+    }
+
+    public BackendBootstrapOwnershipLifecycleFactory
+    createBackendBootstrapOwnershipFactory(
+            BackendBootstrapLeasePolicy leasePolicy
+    ) {
+        BackendBootstrapLeasePolicy nonNullPolicy = Objects.requireNonNull(
+                leasePolicy,
+                "leasePolicy cannot be null"
+        );
+        RedisCoordinationRuntime currentRuntime = requireRuntime();
+        ProxyMembershipLifecycle membershipLifecycle =
+                currentRuntime.membershipLifecycle();
+
+        if (membershipLifecycle == null) {
+            throw new IllegalStateException(
+                    "backend bootstrap ownership requires active Proxy membership"
+            );
+        }
+
+        return new BackendBootstrapOwnershipLifecycleFactory(
+                currentRuntime.createBackendBootstrapCoordinator(nonNullPolicy),
+                membershipLifecycle,
+                new VelocityBackendBootstrapRenewalScheduler(
+                        proxyServer,
+                        plugin
+                ),
+                clock,
+                nonNullPolicy
+        );
     }
 
     public RedisCoordinationConfig config() {
