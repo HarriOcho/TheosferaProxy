@@ -1,8 +1,8 @@
 package com.theosfera.proxy.failover;
 
 import com.theosfera.protocol.message.payload.BackendType;
-import com.theosfera.proxy.backend.BackendIdentity;
-import com.theosfera.proxy.backend.BackendIdentityProvider;
+import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
 import com.velocitypowered.api.proxy.Player;
@@ -26,21 +26,21 @@ public final class BackendKickFailoverService {
             );
 
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
-    private final BackendIdentityProvider identityProvider;
+    private final BackendAuthorizationPolicy authorizationPolicy;
     private final DistributedBackendKickFailoverCoordinator coordinator;
 
     public BackendKickFailoverService(
             AuthenticatedPlayerSessionRegistry sessionRegistry,
-            BackendIdentityProvider identityProvider,
+            BackendAuthorizationPolicy authorizationPolicy,
             DistributedBackendKickFailoverCoordinator coordinator
     ) {
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
                 "sessionRegistry cannot be null"
         );
-        this.identityProvider = Objects.requireNonNull(
-                identityProvider,
-                "identityProvider cannot be null"
+        this.authorizationPolicy = Objects.requireNonNull(
+                authorizationPolicy,
+                "authorizationPolicy cannot be null"
         );
         this.coordinator = Objects.requireNonNull(
                 coordinator,
@@ -72,19 +72,15 @@ public final class BackendKickFailoverService {
                 .getServerInfo()
                 .getName();
 
-        Optional<BackendIdentity> identityOptional =
-                identityProvider.find(failedServerName);
+        BackendPolicyEntry sourcePolicy = authorizationPolicy
+                .backendEntries()
+                .get(failedServerName);
 
-        if (identityOptional.isEmpty()) {
+        if (sourcePolicy == null) {
             return completed(disconnect(nonNullEvent));
         }
 
-        BackendIdentity identity = identityOptional.orElseThrow();
-        if (!identity.serverName().equals(failedServerName)) {
-            return completed(disconnect(nonNullEvent));
-        }
-
-        BackendType sourceType = identity.backendType();
+        BackendType sourceType = sourcePolicy.backendType();
         if (sourceType == BackendType.AUTH) {
             return completed(disconnect(nonNullEvent));
         }
