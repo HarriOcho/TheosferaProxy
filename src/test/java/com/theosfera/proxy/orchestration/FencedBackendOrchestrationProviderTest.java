@@ -5,9 +5,12 @@ import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
 import com.theosfera.proxy.coordination.ProxyMembershipLease;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -168,6 +171,69 @@ class FencedBackendOrchestrationProviderTest {
     }
 
     @Test
+    void atomicActuatorContractRejectsStaleAndConflictingAuthority() {
+        BackendStartTarget target =
+                new BackendStartTarget(
+                        "lobby-2",
+                        "orchestrator-target-17"
+                );
+        AtomicTestActuator actuator = new AtomicTestActuator();
+        FencedBackendOrchestrationProvider provider =
+                new FencedBackendOrchestrationProvider(
+                        backendName -> Optional.of(target),
+                        actuator
+                );
+
+        BackendBootstrapLease lease41 = bootstrapLease(
+                41L,
+                UUID.fromString(
+                        "00000000-0000-0000-0000-000000000002"
+                )
+        );
+        BackendBootstrapLease stale40 = bootstrapLease(
+                40L,
+                UUID.fromString(
+                        "00000000-0000-0000-0000-000000000004"
+                )
+        );
+        BackendBootstrapLease conflicting41 = bootstrapLease(
+                41L,
+                UUID.fromString(
+                        "00000000-0000-0000-0000-000000000005"
+                )
+        );
+        BackendBootstrapLease lease42 = bootstrapLease(
+                42L,
+                UUID.fromString(
+                        "00000000-0000-0000-0000-000000000006"
+                )
+        );
+
+        assertEquals(
+                BackendStartResult.Status.ACCEPTED,
+                start(provider, lease41).status()
+        );
+        assertEquals(
+                BackendStartResult.Status.ACCEPTED,
+                start(provider, lease41).status()
+        );
+        assertEquals(
+                BackendStartResult.Status.STALE_AUTHORITY,
+                start(provider, stale40).status()
+        );
+        assertEquals(
+                BackendStartResult.Status.CONFLICT,
+                start(provider, conflicting41).status()
+        );
+        assertEquals(
+                BackendStartResult.Status.ACCEPTED,
+                start(provider, lease42).status()
+        );
+
+        assertEquals(2, actuator.sideEffectCount());
+    }
+
+    @Test
     void targetRejectsBlankOrControlCharacterReferences() {
         assertThrows(
                 IllegalArgumentException.class,
@@ -180,6 +246,15 @@ class FencedBackendOrchestrationProviderTest {
                         "target\nnext-command"
                 )
         );
+    }
+
+    private static BackendStartResult start(
+            FencedBackendOrchestrationProvider provider,
+            BackendBootstrapLease lease
+    ) {
+        return provider.requestStart(new BackendStartRequest(lease))
+                .toCompletableFuture()
+                .join();
     }
 
     private static void assertMapped(
@@ -210,6 +285,18 @@ class FencedBackendOrchestrationProviderTest {
     private static BackendBootstrapLease bootstrapLease(
             long bootstrapFencingToken
     ) {
+        return bootstrapLease(
+                bootstrapFencingToken,
+                UUID.fromString(
+                        "00000000-0000-0000-0000-000000000002"
+                )
+        );
+    }
+
+    private static BackendBootstrapLease bootstrapLease(
+            long bootstrapFencingToken,
+            UUID requestId
+    ) {
         ProxyMembershipLease membershipLease =
                 new ProxyMembershipLease(
                         new ProxyInstanceIdentity(
@@ -223,14 +310,89 @@ class FencedBackendOrchestrationProviderTest {
 
         return new BackendBootstrapLease(
                 "lobby-2",
-                UUID.fromString(
-                        "00000000-0000-0000-0000-000000000002"
-                ),
+                requestId,
                 UUID.fromString(
                         "00000000-0000-0000-0000-000000000003"
                 ),
                 membershipLease,
                 bootstrapFencingToken
         );
+    }
+
+    private static final class AtomicTestActuator
+            implements BackendStartActuator {
+
+        private final Map<String, AcceptedOperation> acceptedByBackend =
+                new HashMap<>();
+        private int sideEffectCount;
+
+        @Override
+        public synchronized CompletionStage<BackendStartActuationResult>
+        startIfCurrent(BackendStartActuationRequest request) {
+            String backendName = request.target().backendName();
+            AcceptedOperation incoming = AcceptedOperation.from(request);
+            AcceptedOperation current = acceptedByBackend.get(backendName);
+
+            if (current == null
+                    || incoming.bootstrapFencingToken()
+                    > current.bootstrapFencingToken()) {
+                acceptedByBackend.put(backendName, incoming);
+                sideEffectCount++;
+                return completed(
+                        BackendStartActuationResult.Status.ACCEPTED
+                );
+            }
+
+            if (incoming.bootstrapFencingToken()
+                    < current.bootstrapFencingToken()) {
+                return completed(
+                        BackendStartActuationResult.Status.STALE_AUTHORITY
+                );
+            }
+
+            if (incoming.equals(current)) {
+                return completed(
+                        BackendStartActuationResult.Status.ACCEPTED
+                );
+            }
+
+            return completed(
+                    BackendStartActuationResult.Status.CONFLICT
+            );
+        }
+
+        int sideEffectCount() {
+            return sideEffectCount;
+        }
+
+        private static CompletionStage<BackendStartActuationResult> completed(
+                BackendStartActuationResult.Status status
+        ) {
+            return CompletableFuture.completedFuture(
+                    BackendStartActuationResult.of(status)
+            );
+        }
+    }
+
+    private record AcceptedOperation(
+            String targetReference,
+            UUID requestId,
+            UUID playerId,
+            ProxyMembershipLease ownerMembership,
+            long bootstrapFencingToken
+    ) {
+
+        private static AcceptedOperation from(
+                BackendStartActuationRequest request
+        ) {
+            BackendBootstrapLease lease = request.bootstrapLease();
+            return new AcceptedOperation(
+                    request.target().targetReference(),
+                    lease.requestId(),
+                    lease.playerId(),
+                    lease.ownerMembership(),
+                    lease.fencingToken()
+            );
+        }
     }
 }
