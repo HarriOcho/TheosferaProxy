@@ -4,18 +4,15 @@ import com.theosfera.protocol.ProtocolVersion;
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.message.ProtocolEnvelope;
 import com.theosfera.protocol.message.ProtocolMessageType;
-import com.theosfera.protocol.message.payload.BackendHelloPayload;
 import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.PlayerServerReadyPayload;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
-import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendIdentity;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
-import com.theosfera.proxy.backend.BackendPolicyEntry;
+import com.theosfera.proxy.control.BackendControlIdentityProvider;
+import com.theosfera.proxy.control.BackendControlSessionRegistry;
 import com.theosfera.proxy.coordination.PlayerSessionLease;
 import com.theosfera.proxy.coordination.ProxyInstanceIdentity;
-import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
@@ -41,7 +38,6 @@ import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -67,7 +63,7 @@ class ProtocolColdBackendBootstrapFlowTest {
             );
 
     @Test
-    void bootstrapsEmptyBackendThenAcceptsHandshakeAndPresence() {
+    void bootstrapsEmptyBackendThenAcceptsControlIdentityAndPresence() {
         Logger logger = mock(Logger.class);
         ProxyServer proxyServer = mock(ProxyServer.class);
 
@@ -77,28 +73,17 @@ class ProtocolColdBackendBootstrapFlowTest {
         PlayerTransferExecutor transferExecutor =
                 mock(PlayerTransferExecutor.class);
 
-        BackendAuthorizationPolicy policy =
-                new BackendAuthorizationPolicy(
-                        Map.of(
-                                "lobby-1",
-                                new BackendPolicyEntry(
-                                        BackendType.LOBBY,
-                                        100,
-                                        100
-                                ),
-                                "skyblock-1",
-                                new BackendPolicyEntry(
-                                        BackendType.SKYBLOCK,
-                                        200,
-                                        100
-                                )
-                        )
+        BackendControlSessionRegistry controlSessionRegistry =
+                new BackendControlSessionRegistry();
+        BackendControlIdentityProvider identityProvider =
+                new BackendControlIdentityProvider(
+                        controlSessionRegistry
                 );
 
-        BackendIdentityRegistry identityRegistry =
-                new BackendIdentityRegistry();
-
-        identityRegistry.register(
+        controlSessionRegistry.register(
+                UUID.fromString(
+                        "aaaaaaaa-1111-2222-3333-444444444444"
+                ),
                 new BackendIdentity(
                         "lobby-1",
                         BackendType.LOBBY
@@ -212,20 +197,13 @@ class ProtocolColdBackendBootstrapFlowTest {
         ProtocolMessageDispatcher dispatcher =
                 new ProtocolMessageDispatcher(
                         List.of(
-                                new BackendHelloMessageHandler(
-                                        policy,
-                                        identityRegistry,
-                                        bootstrapRegistry,
-                                        messageSender,
-                                        logger
-                                ),
                                 new PlayerServerReadyMessageHandler(
                                         presenceRegistry,
                                         logger
                                 ),
                                 new TransferRequestMessageHandler(
                                         proxyServer,
-                                        identityRegistry,
+                                        identityProvider,
                                         sessionRegistry,
                                         presenceRegistry,
                                         retryCoordinator,
@@ -239,7 +217,7 @@ class ProtocolColdBackendBootstrapFlowTest {
                 new ProtocolMessageListener(
                         logger,
                         new BackendMessageAuthorizer(
-                                identityRegistry
+                                identityProvider
                         ),
                         dispatcher
                 );
@@ -280,26 +258,30 @@ class ProtocolColdBackendBootstrapFlowTest {
         );
 
         assertTrue(
-                identityRegistry
+                identityProvider
                         .find("skyblock-1")
                         .isEmpty()
         );
 
-        send(
-                listener,
-                skyblockSource,
-                ProtocolEnvelope.create(
-                        ProtocolMessageType.BACKEND_HELLO,
-                        new BackendHelloPayload(
-                                "skyblock-1",
-                                BackendType.SKYBLOCK
-                        )
-                )
+        BackendIdentity skyblockIdentity =
+                new BackendIdentity(
+                        "skyblock-1",
+                        BackendType.SKYBLOCK
+                );
+
+        controlSessionRegistry.register(
+                UUID.fromString(
+                        "bbbbbbbb-1111-2222-3333-444444444444"
+                ),
+                skyblockIdentity
+        );
+        bootstrapRegistry.removeByTarget(
+                skyblockIdentity.serverName()
         );
 
         assertEquals(
                 BackendType.SKYBLOCK,
-                identityRegistry
+                identityProvider
                         .find("skyblock-1")
                         .orElseThrow()
                         .backendType()
