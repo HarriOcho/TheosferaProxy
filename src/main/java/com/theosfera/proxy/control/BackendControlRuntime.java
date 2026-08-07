@@ -4,6 +4,7 @@ import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.transport.ProtocolFrameCodec;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import org.slf4j.Logger;
 
@@ -21,6 +22,7 @@ public final class BackendControlRuntime implements AutoCloseable {
     private final BackendControlConfig config;
     private final ControlAuthenticationService authenticationService;
     private final BackendControlSessionRegistry sessionRegistry;
+    private final BackendControlIdentityProvider identityProvider;
     private final BackendControlMessageSender messageSender;
     private final FileBackendControlSecretProvider secretProvider;
     private final ProxyControlServer server;
@@ -46,6 +48,9 @@ public final class BackendControlRuntime implements AutoCloseable {
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
                 "sessionRegistry cannot be null"
+        );
+        this.identityProvider = new BackendControlIdentityProvider(
+                this.sessionRegistry
         );
         this.messageSender = Objects.requireNonNull(
                 messageSender,
@@ -301,6 +306,10 @@ public final class BackendControlRuntime implements AutoCloseable {
 
     public BackendControlMessageSender requireMessageSender() {
         return messageSender;
+    }
+
+    public BackendIdentityProvider requireIdentityProvider() {
+        return identityProvider;
     }
 
     public synchronized boolean started() {
