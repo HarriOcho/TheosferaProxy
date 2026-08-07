@@ -7,7 +7,6 @@ import com.theosfera.proxy.backend.BackendHealthCheckTask;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
-import com.theosfera.proxy.backend.BackendPingConnectionResolver;
 import com.theosfera.proxy.backend.BackendPingEmitter;
 import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
 import com.theosfera.proxy.backend.PendingBackendPingRegistry;
@@ -17,6 +16,7 @@ import com.theosfera.proxy.command.LobbyTransferService;
 import com.theosfera.proxy.command.ProxyStatusCommand;
 import com.theosfera.proxy.command.ProxyStatusCommandRegistration;
 import com.theosfera.proxy.command.RawServerCommandHardening;
+import com.theosfera.proxy.control.BackendControlPingTransport;
 import com.theosfera.proxy.control.BackendControlRuntime;
 import com.theosfera.proxy.coordination.CoordinationState;
 import com.theosfera.proxy.coordination.PlayerPresenceCoordinator;
@@ -35,10 +35,8 @@ import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
 import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
 import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
-import com.theosfera.proxy.messaging.handler.PingMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
-import com.theosfera.proxy.messaging.handler.PongMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
 import com.theosfera.proxy.observability.BackendOperationalSnapshotService;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
@@ -409,6 +407,9 @@ public final class TheosferaProxy {
 
         operationalSurfaceActive = false;
 
+        if (healthCheckScheduler != null) {
+            healthCheckScheduler.stop();
+        }
         if (backendControlRuntime != null) {
             backendControlRuntime.stop();
         }
@@ -417,9 +418,6 @@ public final class TheosferaProxy {
         }
         if (sessionRenewalService != null) {
             sessionRenewalService.stop();
-        }
-        if (healthCheckScheduler != null) {
-            healthCheckScheduler.stop();
         }
         if (protocolMessageListener != null) {
             proxyServer.getEventManager().unregisterListener(this, protocolMessageListener);
@@ -531,17 +529,19 @@ public final class TheosferaProxy {
         backendControlRuntime = BackendControlRuntime.create(
                 dataDirectory,
                 authorizationPolicy,
+                pendingPingRegistry,
+                healthRegistry,
                 logger
         );
         BackendMessageAuthorizer messageAuthorizer = new BackendMessageAuthorizer(identityRegistry);
         ProtocolMessageSender messageSender = new ProtocolMessageSender();
-        BackendPingConnectionResolver pingConnectionResolver = new BackendPingConnectionResolver(proxyServer);
         BackendPingEmitter pingEmitter = new BackendPingEmitter(
                 Clock.systemUTC(),
                 UUID::randomUUID,
                 pendingPingRegistry,
-                pingConnectionResolver,
-                messageSender,
+                new BackendControlPingTransport(
+                        backendControlRuntime.requireMessageSender()
+                ),
                 logger
         );
         BackendHealthCheckTask healthCheckTask = new BackendHealthCheckTask(
@@ -644,8 +644,6 @@ public final class TheosferaProxy {
                                 messageSender,
                                 logger
                         ),
-                        new PingMessageHandler(messageSender, logger),
-                        new PongMessageHandler(pendingPingRegistry, healthRegistry, logger),
                         new PlayerAuthenticatedMessageHandler(
                                 sessionCoordinator,
                                 sessionLeaseBindingRegistry,

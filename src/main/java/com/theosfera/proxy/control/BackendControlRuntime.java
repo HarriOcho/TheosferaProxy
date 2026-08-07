@@ -3,6 +3,8 @@ package com.theosfera.proxy.control;
 import com.theosfera.protocol.codec.ProtocolJsonCodec;
 import com.theosfera.protocol.transport.ProtocolFrameCodec;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendHealthRegistry;
+import com.theosfera.proxy.backend.PendingBackendPingRegistry;
 import org.slf4j.Logger;
 
 import javax.net.ssl.SSLContext;
@@ -11,6 +13,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.util.Arrays;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Function;
 
 public final class BackendControlRuntime implements AutoCloseable {
@@ -18,6 +21,7 @@ public final class BackendControlRuntime implements AutoCloseable {
     private final BackendControlConfig config;
     private final ControlAuthenticationService authenticationService;
     private final BackendControlSessionRegistry sessionRegistry;
+    private final BackendControlMessageSender messageSender;
     private final FileBackendControlSecretProvider secretProvider;
     private final ProxyControlServer server;
     private final Logger logger;
@@ -29,6 +33,7 @@ public final class BackendControlRuntime implements AutoCloseable {
             BackendControlConfig config,
             ControlAuthenticationService authenticationService,
             BackendControlSessionRegistry sessionRegistry,
+            BackendControlMessageSender messageSender,
             FileBackendControlSecretProvider secretProvider,
             ProxyControlServer server,
             Logger logger
@@ -38,7 +43,14 @@ public final class BackendControlRuntime implements AutoCloseable {
                 "config cannot be null"
         );
         this.authenticationService = authenticationService;
-        this.sessionRegistry = sessionRegistry;
+        this.sessionRegistry = Objects.requireNonNull(
+                sessionRegistry,
+                "sessionRegistry cannot be null"
+        );
+        this.messageSender = Objects.requireNonNull(
+                messageSender,
+                "messageSender cannot be null"
+        );
         this.secretProvider = secretProvider;
         this.server = server;
         this.logger = Objects.requireNonNull(
@@ -50,11 +62,15 @@ public final class BackendControlRuntime implements AutoCloseable {
     public static BackendControlRuntime create(
             Path dataDirectory,
             BackendAuthorizationPolicy authorizationPolicy,
+            PendingBackendPingRegistry pendingPingRegistry,
+            BackendHealthRegistry healthRegistry,
             Logger logger
     ) {
         return create(
                 dataDirectory,
                 authorizationPolicy,
+                pendingPingRegistry,
+                healthRegistry,
                 logger,
                 System::getenv
         );
@@ -63,6 +79,8 @@ public final class BackendControlRuntime implements AutoCloseable {
     static BackendControlRuntime create(
             Path dataDirectory,
             BackendAuthorizationPolicy authorizationPolicy,
+            PendingBackendPingRegistry pendingPingRegistry,
+            BackendHealthRegistry healthRegistry,
             Logger logger,
             Function<String, String> environmentReader
     ) {
@@ -74,6 +92,16 @@ public final class BackendControlRuntime implements AutoCloseable {
                 Objects.requireNonNull(
                         authorizationPolicy,
                         "authorizationPolicy cannot be null"
+                );
+        PendingBackendPingRegistry nonNullPendingPingRegistry =
+                Objects.requireNonNull(
+                        pendingPingRegistry,
+                        "pendingPingRegistry cannot be null"
+                );
+        BackendHealthRegistry nonNullHealthRegistry =
+                Objects.requireNonNull(
+                        healthRegistry,
+                        "healthRegistry cannot be null"
                 );
         Logger nonNullLogger = Objects.requireNonNull(
                 logger,
@@ -91,10 +119,20 @@ public final class BackendControlRuntime implements AutoCloseable {
                 ).load();
 
         if (!config.enabled()) {
+            BackendControlSessionRegistry sessionRegistry =
+                    new BackendControlSessionRegistry();
+            BackendControlMessageSender messageSender =
+                    new BackendControlMessageSender(
+                            new ProtocolJsonCodec(),
+                            new ProtocolFrameCodec(),
+                            sessionRegistry
+                    );
+
             return new BackendControlRuntime(
                     config,
                     null,
-                    null,
+                    sessionRegistry,
+                    messageSender,
                     null,
                     null,
                     nonNullLogger
@@ -136,6 +174,12 @@ public final class BackendControlRuntime implements AutoCloseable {
             ProtocolFrameCodec frameCodec = new ProtocolFrameCodec();
             BackendControlSessionRegistry sessionRegistry =
                     new BackendControlSessionRegistry();
+            BackendControlMessageSender messageSender =
+                    new BackendControlMessageSender(
+                            jsonCodec,
+                            frameCodec,
+                            sessionRegistry
+                    );
             ControlAuthenticationService authenticationService =
                     new ControlAuthenticationService(
                             clock,
@@ -151,13 +195,25 @@ public final class BackendControlRuntime implements AutoCloseable {
                             authenticationService,
                             sessionRegistry
                     );
+            AuthenticatedControlConnectionHandler authenticatedHandler =
+                    new BoundAuthenticatedControlConnectionHandler(
+                            messageSender,
+                            new BackendControlPongHandler(
+                                    jsonCodec,
+                                    frameCodec,
+                                    sessionRegistry,
+                                    nonNullPendingPingRegistry,
+                                    nonNullHealthRegistry,
+                                    nonNullLogger
+                            )
+                    );
             ProxyControlServer server = new ProxyControlServer(
                     sslContext,
                     config.bindAddress(),
                     config.authenticationTimeout(),
                     authenticator,
                     sessionRegistry,
-                    new RejectUnexpectedControlMessageHandler(frameCodec),
+                    authenticatedHandler,
                     nonNullLogger
             );
 
@@ -165,6 +221,7 @@ public final class BackendControlRuntime implements AutoCloseable {
                     config,
                     authenticationService,
                     sessionRegistry,
+                    messageSender,
                     secretProvider,
                     server,
                     nonNullLogger
@@ -216,12 +273,11 @@ public final class BackendControlRuntime implements AutoCloseable {
         if (server != null) {
             server.stop();
         }
+        messageSender.clear();
         if (authenticationService != null) {
             authenticationService.clear();
         }
-        if (sessionRegistry != null) {
-            sessionRegistry.clear();
-        }
+        sessionRegistry.clear();
         if (secretProvider != null) {
             secretProvider.close();
         }
@@ -237,6 +293,14 @@ public final class BackendControlRuntime implements AutoCloseable {
 
     public boolean enabled() {
         return config.enabled();
+    }
+
+    public Optional<BackendControlMessageSender> messageSender() {
+        return Optional.of(messageSender);
+    }
+
+    public BackendControlMessageSender requireMessageSender() {
+        return messageSender;
     }
 
     public synchronized boolean started() {
