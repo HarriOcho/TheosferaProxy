@@ -26,6 +26,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: HarriOcho/TheosferaProtocol
+          ref: ${{ github.event_name == 'pull_request' && github.head_ref == 'feature/backend-control-identity' && 'feature/backend-control-identity' || 'main' }}
           path: TheosferaProtocol
 
       - name: Set up Java 21
