@@ -6,54 +6,71 @@ Antes de proponer o implementar cambios:
 
 1. leer este archivo;
 2. leer `CONTRIBUTING.md`;
-3. leer `PROJECT_STATE.md`;
-4. revisar `docs/README.md` y el checkpoint/diseño del milestone activo;
-5. verificar el código y estado Git reales.
+3. leer `PROJECT_STATE.md` para el último estado fusionado;
+4. leer `docs/README.md`;
+5. leer el checkpoint/diseño más reciente del milestone activo;
+6. verificar código y estado Git reales.
 
-No reconstruir el estado actual desde checkpoints antiguos si `PROJECT_STATE.md`, un checkpoint posterior, `docs/README.md` o el código fusionado ya los supersedió.
+Durante una rama activa, un checkpoint posterior puede complementar `PROJECT_STATE.md` hasta la consolidación final. No reconstruir el presente desde checkpoints históricos superseded.
 
 ## Identidad
 
-TheosferaProxy es el plugin Velocity y coordinador global de la network Theosfera.
-
-- Plataforma: Velocity 3.5.0-SNAPSHOT.
+- Proyecto: TheosferaProxy.
+- Plataforma: Velocity `3.5.0-SNAPSHOT`.
 - Java: 21.
 - Build: Gradle Kotlin DSL.
 - Package raíz: `com.theosfera.proxy`.
+- Rol: coordinador global/cross-server de Theosfera.
 
-TheosferaProxy coordina operaciones y estado temporal cross-server. No debe contener gameplay específico de Paper/Bukkit o de una modalidad.
+No introducir gameplay específico de Paper/Bukkit o de una modalidad dentro del Proxy.
 
-## Estado arquitectónico vigente
+## Estado fusionado vigente
 
-No asumir que el proyecto sigue en fase inicial.
+`main @ ddc082319243da621d4e5364d4c4957f8d088b0d` incluye PR `#74`, Distributed Backend Bootstrap Foundation A.1–A.8.
 
-El runtime actual ya incluye:
+El runtime fusionado ya incluye:
 
 - TheosferaProtocol v2;
 - Backend Control Channel TLS/HMAC;
-- identidad backend live desde control sessions autenticadas;
-- PING/PONG health por Control Channel;
-- Redis runtime;
-- Proxy membership distribuida;
+- identidad backend live desde la control session autenticada actual;
+- health PING/PONG por Control Channel;
+- Redis Coordination Runtime;
+- Proxy membership fenced;
 - player sessions Redis;
 - player presence Redis;
 - occupancy y capacity Redis;
 - transferencias distribuidas;
 - Auth → Lobby;
-- `/hub`, `/lobby`, Lobby switching;
+- `/hub`, `/lobby`, `/hub switch`, `/lobby switch`;
 - kick failover distribuido;
 - raw Velocity `/server` bloqueado para jugadores;
 - observabilidad administrativa;
-- Distributed Backend Bootstrap Foundation A.1–A.8 fusionado mediante PR `#74`.
+- distributed bootstrap ownership con TTL/renew/fencing.
 
-La rama técnica activa es:
+## Rama técnica activa
 
 ```text
 feature/backend-orchestration-provider
 ```
 
-B.1 define los contratos del provider y ya fue validado localmente.
-B.2 introduce trusted target mapping y la frontera de actuation que exige fencing atómico con la aceptación/emisión del start side effect. Todavía no existe un start real de procesos.
+Leer primero:
+
+```text
+docs/BACKEND_ORCHESTRATION_PROVIDER_PRE_RUNTIME_CHECKPOINT.md
+```
+
+Estado del milestone:
+
+```text
+B.1 provider contracts                         VALIDATED
+B.2 fenced provider / actuator strategy        VALIDATED
+B.3 startup operation lifecycle                VALIDATED
+B.4 Control Channel readiness bridge           IMPLEMENTED / LOCAL GATE PENDING
+B.5 provider-neutral cold-start foundation     IMPLEMENTED / LOCAL GATE PENDING
+B.6 real runtime acceptance                    BLOCKED ON REAL ACTUATOR
+```
+
+No existe todavía un proceso real arrancado por TheosferaProxy y el product cold path legado no se ha sustituido.
 
 ## Invariantes obligatorios
 
@@ -69,103 +86,131 @@ Esto aplica a:
 - backend health/freshness;
 - capacity;
 - bootstrap ownership;
-- side effects de orchestration.
+- orchestration side effects.
 
-Nunca introducir fallback productivo local silencioso cuando Redis es la autoridad distribuida.
+Nunca introducir fallback productivo local silencioso cuando una frontera distribuida es autoritativa.
 
-### Separación de estados
+### Estados separados
 
 Nunca confundir:
 
 ```text
 TCP connection
-TLS/HMAC authentication
-backend live identity
-backend health
-backend process state
-bootstrap ownership
-capacity reservation
-player presence/readiness
+    != TLS/HMAC authenticated control identity
+    != backend HEALTHY
+    != bootstrap ownership
+    != process state
+    != capacity reservation
+    != player readiness
 ```
-
-Uno no demuestra automáticamente al siguiente.
 
 ### Backend identity y health
 
 `BACKEND_HELLO` y `BACKEND_HELLO_ACK` están retirados.
 
-No reintroducir identidad backend mediante Plugin Messaging.
+- Backend identity proviene de la current authenticated Control Channel session.
+- PING/PONG health pertenece exclusivamente al Control Channel.
+- Plugin Messaging es player-scoped.
+- Static backend policy define nombre/tipo/capacidad/preferencia, pero no demuestra live identity ni health.
+- Una nueva generación de Control Channel debe invalidar pending PING + health name-scoped anteriores y producir su propio PONG antes de ser HEALTHY.
 
-`PING`/`PONG` de health pertenecen exclusivamente al authenticated persistent Control Channel.
-
-Plugin Messaging queda reservado para mensajes player-scoped.
-
-La static backend policy define nombre/tipo/capacidad/preferencia, pero no demuestra live identity ni health.
+No reintroducir identidad/health por Plugin Messaging.
 
 ### Redis y fencing
-
-Redis coordina estado temporal y ownership distribuido.
 
 - usar exact owner/incarnation/fencing;
 - renew exact-match;
 - release/remove exact-match;
-- un owner stale no puede mutar o borrar generaciones nuevas;
-- corrupción estructural debe fallar cerrada;
-- TTL sirve para recuperación ante crash, no como excusa para ownership ambiguo.
+- owner stale no puede mutar/borrar una generación nueva;
+- corrupción estructural falla cerrada;
+- TTL es recuperación ante crash, no permiso para ownership ambiguo;
+- Redis es coordinación temporal, no persistencia durable de perfiles/progreso.
 
-Redis no es la fuente durable de perfiles, progreso u otros datos permanentes.
+### Backend bootstrap
 
-### Concurrencia
+El bootstrap lease representa únicamente el derecho fenced de coordinar bootstrap.
 
-No bloquear threads de Velocity con:
+```text
+bootstrap lease
+    != backend identity
+    != backend health
+    != capacity reservation
+```
 
-- Redis/network I/O;
-- consultas persistentes;
-- waits arbitrarios;
-- lectura/escritura pesada.
+Foundation fusionado:
 
-Preferir fronteras asíncronas y declarar explícitamente ownership de callbacks, deadlines, races y cleanup.
+- Redis acquire/renew/release atómico;
+- membership fencing;
+- bootstrap fencing;
+- TTL 60 s / renew 20 s;
+- ownership lifecycle;
+- DEGRADED/FENCED semantics;
+- Velocity lifecycle factory.
 
-No ejecutar cierre bloqueante de clientes/conexiones desde un event loop Lettuce.
+### Orchestration B.1–B.5 foundation
 
-## Composition root
+B.1:
 
-Mantener `TheosferaProxy` enfocado en lifecycle y composición.
+- `BackendOrchestrationProvider`;
+- `BackendStartRequest` conserva el `BackendBootstrapLease` exacto;
+- resultados explícitos.
 
-- constructor injection cuando corresponda;
-- evitar global mutable state;
-- separar contratos, stores, coordinators, services, platform adapters y composition;
-- no crear god classes;
-- no meter Lua/Redis keys dentro de resolvers de producto.
+B.2:
 
-El constructor del plugin no debe realizar registro de listeners/comandos/tareas ni I/O de inicialización.
+- logical backend y orchestration target son fronteras distintas;
+- target del orchestrator debe provenir de mapping confiable, nunca de input directo del jugador/admin;
+- `BackendStartActuator.startIfCurrent(...)` debe combinar fencing + aceptación/emisión del start side effect de forma atómica;
+- Redis pre-check + unfenced start posterior es inválido por TOCTOU;
+- replay exacto es idempotente;
+- stale/conflict produce cero side effect.
 
-Usar:
+B.3:
 
-- `ProxyInitializeEvent` para startup;
-- `ProxyShutdownEvent` para teardown.
+- startup lifecycle single-use;
+- `PROVIDER_UNAVAILABLE` es retryable con bounded backoff;
+- timeout independiente del bootstrap TTL;
+- late callbacks no reviven una generación terminal;
+- `START_ACCEPTED` no equivale a readiness y conserva ownership para B.4.
 
-## Auth y player state
+B.4:
 
-Auth es un estado restringido.
+- readiness exige static policy + current control identity + HEALTHY/fresh;
+- no usar process state/TCP como readiness;
+- Control reconnect invalida old pending PING/health;
+- timeout/cancel/fencing son fail-closed;
+- exact lease replacement no autoriza liberar una generación desconocida.
 
-La autenticación global requiere adquirir un `PlayerSessionLease` Redis y vincularlo a la conexión exacta antes de considerar al jugador dueño de una sesión válida.
+B.5 foundation:
 
-Presence distribuida se publica usando el lease exacto y fencing de sesión.
+- `BackendColdStartCoordinator` compone ownership → B.3 → B.4 → exact release;
+- capacity queda fuera del cold-start coordinator;
+- `DistributedPlayerTransferTargetAllocation` ya puede representar un futuro `BOOTSTRAP_REQUIRED` pre-capacity;
+- schedulers Velocity one-shot existen para startup/readiness;
+- el product allocation/retry legado sigue intencionalmente activo hasta elegir un actuator real.
 
-Disconnect/shutdown debe respetar el orden seguro de presence cleanup y session release.
+Flujo objetivo cuando B.5 productivo se active:
 
-No habilitar features sociales o movimientos que requieran identidad global antes de autenticar al jugador.
+```text
+select cold target
+→ acquire bootstrap ownership
+→ fenced provider start
+→ renew ownership while starting
+→ current TLS/HMAC control auth
+→ fresh PONG / HEALTHY
+→ exact bootstrap release
+→ re-resolve / revalidate
+→ reserve Redis capacity
+→ register pending transfer
+→ Velocity ConnectionRequest
+→ PLAYER_SERVER_READY
+→ presence handoff / exact release
+```
 
-La futura transferencia administrativa `/theosfera send <player> <BackendType>` tampoco podrá bypassear autenticación: sesión no demostrable o inconsistente debe fallar cerrada y forzar revalidación mediante disconnect/reconnect Auth/nLogin.
+No mantener la reservation TTL de ~20 s durante backend boot.
 
-## Routing, capacity y transfers
+## Routing y transfers productivos actuales
 
-Capacity Redis ya es productiva.
-
-No reintroducir `BackendCapacityReservationRegistry` como autoridad/fallback local.
-
-Los consumers productivos incluyen:
+Capacity Redis ya es productiva para:
 
 - `TRANSFER_REQUEST`;
 - `/hub`;
@@ -173,142 +218,50 @@ Los consumers productivos incluyen:
 - `/hub switch` / `/lobby switch`;
 - backend kick failover.
 
-Las transferencias oficiales deben pasar por Theosfera y conservar:
+Raw Velocity `/server` no es una ruta válida para jugadores.
 
-- policy;
-- live backend identity;
-- health/freshness;
-- distributed capacity;
-- session ownership/fencing;
-- exact release/handoff;
-- retry semantics.
-
-Raw Velocity `/server` no es una ruta válida para jugadores y no tiene bypass de staff.
-
-Raw Velocity `/send` está planificado para hardening futuro; la superficie administrativa prevista será `/theosfera send <player> <BackendType>` con routing automático y permisos/TAB stealth. No asumir que esa feature ya está implementada.
-
-## Kick failover
-
-Mantener:
+Kick failover mantiene:
 
 - destinos `RESOLVED` solamente;
-- `BOOTSTRAP_REQUIRED` inválido para kicks;
-- cero intento de bootstrap de backend frío durante kick failover;
-- destino siempre live + HEALTHY + capacidad Redis;
-- source classification desde static policy únicamente cuando la pérdida de control del origen ya eliminó su live identity.
+- `BOOTSTRAP_REQUIRED` inválido;
+- cero bootstrap frío durante kicks;
+- destino live + HEALTHY + capacity Redis.
 
-No conservar identidad stale para resolver esa carrera.
-
-## Distributed Backend Bootstrap — foundation fusionado
-
-Foundation A.1–A.8 está fusionado en `main` mediante PR `#74`.
-
-Incluye:
-
-- public contracts;
-- Redis keyspace/store;
-- Lua atomic acquire/renew/release;
-- membership fencing;
-- bootstrap fencing;
-- TTL 60 s / renew 20 s;
-- ownership lifecycle;
-- `DEGRADED` / `FENCED` semantics;
-- async race handling;
-- Velocity scheduler;
-- lifecycle factory HEALTHY-only;
-- Redis/Testcontainers integration coverage.
-
-El bootstrap lease representa solo el derecho fenced de **coordinar** bootstrap.
-
-No prueba:
-
-- process running;
-- port readiness;
-- control authentication;
-- health;
-- capacity;
-- player readiness.
-
-## Backend Orchestration Provider — milestone activo
+## Feature administrativa futura registrada
 
 Leer:
 
 ```text
-docs/BACKEND_ORCHESTRATION_PROVIDER_DESIGN.md
+docs/ADMINISTRATIVE_PLAYER_TRANSFER_DESIGN.md
 ```
 
-B.1:
-
-- `BackendOrchestrationProvider`;
-- `BackendStartRequest` conserva el `BackendBootstrapLease` exacto;
-- resultados explícitos y fail-closed.
-
-B.2:
-
-- `BackendStartTargetResolver` separa backend lógico de target del orchestrator;
-- ningún input de jugador/admin puede convertirse directamente en target de proceso;
-- `BackendStartActuationRequest` exige target/lease del mismo backend;
-- `BackendStartActuator.startIfCurrent(...)` es la frontera que debe combinar fencing y aceptación/emisión del side effect de forma atómica;
-- un pre-check Redis separado seguido de un start unfenced es inválido por TOCTOU;
-- replay exacto debe ser idempotente;
-- autoridad stale o conflictiva debe producir cero side effects.
-
-No seleccionar todavía Docker/systemd/panel/cloud dentro de routing o transfer services.
-
-No considerar `BackendStartResult.ACCEPTED` como readiness.
-
-Cuando exista true cold startup, capacity debe reservarse después de control authentication + fresh health/revalidation; no mantener la reservation TTL actual durante el tiempo de boot.
-
-## Responsabilidades fuera del Proxy
-
-No introducir:
-
-- Bukkit/Paper gameplay;
-- mundos, entidades o inventarios;
-- mecánicas Skyblock;
-- SuperiorSkyblock2 integration;
-- `/storage` / `/workbench` de Skyblock;
-- menús de inventario de Lobby;
-- progreso específico de modalidades;
-- UI específica del cliente.
-
-## Sistemas futuros
-
-Maintenance, Drain, Administrative Player Transfer, Friends, Parties, Squads, Matchmaking, perfiles y otros sistemas previstos deben planificarse antes de escribir implementación.
-
-Definir para cada uno:
-
-- objetivo;
-- owner/plugin;
-- source of truth;
-- persistencia;
-- estado distribuido;
-- comandos/permisos/UI;
-- fallos;
-- seguridad;
-- dependencias;
-- runtime acceptance.
-
-No implementar features sociales ad-hoc porque aparezcan como visión de producto.
-
-## Flujo Git y validación
-
-No trabajar directamente sobre `main`.
-
-Antes de completar un cambio:
+Decisiones:
 
 ```text
-git diff --check
-full relevant tests
-clean build cuando corresponda
-review del diff completo
-runtime acceptance proporcional al riesgo
-working tree clean
+raw /send                             → bloquear
+/theosfera send <player> <BackendType> → superficie oficial futura
 ```
 
-Integration tests Redis usan Testcontainers; en CI la ausencia de Docker requerido debe fallar explícitamente según la política existente.
+- routing automático por policy/preference/health/capacity;
+- sesión autenticada exacta obligatoria;
+- ningún auth bypass administrativo;
+- sesión inconsistente/no demostrable → reject + controlled disconnect para revalidar Auth/nLogin;
+- cross-proxy transfer command fenced por sesión;
+- TAB y descubribilidad permission-aware/stealth;
+- sin permiso: no TAB y ejecución manual indistinguible de comando inexistente.
 
-Un build exitoso no sustituye runtime testing para cambios operacionales.
+No asumir que esta feature ya está implementada.
+
+## Concurrencia y composition root
+
+- No bloquear threads de Velocity con Redis/network I/O o waits arbitrarios.
+- Preferir fronteras asíncronas.
+- Proteger epochs/generations, callbacks tardíos, deadlines y cleanup.
+- Mantener `TheosferaProxy` enfocado en lifecycle/composición.
+- Preferir constructor injection.
+- Separar contracts, stores, coordinators, services, platform adapters y composition.
+- No meter Lua/Redis keys dentro de resolvers de producto.
+- Startup en `ProxyInitializeEvent`; teardown en `ProxyShutdownEvent`.
 
 ## Seguridad
 
@@ -320,19 +273,46 @@ Nunca versionar ni registrar:
 - secretos HMAC;
 - passwords de keystore/truststore;
 - credenciales Redis productivas;
-- tokens de orchestration providers;
+- tokens/credenciales de orchestration providers;
 - datos sensibles de jugadores.
 
-## Punto de continuación actual
+El concrete actuator futuro debe tratar targets como datos confiables, no concatenarlos en shell commands inseguros.
+
+## Validación
+
+Antes de completar un cambio:
 
 ```text
-main @ ddc0823
-Distributed Backend Bootstrap Foundation (#74)    MERGED
-Backend Orchestration Provider B.1                VALIDATED
-Backend Orchestration Provider B.2                ACTIVE / local gate pending
-Backend Orchestration Provider B.3                NEXT after B.2 gate
+git diff --check
+relevant focused tests
+full test suite
+clean build cuando corresponda
+review del diff completo
+runtime acceptance proporcional al riesgo
+working tree clean
 ```
 
-B.3 debe diseñar el startup operation lifecycle, bounded retry/timeout y fencing de callbacks tardíos. Readiness por Control Channel + HEALTHY queda para B.4.
+Un build exitoso no sustituye runtime testing para cambios operacionales.
 
-No saltar directamente a Maintenance o sistemas sociales dentro del mismo cambio técnico salvo repriorización explícita del propietario.
+## Punto exacto de continuación
+
+Primero validar localmente B.4/B.5 foundation según:
+
+```text
+docs/BACKEND_ORCHESTRATION_PROVIDER_PRE_RUNTIME_CHECKPOINT.md
+```
+
+Después:
+
+```text
+seleccionar orchestration platform real
+→ implementar trusted target resolver + fenced BackendStartActuator
+→ probar fencing/idempotency contra esa plataforma
+→ activar B.5 product cold path
+→ retirar autoridad local legacy de bootstrap del cold path
+→ B.6 runtime matrix
+→ final checkpoint
+→ PR
+```
+
+No marcar B.6 como completado ni abrir PR del milestone antes de runtime real. No saltar a Maintenance, Administrative Player Transfer o sistemas sociales salvo repriorización explícita del propietario.
