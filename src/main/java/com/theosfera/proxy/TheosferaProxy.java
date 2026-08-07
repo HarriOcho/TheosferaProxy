@@ -527,7 +527,10 @@ public final class TheosferaProxy {
                 authorizationPolicy,
                 pendingPingRegistry,
                 healthRegistry,
-                logger
+                logger,
+                identity -> bootstrapRegistry.removeByTarget(
+                        identity.serverName()
+                )
         );
         BackendIdentityProvider controlIdentityProvider =
                 backendControlRuntime.requireIdentityProvider();
