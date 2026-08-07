@@ -15,7 +15,20 @@ Active branch:
 feature/backend-orchestration-provider
 ```
 
-This document defines the provider boundary before wiring any real process-start side effect.
+Progress:
+
+```text
+B.1 provider contracts                         IMPLEMENTED + LOCALLY VALIDATED
+B.2 fenced provider / actuator strategy        IMPLEMENTED, PENDING LOCAL GATE
+B.3 startup operation lifecycle                NEXT
+B.4 readiness bridge                           PENDING
+B.5 product cold-start wiring                  PENDING
+B.6 runtime acceptance / checkpoint            PENDING
+```
+
+No real process-start side effect is wired yet.
+
+---
 
 ## Problem
 
@@ -27,7 +40,9 @@ It intentionally does **not** answer:
 
 > How is the backend process actually started?
 
-A new provider boundary is required between fenced bootstrap ownership and any platform-specific side effect such as Docker, systemd, a hosting panel, Kubernetes, a cloud API or another future orchestrator.
+A provider boundary is required between fenced bootstrap ownership and any platform-specific side effect such as Docker, systemd, a hosting panel, Kubernetes, a cloud API or another future orchestrator.
+
+---
 
 ## Core invariant
 
@@ -40,20 +55,25 @@ bootstrap ownership
     != capacity reserved
 ```
 
-The provider only handles the process-start instruction boundary.
+The provider handles only the process-start instruction boundary.
 
 Backend readiness remains authoritative through the current authenticated Backend Control Channel followed by fresh PONG/HEALTHY evidence.
 
-## Initial provider contract
+---
 
-The first increment exposes an asynchronous operation conceptually equivalent to:
+# B.1 — Provider contracts
 
-```text
-requestStart(exact BackendBootstrapLease)
-    → BackendStartResult
+## Public provider contract
+
+```java
+CompletionStage<BackendStartResult> requestStart(
+        BackendStartRequest request
+);
 ```
 
-The request carries the exact distributed bootstrap lease because that lease contains:
+`BackendStartRequest` carries the exact `BackendBootstrapLease` rather than copying its fields into a second mutable interpretation.
+
+That lease contains:
 
 - target backend name;
 - bootstrap requestId;
@@ -61,41 +81,9 @@ The request carries the exact distributed bootstrap lease because that lease con
 - exact owning `ProxyMembershipLease`;
 - monotonic bootstrap fencing token.
 
-The provider must receive this authority. Passing only a backend name would make it impossible for the side-effect boundary to distinguish a current bootstrap owner from a stale one.
+The provider therefore receives the exact authority Redis granted.
 
-## Required provider fencing semantics
-
-A concrete provider/adapter must protect start side effects against stale bootstrap generations.
-
-At minimum, for each target backend it must be able to reject a request whose bootstrap fencing token is older than the latest accepted authority for that target.
-
-Conceptually:
-
-```text
-accepted target=lobby-2 fencing=41
-later request target=lobby-2 fencing=40
-→ STALE_AUTHORITY
-→ MUST NOT start process
-```
-
-An exact replay of the same authoritative operation must be idempotent:
-
-```text
-same target
-same requestId
-same owner membership
-same bootstrap fencing
-→ safe replay
-→ no duplicate start side effect
-```
-
-The same fencing token combined with conflicting immutable operation identity is invalid and must fail closed.
-
-The provider implementation may use its own durable/transactional mechanism, an external platform primitive or another approved fencing adapter. The interface does not authorize an implementation that merely ignores the fencing token.
-
-## Start result semantics
-
-Initial result statuses:
+## Public result statuses
 
 ```text
 ACCEPTED
@@ -105,8 +93,6 @@ TARGET_NOT_FOUND
 PROVIDER_UNAVAILABLE
 REJECTED
 ```
-
-Meaning:
 
 ### `ACCEPTED`
 
@@ -118,77 +104,252 @@ It means only:
 start side-effect instruction accepted
 ```
 
-It does **not** prove process state, port reachability, control authentication or health.
+It does **not** prove process state, port reachability, control authentication, health or capacity.
 
 ### `STALE_AUTHORITY`
 
-The provider can prove a newer bootstrap authority already supersedes the request.
-
-Caller must stop treating the current bootstrap operation as capable of issuing process side effects.
+A newer bootstrap authority already supersedes the request.
 
 ### `CONFLICT`
 
-The provider observed incompatible immutable operation identity for an authority/replay that should have been exact.
-
-This is fail-closed and must never be converted to `ACCEPTED`.
+The same fenced generation was observed with incompatible immutable operation identity.
 
 ### `TARGET_NOT_FOUND`
 
-The target name is not configured/mappable by the provider.
-
-Static backend policy in Theosfera remains a separate authority. Provider mappings must not allow arbitrary untrusted target names to become process commands.
+No trusted orchestration target mapping exists for the logical backend name.
 
 ### `PROVIDER_UNAVAILABLE`
 
-Expected temporary inability to reach/use the orchestration platform.
-
-The bootstrap ownership lifecycle may continue renewing while a bounded retry policy is later defined, but no process side effect can be assumed to have succeeded.
+The orchestration layer cannot currently accept the instruction.
 
 ### `REJECTED`
 
-The provider deliberately refused the request for a non-success condition not represented above.
+The orchestration layer deliberately refused the request for another explicit non-success reason.
 
-Provider-specific sensitive details should remain in controlled logs/observability rather than being exposed to players.
+Structural corruption, impossible state or contract violations remain exceptional failures and must not be flattened into success.
 
-## Exceptional completion
+---
 
-Expected operational outcomes should use explicit statuses where practical.
+# B.2 — Fenced provider / actuator strategy
 
-Structural corruption, impossible provider state or contract violations should complete exceptionally rather than being silently flattened into a successful/ambiguous result.
+## Why a Redis pre-check is insufficient
 
-No exceptional path authorizes fallback to an unfenced process-start mechanism.
+This implementation deliberately rejects the following architecture:
+
+```text
+Proxy checks fencing in Redis
+        ↓
+Redis says current
+        ↓
+Proxy pauses
+        ↓
+newer bootstrap owner supersedes it
+        ↓
+old Proxy wakes up
+        ↓
+unfenced Docker/systemd/panel start
+```
+
+That design contains a time-of-check/time-of-use race. The old owner can still emit the real side effect after losing authority.
+
+Therefore:
+
+> Comparing bootstrap authority and accepting/emitting the process-start side effect must be one atomic decision from the actuator/orchestrator point of view.
+
+The Proxy must not emulate that guarantee with a separate remote pre-check.
+
+## B.2 architecture
+
+```text
+BackendStartRequest
+        │ exact BackendBootstrapLease
+        ↓
+FencedBackendOrchestrationProvider
+        ↓
+BackendStartTargetResolver
+        │ logical backend → trusted opaque target
+        ↓
+BackendStartActuationRequest
+        │ trusted target + exact bootstrap lease
+        ↓
+BackendStartActuator.startIfCurrent(...)
+        │ atomic fencing + side-effect acceptance
+        ↓
+BackendStartActuationResult
+        ↓
+BackendStartResult
+```
+
+## Trusted target mapping
+
+`BackendStartTargetResolver` maps a logical Theosfera backend name to a trusted `BackendStartTarget`.
+
+`BackendStartTarget` separates:
+
+```text
+backendName
+```
+
+from:
+
+```text
+targetReference
+```
+
+The target reference is an opaque provider-side mapping key. It is not supplied by players, commands or arbitrary protocol payloads.
+
+This prevents future adapters from turning untrusted text directly into process commands.
+
+A concrete adapter must still treat `targetReference` as data, not concatenate it into an unsafe shell command.
+
+If no mapping exists:
+
+```text
+TARGET_NOT_FOUND
+→ actuator is not called
+→ zero process side effect
+```
+
+If a resolver returns a target whose logical backend does not match the exact bootstrap lease:
+
+```text
+contract violation
+→ fail closed
+→ actuator is not called
+```
+
+## Actuation request
+
+`BackendStartActuationRequest` contains:
+
+- trusted `BackendStartTarget`;
+- exact `BackendBootstrapLease`.
+
+Construction requires:
+
+```text
+target.backendName == bootstrapLease.targetBackendName
+```
+
+No caller may combine a lease for one backend with a process target for another.
+
+## Atomic actuator contract
+
+`BackendStartActuator` exposes:
+
+```java
+CompletionStage<BackendStartActuationResult> startIfCurrent(
+        BackendStartActuationRequest request
+);
+```
+
+Its contract requires the concrete actuator/orchestrator to atomically evaluate authority and accept/emit the process-start side effect.
+
+For each backend target, minimum semantics are:
+
+```text
+incoming fencing < latest accepted fencing
+→ STALE_AUTHORITY
+→ zero start side effect
+
+incoming fencing == latest accepted fencing
++ exact same immutable operation
+→ ACCEPTED
+→ idempotent replay
+→ zero duplicate start side effect
+
+incoming fencing == latest accepted fencing
++ conflicting immutable operation
+→ CONFLICT
+→ zero start side effect
+
+incoming fencing > latest accepted fencing
+→ ACCEPTED
+→ new authoritative start instruction may be emitted once
+```
+
+Immutable replay identity includes at least:
+
+```text
+targetReference
+requestId
+playerId
+proxyName
+incarnationId
+membership fencing token
+bootstrap fencing token
+```
+
+A real platform adapter may encode this atomically through a transactional external API, durable compare-and-set, orchestration-native idempotency/fencing primitive or another reviewed mechanism.
+
+An adapter that ignores `bootstrapLease.fencingToken()` is invalid.
+
+## Internal actuation results
+
+```text
+ACCEPTED
+STALE_AUTHORITY
+CONFLICT
+ACTUATOR_UNAVAILABLE
+REJECTED
+```
+
+`FencedBackendOrchestrationProvider` maps:
+
+```text
+ACTUATOR_UNAVAILABLE
+→ PROVIDER_UNAVAILABLE
+```
+
+All other statuses preserve their public meaning.
+
+No failure status is converted to `ACCEPTED`.
+
+## Replay and stale tests
+
+B.2 coverage includes a test-only atomic actuator model demonstrating:
+
+```text
+fencing 41 first request       → ACCEPTED / side effect #1
+fencing 41 exact replay        → ACCEPTED / no duplicate
+fencing 40 stale               → STALE_AUTHORITY / no side effect
+fencing 41 conflicting request → CONFLICT / no side effect
+fencing 42 newer authority     → ACCEPTED / side effect #2
+```
+
+The in-memory model exists only in tests to prove the required semantics. It is not a production actuator and is not a substitute for atomic guarantees in the real orchestration platform.
+
+---
 
 ## Provider-neutral architecture
 
-TheosferaProxy must not hard-code Docker/systemd/panel/Kubernetes assumptions into transfer/routing services.
+TheosferaProxy must not hard-code Docker/systemd/panel/Kubernetes assumptions into routing or transfer services.
 
-Desired shape:
+Desired eventual shape:
 
 ```text
 product bootstrap flow
         ↓
 BackendOrchestrationProvider
         ↓
-platform adapter
+FencedBackendOrchestrationProvider
         ↓
-actual process platform
+platform target mapping
+        ↓
+platform-specific BackendStartActuator
+        ↓
+actual orchestration platform
 ```
 
-Examples of future adapters could include:
+Possible future adapters could include Docker, systemd, a hosting panel or another orchestrator, but no provider technology has been selected by B.1 or B.2.
 
-```text
-DockerBackendOrchestrationProvider
-SystemdBackendOrchestrationProvider
-PanelBackendOrchestrationProvider
-```
+---
 
-Those names are examples only; no provider technology is selected by this design.
+## No readiness authority from the provider
 
-## No readiness polling authority from provider
+Even if a future platform reports `RUNNING`, that observation is insufficient for routing.
 
-Even if a concrete orchestration platform can report `RUNNING`, that process-layer observation is not enough to route a player.
-
-Required post-start readiness chain remains:
+Required post-start chain remains:
 
 ```text
 provider ACCEPTED
@@ -204,11 +365,13 @@ reserve Redis capacity
 Velocity ConnectionRequest
 ```
 
-A provider-reported process state can be useful for diagnostics/timeouts later but cannot replace Control Channel authority.
+Provider/process state can later support diagnostics and timeout decisions, but it cannot replace Control Channel authority.
+
+---
 
 ## Capacity ordering
 
-Current product capacity reservation TTL is approximately 20 seconds and is designed for already-ready backends.
+Current capacity reservation TTL is designed for already-ready backends.
 
 True cold startup must not reserve capacity before boot and hold it for an arbitrary startup duration.
 
@@ -216,7 +379,7 @@ Future product flow:
 
 ```text
 acquire bootstrap ownership
-→ request provider start
+→ request fenced provider start
 → renew bootstrap ownership while starting
 → wait control auth
 → wait HEALTHY
@@ -225,48 +388,77 @@ acquire bootstrap ownership
 → connect player
 ```
 
+---
+
 ## Failure policy
 
 - no bootstrap authority -> no provider call;
 - stale/fenced bootstrap operation -> no provider side effect;
+- missing trusted target -> no actuator call;
+- conflicting target/lease mapping -> fail closed;
 - provider unavailable -> no assumption that backend started;
 - provider accepted -> still no player transfer until control+health validation;
 - lost bootstrap ownership while waiting -> abort/fail closed;
 - no silent local process-start fallback;
 - no Plugin Messaging signal may substitute for process/readiness authority.
 
-## Scope of B.1
+---
 
-B.1 introduces only:
+## Scope completed through B.2
 
-- provider-neutral start request/result contracts;
-- exact `BackendBootstrapLease` propagation into the provider boundary;
-- documented fencing/idempotency semantics;
-- basic contract tests.
+Implemented:
 
-B.1 does **not**:
+- provider-neutral public start contracts;
+- exact `BackendBootstrapLease` propagation;
+- trusted logical-backend → orchestration-target mapping boundary;
+- exact target/lease consistency validation;
+- atomic fenced actuator contract;
+- public/internal status mapping;
+- stale/replay/conflict semantics documented;
+- automated adapter/contract coverage.
 
-- select a concrete orchestration technology;
-- start a real backend process;
-- modify `TheosferaProxy` product composition;
-- change `DistributedPlayerTransferRetryCoordinator`;
-- change `TransferTargetResolver`;
-- change capacity reservation ordering yet;
-- poll process status;
-- change TheosferaProtocol;
-- add Plugin Messaging channels.
+Still intentionally absent:
 
-## Next increments after B.1
+- concrete Docker/systemd/panel/cloud implementation;
+- real backend process start;
+- product `TheosferaProxy` composition;
+- startup retry/timeout lifecycle;
+- process-state polling;
+- readiness bridge;
+- transfer cold-start wiring;
+- capacity reordering in production;
+- TheosferaProtocol changes;
+- new Plugin Messaging channels.
 
-Expected order, subject to review after each increment:
+---
+
+# B.3 — Next increment
+
+B.3 must define the **startup operation lifecycle** around bootstrap ownership and provider invocation.
+
+Questions B.3 must answer before product wiring:
+
+- when is the provider called after bootstrap acquire?;
+- which provider outcomes are terminal vs retryable?;
+- what is the bounded retry/backoff policy for `PROVIDER_UNAVAILABLE`?;
+- how long may an operation remain in STARTING?;
+- how is the bootstrap lease renewed while waiting?;
+- what happens if ownership becomes `FENCED` during provider retry or startup wait?;
+- how are late provider completions prevented from reviving an aborted operation?;
+- how is cancellation/stop propagated?;
+- what explicit terminal result does the caller receive?;
+
+B.3 must remain independent from backend readiness authority. Control Channel + HEALTHY integration belongs to B.4.
+
+Expected order remains:
 
 ```text
-B.1 provider contracts
-B.2 fenced provider implementation/adapter strategy
-B.3 startup operation lifecycle + bounded timeout/retry semantics
-B.4 readiness bridge using current Control Channel + health
-B.5 product cold-start wiring and capacity reordering
-B.6 runtime acceptance / checkpoint
+B.1 provider contracts                         DONE
+B.2 fenced provider / actuator strategy        DONE after local gate
+B.3 startup operation lifecycle                NEXT
+B.4 readiness bridge using Control Channel     LATER
+B.5 product cold-start wiring                  LATER
+B.6 runtime acceptance / checkpoint            LATER
 ```
 
 Do not jump directly from `BackendOrchestrationProvider.ACCEPTED` to `ConnectionRequest`.
