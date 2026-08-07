@@ -3,7 +3,7 @@ package com.theosfera.proxy.observability;
 import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendIdentity;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.transfer.BackendBootstrapRegistry;
 import com.theosfera.proxy.transfer.BackendBootstrapReservation;
@@ -25,14 +25,14 @@ public final class BackendOperationalSnapshotService {
 
     private final ProxyServer proxyServer;
     private final BackendAuthorizationPolicy authorizationPolicy;
-    private final BackendIdentityRegistry identityRegistry;
+    private final BackendIdentityProvider identityProvider;
     private final BackendHealthRegistry healthRegistry;
     private final BackendBootstrapRegistry bootstrapRegistry;
 
     public BackendOperationalSnapshotService(
             ProxyServer proxyServer,
             BackendAuthorizationPolicy authorizationPolicy,
-            BackendIdentityRegistry identityRegistry,
+            BackendIdentityProvider identityProvider,
             BackendHealthRegistry healthRegistry,
             BackendBootstrapRegistry bootstrapRegistry
     ) {
@@ -44,9 +44,9 @@ public final class BackendOperationalSnapshotService {
                 authorizationPolicy,
                 "authorizationPolicy cannot be null"
         );
-        this.identityRegistry = Objects.requireNonNull(
-                identityRegistry,
-                "identityRegistry cannot be null"
+        this.identityProvider = Objects.requireNonNull(
+                identityProvider,
+                "identityProvider cannot be null"
         );
         this.healthRegistry = Objects.requireNonNull(
                 healthRegistry,
@@ -60,7 +60,7 @@ public final class BackendOperationalSnapshotService {
 
     public List<BackendOperationalSnapshot> capture() {
         Map<String, BackendIdentity> identities =
-                identityRegistry.snapshot();
+                identityProvider.snapshot();
 
         Map<String, Instant> healthyActivity =
                 healthRegistry.snapshot();

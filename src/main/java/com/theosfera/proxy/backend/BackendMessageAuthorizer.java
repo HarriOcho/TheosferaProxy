@@ -8,14 +8,14 @@ import java.util.Optional;
 
 public final class BackendMessageAuthorizer {
 
-    private final BackendIdentityRegistry identityRegistry;
+    private final BackendIdentityProvider identityProvider;
 
     public BackendMessageAuthorizer(
-            BackendIdentityRegistry identityRegistry
+            BackendIdentityProvider identityProvider
     ) {
-        this.identityRegistry = Objects.requireNonNull(
-                identityRegistry,
-                "identityRegistry cannot be null"
+        this.identityProvider = Objects.requireNonNull(
+                identityProvider,
+                "identityProvider cannot be null"
         );
     }
 
@@ -32,14 +32,8 @@ public final class BackendMessageAuthorizer {
                 "messageType cannot be null"
         );
 
-        if (ProtocolMessageType.BACKEND_HELLO.equals(
-                messageType
-        )) {
-            return true;
-        }
-
         Optional<BackendIdentity> identity =
-                identityRegistry.find(serverName);
+                identityProvider.find(serverName);
 
         if (identity.isEmpty()) {
             return false;
@@ -49,9 +43,6 @@ public final class BackendMessageAuthorizer {
                 identity.orElseThrow().backendType();
 
         return switch (messageType) {
-            case ProtocolMessageType.PING,
-                 ProtocolMessageType.PONG -> true;
-
             case ProtocolMessageType.PLAYER_AUTHENTICATED ->
                     backendType == BackendType.AUTH;
 
@@ -64,8 +55,7 @@ public final class BackendMessageAuthorizer {
                             || backendType == BackendType.LOBBY
                             || backendType == BackendType.SKYBLOCK;
 
-            case ProtocolMessageType.BACKEND_HELLO_ACK,
-                 ProtocolMessageType.PLAYER_AUTHENTICATED_ACK,
+            case ProtocolMessageType.PLAYER_AUTHENTICATED_ACK,
                  ProtocolMessageType.TRANSFER_RESULT -> false;
 
             default -> false;

@@ -1,8 +1,8 @@
 package com.theosfera.proxy.failover;
 
 import com.theosfera.protocol.message.payload.BackendType;
-import com.theosfera.proxy.backend.BackendIdentity;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
+import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.theosfera.proxy.session.AuthenticatedPlayerSession;
 import com.theosfera.proxy.session.AuthenticatedPlayerSessionRegistry;
 import com.velocitypowered.api.event.player.KickedFromServerEvent;
@@ -14,12 +14,12 @@ import net.kyori.adventure.text.Component;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -38,7 +38,7 @@ class BackendKickFailoverServiceTest {
             Component.text("Sin conexion con el backend.");
 
     private AuthenticatedPlayerSessionRegistry sessionRegistry;
-    private BackendIdentityRegistry identityRegistry;
+    private BackendAuthorizationPolicy authorizationPolicy;
     private DistributedBackendKickFailoverCoordinator coordinator;
     private BackendKickFailoverService service;
     private Player player;
@@ -46,12 +46,12 @@ class BackendKickFailoverServiceTest {
     @BeforeEach
     void setUp() {
         sessionRegistry = new AuthenticatedPlayerSessionRegistry();
-        identityRegistry = new BackendIdentityRegistry();
+        authorizationPolicy = policy();
         coordinator = mock(DistributedBackendKickFailoverCoordinator.class);
         player = player(Optional.empty());
         service = new BackendKickFailoverService(
                 sessionRegistry,
-                identityRegistry,
+                authorizationPolicy,
                 coordinator
         );
     }
@@ -59,7 +59,6 @@ class BackendKickFailoverServiceTest {
     @Test
     void ignoresKickDuringServerConnect() {
         authenticatePlayer();
-        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
 
         BackendKickFailoverResolution result = resolve(
                 event(player, server("skyblock-1"), true)
@@ -71,8 +70,6 @@ class BackendKickFailoverServiceTest {
 
     @Test
     void ignoresUnauthenticatedPlayer() {
-        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
-
         BackendKickFailoverResolution result = resolve(
                 event(player, server("skyblock-1"), false)
         );
@@ -82,38 +79,12 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
-    void disconnectsBackendWithoutIdentity() {
+    void disconnectsBackendMissingFromPolicy() {
         authenticatePlayer();
 
         BackendKickFailoverResolution result = resolve(
-                event(player, server("skyblock-1"), false)
+                event(player, server("unknown-1"), false)
         );
-
-        assertSame(BackendKickFailoverResolutionStatus.DISCONNECT, result.status());
-        assertSame(REASON, result.reason().orElseThrow());
-        verify(coordinator, never()).resolve(any(), any(), any(), any());
-    }
-
-    @Test
-    void disconnectsIdentityWithDifferentServerName() {
-        BackendIdentityRegistry mismatchedRegistry = mock(BackendIdentityRegistry.class);
-        when(mismatchedRegistry.find("skyblock-1")).thenReturn(
-                Optional.of(new BackendIdentity("skyblock-2", BackendType.SKYBLOCK))
-        );
-        BackendKickFailoverService mismatchedService =
-                new BackendKickFailoverService(
-                        sessionRegistry,
-                        mismatchedRegistry,
-                        coordinator
-                );
-        authenticatePlayer();
-
-        BackendKickFailoverResolution result = mismatchedService
-                .resolveFailoverTarget(
-                        event(player, server("skyblock-1"), false)
-                )
-                .toCompletableFuture()
-                .join();
 
         assertSame(BackendKickFailoverResolutionStatus.DISCONNECT, result.status());
         assertSame(REASON, result.reason().orElseThrow());
@@ -123,7 +94,6 @@ class BackendKickFailoverServiceTest {
     @Test
     void disconnectsAuthBackendWithoutDistributedAllocation() {
         authenticatePlayer();
-        registerIdentity("auth-1", BackendType.AUTH);
 
         BackendKickFailoverResolution result = resolve(
                 event(player, server("auth-1"), false)
@@ -134,9 +104,35 @@ class BackendKickFailoverServiceTest {
     }
 
     @Test
+    void delegatesKickAfterSourceControlIdentityHasAlreadyDisappeared() {
+        authenticatePlayer();
+        RegisteredServer target = server("skyblock-2");
+        BackendKickFailoverResolution expected =
+                BackendKickFailoverResolution.redirect(target);
+
+        when(coordinator.resolve(
+                eq(player),
+                eq(BackendType.SKYBLOCK),
+                eq(Set.of("skyblock-1")),
+                eq(REASON)
+        )).thenReturn(CompletableFuture.completedFuture(expected));
+
+        BackendKickFailoverResolution result = resolve(
+                event(player, server("skyblock-1"), false)
+        );
+
+        assertSame(expected, result);
+        verify(coordinator).resolve(
+                player,
+                BackendType.SKYBLOCK,
+                Set.of("skyblock-1"),
+                REASON
+        );
+    }
+
+    @Test
     void delegatesAuthenticatedKickWithFailedAndCurrentServerExcluded() {
         authenticatePlayer();
-        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
         Player playerOnLobby = player(Optional.of("lobby-1"));
         RegisteredServer target = server("skyblock-2");
         BackendKickFailoverResolution expected =
@@ -165,7 +161,6 @@ class BackendKickFailoverServiceTest {
     @Test
     void coordinatorFailureDisconnectsWithOriginalReason() {
         authenticatePlayer();
-        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
 
         when(coordinator.resolve(
                 eq(player),
@@ -187,7 +182,6 @@ class BackendKickFailoverServiceTest {
     @Test
     void nullCoordinatorStageDisconnectsWithOriginalReason() {
         authenticatePlayer();
-        registerIdentity("skyblock-1", BackendType.SKYBLOCK);
 
         when(coordinator.resolve(
                 eq(player),
@@ -227,7 +221,7 @@ class BackendKickFailoverServiceTest {
                 NullPointerException.class,
                 () -> new BackendKickFailoverService(
                         null,
-                        identityRegistry,
+                        authorizationPolicy,
                         coordinator
                 )
         );
@@ -243,7 +237,7 @@ class BackendKickFailoverServiceTest {
                 NullPointerException.class,
                 () -> new BackendKickFailoverService(
                         sessionRegistry,
-                        identityRegistry,
+                        authorizationPolicy,
                         null
                 )
         );
@@ -269,8 +263,23 @@ class BackendKickFailoverServiceTest {
         );
     }
 
-    private void registerIdentity(String serverName, BackendType type) {
-        identityRegistry.register(new BackendIdentity(serverName, type));
+    private BackendAuthorizationPolicy policy() {
+        return new BackendAuthorizationPolicy(
+                Map.of(
+                        "auth-1",
+                        new BackendPolicyEntry(
+                                BackendType.AUTH,
+                                1,
+                                100
+                        ),
+                        "skyblock-1",
+                        new BackendPolicyEntry(
+                                BackendType.SKYBLOCK,
+                                200,
+                                80
+                        )
+                )
+        );
     }
 
     private KickedFromServerEvent event(

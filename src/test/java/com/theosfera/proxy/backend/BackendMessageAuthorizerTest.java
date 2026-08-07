@@ -10,62 +10,42 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class BackendMessageAuthorizerTest {
 
-    private final BackendIdentityRegistry registry =
-            new BackendIdentityRegistry();
+    private final MutableBackendIdentityProvider identityProvider =
+            new MutableBackendIdentityProvider();
 
     private final BackendMessageAuthorizer authorizer =
-            new BackendMessageAuthorizer(registry);
+            new BackendMessageAuthorizer(identityProvider);
 
     @Test
-    void allowsHelloBeforeRegistration() {
-        assertTrue(
-                authorizer.isAuthorized(
-                        "unknown-1",
-                        ProtocolMessageType.BACKEND_HELLO
-                )
-        );
-    }
-
-    @Test
-    void rejectsNonHelloMessagesBeforeRegistration() {
-        assertFalse(
-                authorizer.isAuthorized(
-                        "lobby-1",
-                        ProtocolMessageType.PING
-                )
-        );
+    void rejectsPlayerScopedMessagesWithoutLiveControlIdentity() {
         assertFalse(
                 authorizer.isAuthorized(
                         "auth-1",
-                        ProtocolMessageType
-                                .PLAYER_AUTHENTICATED
+                        ProtocolMessageType.PLAYER_AUTHENTICATED
+                )
+        );
+        assertFalse(
+                authorizer.isAuthorized(
+                        "lobby-1",
+                        ProtocolMessageType.PLAYER_SERVER_READY
+                )
+        );
+        assertFalse(
+                authorizer.isAuthorized(
+                        "lobby-1",
+                        ProtocolMessageType.TRANSFER_REQUEST
                 )
         );
     }
 
     @Test
-    void allowsHeartbeatForEveryRegisteredBackendType() {
-        for (BackendType backendType
-                : BackendType.values()) {
-            String serverName = backendType.name()
-                    .toLowerCase()
-                    + "-1";
+    void rejectsBackendLevelTrafficOverPluginMessaging() {
+        register("lobby-1", BackendType.LOBBY);
 
-            register(serverName, backendType);
-
-            assertTrue(
-                    authorizer.isAuthorized(
-                            serverName,
-                            ProtocolMessageType.PING
-                    )
-            );
-            assertTrue(
-                    authorizer.isAuthorized(
-                            serverName,
-                            ProtocolMessageType.PONG
-                    )
-            );
-        }
+        assertFalse(authorizer.isAuthorized("lobby-1", "BACKEND_HELLO"));
+        assertFalse(authorizer.isAuthorized("lobby-1", "BACKEND_HELLO_ACK"));
+        assertFalse(authorizer.isAuthorized("lobby-1", "PING"));
+        assertFalse(authorizer.isAuthorized("lobby-1", "PONG"));
     }
 
     @Test
@@ -76,15 +56,13 @@ class BackendMessageAuthorizerTest {
         assertTrue(
                 authorizer.isAuthorized(
                         "auth-1",
-                        ProtocolMessageType
-                                .PLAYER_AUTHENTICATED
+                        ProtocolMessageType.PLAYER_AUTHENTICATED
                 )
         );
         assertFalse(
                 authorizer.isAuthorized(
                         "lobby-1",
-                        ProtocolMessageType
-                                .PLAYER_AUTHENTICATED
+                        ProtocolMessageType.PLAYER_AUTHENTICATED
                 )
         );
     }
@@ -141,17 +119,8 @@ class BackendMessageAuthorizerTest {
 
         assertFalse(
                 authorizer.isAuthorized(
-                        "lobby-1",
-                        ProtocolMessageType
-                                .BACKEND_HELLO_ACK
-                )
-        );
-
-        assertFalse(
-                authorizer.isAuthorized(
                         "auth-1",
-                        ProtocolMessageType
-                                .PLAYER_AUTHENTICATED_ACK
+                        ProtocolMessageType.PLAYER_AUTHENTICATED_ACK
                 )
         );
 
@@ -186,7 +155,7 @@ class BackendMessageAuthorizerTest {
                 NullPointerException.class,
                 () -> authorizer.isAuthorized(
                         null,
-                        ProtocolMessageType.PING
+                        ProtocolMessageType.TRANSFER_REQUEST
                 )
         );
 
@@ -203,7 +172,7 @@ class BackendMessageAuthorizerTest {
             String serverName,
             BackendType backendType
     ) {
-        registry.register(
+        identityProvider.register(
                 new BackendIdentity(
                         serverName,
                         backendType

@@ -5,7 +5,7 @@ import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthCheckScheduler;
 import com.theosfera.proxy.backend.BackendHealthCheckTask;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPingEmitter;
 import com.theosfera.proxy.backend.BackendPolicyConfigLoader;
@@ -34,7 +34,6 @@ import com.theosfera.proxy.messaging.ProtocolChannelRegistration;
 import com.theosfera.proxy.messaging.ProtocolMessageDispatcher;
 import com.theosfera.proxy.messaging.ProtocolMessageListener;
 import com.theosfera.proxy.messaging.ProtocolMessageSender;
-import com.theosfera.proxy.messaging.handler.BackendHelloMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerAuthenticatedMessageHandler;
 import com.theosfera.proxy.messaging.handler.PlayerServerReadyMessageHandler;
 import com.theosfera.proxy.messaging.handler.TransferRequestMessageHandler;
@@ -93,7 +92,6 @@ public final class TheosferaProxy {
     private final Logger logger;
     private final Path dataDirectory;
     private final ProtocolChannelRegistration channelRegistration;
-    private final BackendIdentityRegistry identityRegistry;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerSessionLeaseBindingRegistry sessionLeaseBindingRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
@@ -134,7 +132,6 @@ public final class TheosferaProxy {
         this.logger = logger;
         this.dataDirectory = dataDirectory;
         this.channelRegistration = new ProtocolChannelRegistration(proxyServer.getChannelRegistrar());
-        this.identityRegistry = new BackendIdentityRegistry();
         this.sessionRegistry = new AuthenticatedPlayerSessionRegistry();
         this.sessionLeaseBindingRegistry = new PlayerSessionLeaseBindingRegistry();
         this.presenceRegistry = new PlayerServerPresenceRegistry(sessionRegistry);
@@ -482,7 +479,6 @@ public final class TheosferaProxy {
         sessionRegistry.clear();
         pendingPingRegistry.clear();
         healthRegistry.clear();
-        identityRegistry.clear();
         if (distributedBackendCapacityRuntime != null) {
             distributedBackendCapacityRuntime.handoffService().clear();
         }
@@ -531,9 +527,15 @@ public final class TheosferaProxy {
                 authorizationPolicy,
                 pendingPingRegistry,
                 healthRegistry,
-                logger
+                logger,
+                identity -> bootstrapRegistry.removeByTarget(
+                        identity.serverName()
+                )
         );
-        BackendMessageAuthorizer messageAuthorizer = new BackendMessageAuthorizer(identityRegistry);
+        BackendIdentityProvider controlIdentityProvider =
+                backendControlRuntime.requireIdentityProvider();
+        BackendMessageAuthorizer messageAuthorizer =
+                new BackendMessageAuthorizer(controlIdentityProvider);
         ProtocolMessageSender messageSender = new ProtocolMessageSender();
         BackendPingEmitter pingEmitter = new BackendPingEmitter(
                 Clock.systemUTC(),
@@ -563,7 +565,7 @@ public final class TheosferaProxy {
         TransferTargetResolver targetResolver = new TransferTargetResolver(
                 proxyServer,
                 authorizationPolicy,
-                identityRegistry,
+                controlIdentityProvider,
                 healthRegistry
         );
         initializeDistributedBackendCapacity(
@@ -573,7 +575,7 @@ public final class TheosferaProxy {
         bindDistributedCapacityHandoff();
 
         PlayerTransferExecutor transferExecutor = new PlayerTransferExecutor();
-        DistributedPlayerTransferRetryCoordinator distributedTransferRetryCoordinator =
+        DistributedPlayerTransferRetryCoordinator distributedPlayerTransferRetryCoordinator =
                 new DistributedPlayerTransferRetryCoordinator(
                         bootstrapRegistry,
                         transferRegistry,
@@ -589,8 +591,8 @@ public final class TheosferaProxy {
         TransferResultSender transferResultSender = new TransferResultSender(messageSender, logger);
         LobbyTransferService lobbyTransferService = new LobbyTransferService(
                 sessionRegistry,
-                identityRegistry,
-                distributedTransferRetryCoordinator
+                controlIdentityProvider,
+                distributedPlayerTransferRetryCoordinator
         );
 
         DistributedResolvedTargetAllocationService kickFailoverAllocationService =
@@ -611,7 +613,7 @@ public final class TheosferaProxy {
         backendKickFailoverListener = new BackendKickFailoverListener(
                 new BackendKickFailoverService(
                         sessionRegistry,
-                        identityRegistry,
+                        authorizationPolicy,
                         kickFailoverCoordinator
                 )
         );
@@ -625,7 +627,7 @@ public final class TheosferaProxy {
                 new BackendOperationalSnapshotService(
                         proxyServer,
                         authorizationPolicy,
-                        identityRegistry,
+                        controlIdentityProvider,
                         healthRegistry,
                         bootstrapRegistry
                 );
@@ -637,13 +639,6 @@ public final class TheosferaProxy {
 
         ProtocolMessageDispatcher dispatcher = new ProtocolMessageDispatcher(
                 List.of(
-                        new BackendHelloMessageHandler(
-                                authorizationPolicy,
-                                identityRegistry,
-                                bootstrapRegistry,
-                                messageSender,
-                                logger
-                        ),
                         new PlayerAuthenticatedMessageHandler(
                                 sessionCoordinator,
                                 sessionLeaseBindingRegistry,
@@ -659,10 +654,10 @@ public final class TheosferaProxy {
                         ),
                         new TransferRequestMessageHandler(
                                 proxyServer,
-                                identityRegistry,
+                                controlIdentityProvider,
                                 sessionRegistry,
                                 presenceRegistry,
-                                distributedTransferRetryCoordinator,
+                                distributedPlayerTransferRetryCoordinator,
                                 transferResultSender,
                                 logger
                         )

@@ -5,7 +5,7 @@ import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
 import com.theosfera.proxy.backend.BackendHealthStatus;
 import com.theosfera.proxy.backend.BackendIdentity;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.backend.BackendPolicyEntry;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
@@ -20,20 +20,20 @@ public final class TransferTargetResolver {
 
     private final ProxyServer proxyServer;
     private final BackendAuthorizationPolicy authorizationPolicy;
-    private final BackendIdentityRegistry identityRegistry;
+    private final BackendIdentityProvider identityProvider;
     private final BackendHealthRegistry healthRegistry;
     private final BackendLoadSelector loadSelector;
 
     public TransferTargetResolver(
             ProxyServer proxyServer,
             BackendAuthorizationPolicy authorizationPolicy,
-            BackendIdentityRegistry identityRegistry,
+            BackendIdentityProvider identityProvider,
             BackendHealthRegistry healthRegistry
     ) {
         this(
                 proxyServer,
                 authorizationPolicy,
-                identityRegistry,
+                identityProvider,
                 healthRegistry,
                 new BackendLoadSelector()
         );
@@ -42,7 +42,7 @@ public final class TransferTargetResolver {
     TransferTargetResolver(
             ProxyServer proxyServer,
             BackendAuthorizationPolicy authorizationPolicy,
-            BackendIdentityRegistry identityRegistry,
+            BackendIdentityProvider identityProvider,
             BackendHealthRegistry healthRegistry,
             BackendLoadSelector loadSelector
     ) {
@@ -56,9 +56,9 @@ public final class TransferTargetResolver {
                 "authorizationPolicy cannot be null"
         );
 
-        this.identityRegistry = Objects.requireNonNull(
-                identityRegistry,
-                "identityRegistry cannot be null"
+        this.identityProvider = Objects.requireNonNull(
+                identityProvider,
+                "identityProvider cannot be null"
         );
 
         this.healthRegistry = Objects.requireNonNull(
@@ -309,7 +309,7 @@ public final class TransferTargetResolver {
             return false;
         }
 
-        boolean authenticated = identityRegistry
+        boolean authenticated = identityProvider
                 .find(serverName)
                 .filter(identity -> matchesExpectedIdentity(
                         identity,
@@ -357,7 +357,7 @@ public final class TransferTargetResolver {
             return false;
         }
 
-        return identityRegistry
+        return identityProvider
                 .find(serverName)
                 .map(identity ->
                         matchesExpectedIdentity(

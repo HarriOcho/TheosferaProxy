@@ -6,7 +6,7 @@ import com.theosfera.protocol.message.payload.BackendType;
 import com.theosfera.protocol.message.payload.TransferRequestPayload;
 import com.theosfera.protocol.message.payload.TransferResultStatus;
 import com.theosfera.proxy.backend.BackendIdentity;
-import com.theosfera.proxy.backend.BackendIdentityRegistry;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.coordination.BackendCapacityReserveResult;
 import com.theosfera.proxy.messaging.ProtocolMessageContext;
 import com.theosfera.proxy.messaging.ProtocolMessageHandler;
@@ -32,7 +32,7 @@ public final class TransferRequestMessageHandler
         implements ProtocolMessageHandler {
 
     private final ProxyServer proxyServer;
-    private final BackendIdentityRegistry identityRegistry;
+    private final BackendIdentityProvider identityProvider;
     private final AuthenticatedPlayerSessionRegistry sessionRegistry;
     private final PlayerServerPresenceRegistry presenceRegistry;
     private final DistributedPlayerTransferRetryCoordinator retryCoordinator;
@@ -42,7 +42,7 @@ public final class TransferRequestMessageHandler
 
     public TransferRequestMessageHandler(
             ProxyServer proxyServer,
-            BackendIdentityRegistry identityRegistry,
+            BackendIdentityProvider identityProvider,
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             DistributedPlayerTransferRetryCoordinator retryCoordinator,
@@ -51,7 +51,7 @@ public final class TransferRequestMessageHandler
     ) {
         this(
                 proxyServer,
-                identityRegistry,
+                identityProvider,
                 sessionRegistry,
                 presenceRegistry,
                 retryCoordinator,
@@ -63,7 +63,7 @@ public final class TransferRequestMessageHandler
 
     TransferRequestMessageHandler(
             ProxyServer proxyServer,
-            BackendIdentityRegistry identityRegistry,
+            BackendIdentityProvider identityProvider,
             AuthenticatedPlayerSessionRegistry sessionRegistry,
             PlayerServerPresenceRegistry presenceRegistry,
             DistributedPlayerTransferRetryCoordinator retryCoordinator,
@@ -75,9 +75,9 @@ public final class TransferRequestMessageHandler
                 proxyServer,
                 "proxyServer cannot be null"
         );
-        this.identityRegistry = Objects.requireNonNull(
-                identityRegistry,
-                "identityRegistry cannot be null"
+        this.identityProvider = Objects.requireNonNull(
+                identityProvider,
+                "identityProvider cannot be null"
         );
         this.sessionRegistry = Objects.requireNonNull(
                 sessionRegistry,
@@ -121,7 +121,7 @@ public final class TransferRequestMessageHandler
         String sourceBackendName = context.serverName();
 
         Optional<BackendIdentity> sourceIdentity =
-                identityRegistry.find(sourceBackendName);
+                identityProvider.find(sourceBackendName);
         if (sourceIdentity.isEmpty()) {
             reject(
                     context,
