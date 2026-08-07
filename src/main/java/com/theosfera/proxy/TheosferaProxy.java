@@ -5,6 +5,7 @@ import com.theosfera.proxy.backend.BackendAuthorizationPolicy;
 import com.theosfera.proxy.backend.BackendHealthCheckScheduler;
 import com.theosfera.proxy.backend.BackendHealthCheckTask;
 import com.theosfera.proxy.backend.BackendHealthRegistry;
+import com.theosfera.proxy.backend.BackendIdentityProvider;
 import com.theosfera.proxy.backend.BackendIdentityRegistry;
 import com.theosfera.proxy.backend.BackendMessageAuthorizer;
 import com.theosfera.proxy.backend.BackendPingEmitter;
@@ -533,7 +534,10 @@ public final class TheosferaProxy {
                 healthRegistry,
                 logger
         );
-        BackendMessageAuthorizer messageAuthorizer = new BackendMessageAuthorizer(identityRegistry);
+        BackendIdentityProvider controlIdentityProvider =
+                backendControlRuntime.requireIdentityProvider();
+        BackendMessageAuthorizer messageAuthorizer =
+                new BackendMessageAuthorizer(controlIdentityProvider);
         ProtocolMessageSender messageSender = new ProtocolMessageSender();
         BackendPingEmitter pingEmitter = new BackendPingEmitter(
                 Clock.systemUTC(),
@@ -563,7 +567,7 @@ public final class TheosferaProxy {
         TransferTargetResolver targetResolver = new TransferTargetResolver(
                 proxyServer,
                 authorizationPolicy,
-                identityRegistry,
+                controlIdentityProvider,
                 healthRegistry
         );
         initializeDistributedBackendCapacity(
@@ -589,8 +593,8 @@ public final class TheosferaProxy {
         TransferResultSender transferResultSender = new TransferResultSender(messageSender, logger);
         LobbyTransferService lobbyTransferService = new LobbyTransferService(
                 sessionRegistry,
-                identityRegistry,
-                distributedTransferRetryCoordinator
+                controlIdentityProvider,
+                distributedPlayerTransferRetryCoordinator
         );
 
         DistributedResolvedTargetAllocationService kickFailoverAllocationService =
@@ -611,7 +615,7 @@ public final class TheosferaProxy {
         backendKickFailoverListener = new BackendKickFailoverListener(
                 new BackendKickFailoverService(
                         sessionRegistry,
-                        identityRegistry,
+                        controlIdentityProvider,
                         kickFailoverCoordinator
                 )
         );
@@ -625,7 +629,7 @@ public final class TheosferaProxy {
                 new BackendOperationalSnapshotService(
                         proxyServer,
                         authorizationPolicy,
-                        identityRegistry,
+                        controlIdentityProvider,
                         healthRegistry,
                         bootstrapRegistry
                 );
@@ -659,10 +663,10 @@ public final class TheosferaProxy {
                         ),
                         new TransferRequestMessageHandler(
                                 proxyServer,
-                                identityRegistry,
+                                controlIdentityProvider,
                                 sessionRegistry,
                                 presenceRegistry,
-                                distributedTransferRetryCoordinator,
+                                distributedPlayerTransferRetryCoordinator,
                                 transferResultSender,
                                 logger
                         )
