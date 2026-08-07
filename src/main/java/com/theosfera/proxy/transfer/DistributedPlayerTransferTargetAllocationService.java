@@ -171,12 +171,9 @@ public final class DistributedPlayerTransferTargetAllocationService {
 
         if (candidates.activeCandidates().isEmpty()) {
             if (!candidates.coldCandidates().isEmpty()) {
-                return reserveColdTarget(
+                return selectColdTarget(
                         player,
-                        requestId,
                         sourceBackendName,
-                        targetBackendType,
-                        requestedAt,
                         exclusions,
                         candidates.coldCandidates().getFirst()
                 );
@@ -229,12 +226,9 @@ public final class DistributedPlayerTransferTargetAllocationService {
                     }
 
                     if (!candidates.coldCandidates().isEmpty()) {
-                        return reserveColdTarget(
+                        return selectColdTarget(
                                 player,
-                                requestId,
                                 sourceBackendName,
-                                targetBackendType,
-                                requestedAt,
                                 exclusions,
                                 candidates.coldCandidates().getFirst()
                         );
@@ -245,25 +239,46 @@ public final class DistributedPlayerTransferTargetAllocationService {
     }
 
     private CompletionStage<DistributedPlayerTransferTargetAllocation>
-    reserveColdTarget(
+    selectColdTarget(
             Player player,
-            UUID requestId,
             String sourceBackendName,
-            BackendType targetBackendType,
-            long requestedAt,
             Set<String> exclusions,
             BackendTargetCandidate coldTarget
     ) {
-        return reserveTarget(
-                player,
-                requestId,
-                sourceBackendName,
-                targetBackendType,
-                requestedAt,
-                exclusions,
-                coldTarget,
+        if (exclusions.contains(coldTarget.serverName())) {
+            return CompletableFuture.failedFuture(
+                    new TransferTargetResolutionContractViolationException(
+                            "resolver returned an excluded cold target"
+                    )
+            );
+        }
+
+        TransferTargetResolution resolution =
                 TransferTargetResolution.bootstrapRequired(
                         coldTarget.server()
+                );
+
+        if (sourceBackendName.equals(coldTarget.serverName())) {
+            return completed(
+                    DistributedPlayerTransferTargetAllocation.sameTarget(
+                            resolution
+                    )
+            );
+        }
+
+        Optional<PlayerSessionLease> lease = sessionLeaseBindings.find(player);
+        if (lease.isEmpty()) {
+            return completed(
+                    DistributedPlayerTransferTargetAllocation.capacityRejected(
+                            resolution,
+                            BackendCapacityReserveResult.Status.SESSION_NOT_FOUND
+                    )
+            );
+        }
+
+        return completed(
+                DistributedPlayerTransferTargetAllocation.bootstrapRequired(
+                        resolution
                 )
         );
     }
