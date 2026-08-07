@@ -8,14 +8,14 @@ import java.util.Optional;
 
 public final class BackendMessageAuthorizer {
 
-    private final BackendIdentityRegistry identityRegistry;
+    private final BackendIdentityProvider identityProvider;
 
     public BackendMessageAuthorizer(
-            BackendIdentityRegistry identityRegistry
+            BackendIdentityProvider identityProvider
     ) {
-        this.identityRegistry = Objects.requireNonNull(
-                identityRegistry,
-                "identityRegistry cannot be null"
+        this.identityProvider = Objects.requireNonNull(
+                identityProvider,
+                "identityProvider cannot be null"
         );
     }
 
@@ -39,7 +39,7 @@ public final class BackendMessageAuthorizer {
         }
 
         Optional<BackendIdentity> identity =
-                identityRegistry.find(serverName);
+                identityProvider.find(serverName);
 
         if (identity.isEmpty()) {
             return false;
