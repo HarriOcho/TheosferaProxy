@@ -9,13 +9,20 @@ main @ ddc082319243da621d4e5364d4c4957f8d088b0d
 feat: add distributed backend bootstrap foundation (#74)
 ```
 
-Active branch:
+Active Proxy branch:
 
 ```text
 feature/backend-orchestration-provider
 ```
 
-This remains a **pre-runtime** checkpoint. It does not claim that Theosfera has started a real backend process through orchestration yet.
+Companion Orchestrator repository/branch:
+
+```text
+HarriOcho/TheosferaOrchestrator
+feature/orchestrator-foundation
+```
+
+This remains a **pre-runtime** checkpoint. It does not claim that Theosfera has started a real backend process through the new cold-start orchestration path yet.
 
 Current progress:
 
@@ -25,12 +32,25 @@ B.2 fenced provider / actuator strategy        VALIDATED
 B.3 startup operation lifecycle                VALIDATED
 B.4 Control Channel readiness bridge           VALIDATED
 B.5 provider-neutral cold-start foundation     VALIDATED
-B.5c concrete process plane                    PTERODACTYL SELECTED
-B.5c Proxy -> Gateway adapter                  IMPLEMENTED, PENDING LOCAL GATE
-B.6 real runtime acceptance                    OPEN
+B.5c Pterodactyl process plane                 SELECTED
+B.5c Proxy -> Orchestrator adapter              VALIDATED
+Orchestrator C.1 contracts/config              VALIDATED
+Orchestrator C.2 durable Redis fencing         VALIDATED
+Orchestrator C.3 trusted admission             VALIDATED
+Orchestrator C.4 Pterodactyl client            VALIDATED
+Orchestrator C.5 crash/replay recovery         VALIDATED
+Orchestrator C.6 authenticated HTTPS endpoint  VALIDATED
+Orchestrator C.7 real runtime                  OPEN
+B.6 end-to-end Proxy runtime                   OPEN
 ```
 
-The user's local validation after B.4/B.5 foundation work was fully green:
+No PR has been opened for this milestone and no product cold-path switch has been activated.
+
+---
+
+## 1. Local validation evidence
+
+Proxy B.4/B.5 foundation gates:
 
 ```text
 BackendControlGenerationResetListenerTest      BUILD SUCCESSFUL
@@ -40,28 +60,58 @@ full test suite                                BUILD SUCCESSFUL
 clean build                                    BUILD SUCCESSFUL
 ```
 
+Proxy Pterodactyl Gateway adapter gates:
+
+```text
+PterodactylGatewayConfigLoaderTest             BUILD SUCCESSFUL
+PterodactylGatewayProviderFactoryTest          BUILD SUCCESSFUL
+PterodactylGatewayBackendStartActuatorTest     BUILD SUCCESSFUL
+JdkPterodactylGatewayTransportTest             BUILD SUCCESSFUL
+full test suite                                BUILD SUCCESSFUL
+clean build                                    BUILD SUCCESSFUL
+```
+
+TheosferaOrchestrator gates:
+
+```text
+LettuceRedisBackendStartStoreIntegrationTest   BUILD SUCCESSFUL
+OrchestratorConfigLoaderTest                   BUILD SUCCESSFUL
+GatewayTokenAuthenticatorTest                 BUILD SUCCESSFUL
+BackendStartRequestCodecTest                  BUILD SUCCESSFUL
+BackendStartHttpApplicationTest               BUILD SUCCESSFUL
+BackendStartCommandTest                       BUILD SUCCESSFUL
+BackendStartAdmissionServiceTest              BUILD SUCCESSFUL
+BackendStartDispatchServiceTest               BUILD SUCCESSFUL
+RedisBackendStartKeyspaceTest                 BUILD SUCCESSFUL
+full test suite                               BUILD SUCCESSFUL
+clean build                                   BUILD SUCCESSFUL
+```
+
+Orchestrator Redis integration was exercised through Testcontainers + Docker Desktop + a real Redis container. This is development validation; it does not replace C.7 production-equivalent runtime acceptance.
+
 ---
 
-## 1. Permanent orchestration invariants
+## 2. Permanent orchestration invariants
 
 Never collapse these states:
 
 ```text
 bootstrap ownership
-    != provider ACCEPTED
-    != process running
+    != Orchestrator ACCEPTED
+    != Pterodactyl process running
     != TLS/HMAC Control Channel authenticated
     != fresh PONG / HEALTHY
     != Redis capacity reserved
     != player connected/ready
 ```
 
-The correct future cold-start order remains:
+Correct future cold-start order:
 
 ```text
 select cold target
-→ acquire distributed bootstrap ownership
-→ emit fenced process-start request
+→ NO capacity reservation yet
+→ acquire exact distributed bootstrap ownership
+→ request fenced process start through TheosferaOrchestrator
 → renew bootstrap ownership while starting
 → wait current Control Channel authentication
 → wait fresh PONG / HEALTHY
@@ -74,41 +124,24 @@ select cold target
 → presence handoff / exact cleanup
 ```
 
-No capacity reservation may be held across the backend startup window.
+No capacity reservation may be held across backend startup.
+
+Kick failover remains `RESOLVED`-only; a backend kick must not trigger cold startup.
 
 ---
 
-## 2. B.1 — Provider contracts
+## 3. B.1–B.3 — Provider and startup lifecycle
 
-`BackendOrchestrationProvider` is asynchronous and receives `BackendStartRequest` containing the exact `BackendBootstrapLease`.
+`BackendOrchestrationProvider` receives an exact `BackendBootstrapLease` carrying immutable authority:
 
-The provider therefore receives immutable operation identity including:
-
-- logical target backend;
+- target backend;
 - requestId;
 - playerId;
-- exact Proxy membership owner/incarnation/fencing;
-- backend bootstrap fencing token.
+- Proxy logical name/incarnation;
+- Proxy membership fencing;
+- backend bootstrap fencing.
 
-Provider statuses remain explicit and fail-closed.
-
----
-
-## 3. B.2 — Atomic fenced actuator boundary
-
-The trusted target boundary separates:
-
-```text
-logical backend name
-```
-
-from:
-
-```text
-opaque orchestration target reference
-```
-
-`BackendStartActuator.startIfCurrent(...)` represents the boundary where fencing validation and acceptance/emission of the start side effect must be serialized by the real orchestrator.
+`BackendStartActuator.startIfCurrent(...)` is the boundary where fencing validation and acceptance/emission of the process-start side effect must be serialized.
 
 Required per-target semantics:
 
@@ -117,8 +150,8 @@ older fencing
 → STALE_AUTHORITY
 → zero new start emission
 
-same fencing + exact same immutable operation
-→ ACCEPTED replay
+same fencing + exact immutable replay
+→ ACCEPTED/replay
 → zero duplicate start emission
 
 same fencing + conflicting operation
@@ -126,181 +159,124 @@ same fencing + conflicting operation
 → zero new start emission
 
 newer fencing
-→ accept newer authority
-→ emit at most one authoritative start
+→ may establish newer authority and emit one start
 ```
 
-A Redis pre-check followed by an unfenced side effect remains forbidden because of TOCTOU.
+A Redis pre-check followed by a separate unfenced side effect remains forbidden because of TOCTOU.
 
----
+B.3 provides:
 
-## 4. B.3 — Startup lifecycle
-
-`BackendStartupOperationLifecycle` provides:
-
-- single-use lifecycle;
-- exact bootstrap-lease capture and revalidation;
-- retry only for `PROVIDER_UNAVAILABLE`;
+- exact bootstrap ownership checks;
+- retry only for provider unavailable;
 - bounded exponential backoff;
-- independent total startup timeout;
-- cancellation;
-- ownership-loss fencing;
+- independent timeout;
+- cancellation/fencing;
 - late-callback protection;
-- cleanup on terminal failures;
-- `START_ACCEPTED` handoff without releasing bootstrap ownership.
-
-Bootstrap renewal remains owned by `BackendBootstrapOwnershipLifecycle`; B.3 does not duplicate Redis renewal.
+- exact cleanup on failure;
+- `START_ACCEPTED` without releasing bootstrap ownership.
 
 ---
 
-## 5. B.4 — Authoritative readiness
+## 4. B.4 — Authoritative backend readiness
 
-Readiness combines existing authoritative sources:
+Readiness is proven by:
 
 ```text
-BackendAuthorizationPolicy
+static BackendAuthorizationPolicy
 +
-BackendIdentityProvider
-(production: current authenticated Control Channel identity)
+current authenticated Backend Control Channel identity
 +
-BackendHealthRegistry
+fresh BackendHealthRegistry HEALTHY evidence
 ```
 
-`READY` requires:
+Pterodactyl/TCP/process state is never routing readiness.
 
-```text
-configured target
-+ current authenticated identity
-+ exact name/type match with static policy
-+ HEALTHY / fresh PONG evidence
-```
-
-B.4 introduced:
-
-```text
-BackendReadinessStatus
-BackendReadinessSnapshot
-BackendReadinessProbe
-BackendReadinessPolicy
-BackendReadinessScheduler
-BackendReadinessLifecycleState
-BackendReadinessLifecycle
-```
-
-### Control-generation health hardening
-
-`BackendHealthRegistry` is name-scoped, therefore a new Control Channel generation must never inherit health produced by an older generation.
-
-`BackendControlGenerationResetListener` is now wired into `BackendControlRuntime`:
+Control-generation hardening:
 
 ```text
 new authenticated Control generation becomes current
 → remove pending PING for backend
-→ remove previous health evidence for backend
-→ invoke existing authenticated-identity listener
-→ require new correlated PING/PONG
+→ remove old health evidence
+→ require a new correlated PING/PONG
 ```
 
-This hardening is global to backend health, not specific to cold startup.
+Therefore a new current Control generation cannot inherit health from an older generation.
 
 ---
 
-## 6. B.5 — Provider-neutral cold-start foundation
-
-New provider-neutral boundary:
-
-```text
-BackendColdStartService
-BackendColdStartResult
-BackendColdStartCoordinator
-UnavailableBackendColdStartService
-```
+## 5. B.5 — Provider-neutral cold-start coordinator
 
 `BackendColdStartCoordinator` composes:
 
 ```text
-exact distributed bootstrap ownership
-→ B.3 provider acceptance
+distributed bootstrap ownership
+→ B.3 Orchestrator/provider acceptance
 → B.4 Control Channel + HEALTHY readiness
-→ exact bootstrap ownership release
+→ exact bootstrap release
 → READY
 ```
 
-Capacity deliberately remains outside this coordinator.
+Capacity deliberately remains outside the coordinator.
 
-One-shot Velocity adapters exist for startup and readiness timing:
+`DistributedPlayerTransferTargetAllocation` can represent future pre-capacity `BOOTSTRAP_REQUIRED` allocation.
 
-```text
-VelocityBackendStartupScheduler
-VelocityBackendReadinessScheduler
-```
+The current productive `DistributedPlayerTransferTargetAllocationService` remains unchanged from `main`; the legacy local cold branch has NOT yet been replaced.
 
-`DistributedPlayerTransferTargetAllocation` has a future `bootstrapRequired(...)` outcome capable of representing a cold target with no pending transfer and no capacity reservation yet.
-
-The current productive `DistributedPlayerTransferTargetAllocationService` remains unchanged from `main`. The legacy local cold branch is intentionally still active until a real actuator is deployable and testable.
+This is intentional until C.7 proves the real Orchestrator/Pterodactyl side-effect boundary.
 
 ---
 
-## 7. Concrete process plane selected: Pterodactyl
+## 6. Concrete process plane
 
-Theosfera's concrete backend process plane is now selected as:
-
-```text
-Pterodactyl Panel/Wings
-```
-
-However TheosferaProxy MUST NOT call the Pterodactyl power API directly.
-
-The selected architecture is:
+Selected architecture:
 
 ```text
 TheosferaProxy
     → HTTPS
-Theosfera Orchestration Gateway
+TheosferaOrchestrator
     → Pterodactyl Panel/Wings
     → backend container/process
 ```
 
-Reason: the normal Pterodactyl process-start surface does not provide Theosfera bootstrap fencing semantics. A direct Proxy → Panel call would reopen the TOCTOU race forbidden by B.2.
+TheosferaProxy MUST NOT call Pterodactyl directly.
 
-Canonical design:
+Responsibility split:
 
-```text
-docs/PTERODACTYL_ORCHESTRATION_GATEWAY_DESIGN.md
-```
+### TheosferaProxy
 
-### Responsibility split
+- distributed bootstrap lease;
+- B.3 retry/timeout;
+- B.4 readiness;
+- post-readiness Redis capacity;
+- player transfer/presence lifecycle;
+- no Pterodactyl credentials.
 
-TheosferaProxy:
+### TheosferaOrchestrator
 
-- owns Redis bootstrap lease;
-- owns B.3 retry/timeout;
-- owns B.4 readiness;
-- never holds Pterodactyl credentials.
-
-Orchestration Gateway:
-
-- owns durable highest-fencing/idempotency state per target;
-- serializes exact replay/conflict/stale decisions;
+- authenticates Gateway requests;
+- independently validates logical backend -> Pterodactyl target;
+- persists durable highest fencing/idempotency state per target;
+- serializes stale/replay/conflict/new-authority decisions;
 - owns Pterodactyl credentials;
-- accepts/emits the actual Pterodactyl start side effect.
+- dispatches/reconciles the Pterodactyl START side effect.
 
-Pterodactyl:
+### Pterodactyl
 
-- owns Wings/container/process lifecycle;
-- does not become Theosfera backend identity or health authority.
+- process/container lifecycle;
+- not Theosfera identity authority;
+- not Theosfera health authority.
 
 ---
 
-## 8. Proxy-side Pterodactyl Gateway adapter
+## 7. Proxy -> Orchestrator adapter
 
-Implemented under:
+Proxy package:
 
 ```text
 com.theosfera.proxy.orchestration.pterodactyl
 ```
 
-Components:
+Core components:
 
 ```text
 PterodactylGatewayConfig
@@ -313,43 +289,40 @@ PterodactylGatewayBackendStartActuator
 PterodactylGatewayProviderFactory
 ```
 
-### Config
-
 Proxy data file:
 
 ```text
 orchestration.properties
 ```
 
-Default is disabled.
+Default remains disabled until runtime activation.
 
-Expected production shape:
+Production shape:
 
 ```properties
 enabled=true
-gateway-uri=https://orchestration.internal.example:25610
+gateway-uri=https://<orchestrator-host>:25610
 request-timeout-seconds=5
 gateway-token-env=THEOSFERA_ORCHESTRATION_GATEWAY_TOKEN
 
-target.lobby-1=<pterodactyl-server-reference>
-target.lobby-2=<pterodactyl-server-reference>
-target.skyblock-1=<pterodactyl-server-reference>
+target.lobby-1=<real-pterodactyl-id>
+target.lobby-2=<real-pterodactyl-id>
+target.skyblock-1=<real-pterodactyl-id>
 ```
 
-Rules enforced by Proxy config:
+Rules:
 
-- enabled Gateway requires HTTPS;
-- URI cannot contain credentials/query/fragment/application path;
-- bearer token value comes only from environment;
-- missing token fails closed;
-- target backend must exist in static backend policy;
-- AUTH cannot be configured as ordinary gameplay cold-start target;
-- duplicate Pterodactyl target reference is rejected;
-- missing target mapping resolves as `TARGET_NOT_FOUND`, never arbitrary shell/process input.
+- HTTPS only;
+- token value environment-only;
+- static trusted target mapping;
+- AUTH excluded from ordinary gameplay cold start;
+- duplicate physical target rejected;
+- redirects disabled;
+- bounded async HTTP timeout;
+- no Pterodactyl API token in Proxy;
+- no local/unfenced fallback.
 
-### Gateway start request
-
-Proxy sends exact operation identity:
+Gateway request includes:
 
 ```text
 backendName
@@ -362,42 +335,125 @@ membershipFencingToken
 bootstrapFencingToken
 ```
 
-Transport:
+---
 
-- HTTPS endpoint is fixed by config;
-- endpoint: `POST /v1/backend-start`;
-- JDK async `HttpClient`;
-- request timeout;
-- redirects disabled;
-- dedicated Gateway bearer token;
-- no Pterodactyl API token in Proxy.
+## 8. TheosferaOrchestrator C.1–C.6
 
-Semantic response body:
+Repository:
 
 ```text
-ACCEPTED
-STALE_AUTHORITY
-CONFLICT
-REJECTED
+HarriOcho/TheosferaOrchestrator
+feature/orchestrator-foundation
 ```
 
-Mapping:
+Durable Redis key shape:
 
 ```text
-2xx + recognized semantic token -> B.2 result
-408 / 425 / 429 / 5xx         -> ACTUATOR_UNAVAILABLE
-network/timeout                 -> ACTUATOR_UNAVAILABLE
-other 4xx / redirect            -> REJECTED
-malformed 2xx response           -> REJECTED
+theosfera:orchestrator:backend-start:<base64url(target)>
 ```
 
-`ACTUATOR_UNAVAILABLE` is the only result B.3 retries.
+No TTL.
+
+Durable phases:
+
+```text
+ADMITTED
+→ DISPATCHING
+→ ACCEPTED | REJECTED
+```
+
+Admission:
+
+```text
+incoming < current
+→ STALE_AUTHORITY
+
+incoming == current + exact operation
+→ REPLAY
+
+incoming == current + different operation
+→ CONFLICT
+
+incoming > current
+→ NEW_AUTHORITY
+```
+
+Crash rule:
+
+```text
+DISPATCHING
+→ process may have received START
+→ exact replay NEVER blindly re-sends START
+→ query Pterodactyl state
+→ STARTING/RUNNING may reconcile ACCEPTED
+→ otherwise same generation remains retryable/fail-closed
+```
+
+Initial topology is one active Orchestrator per target set/Pterodactyl node. The in-process per-target serializer is not an HA lock; multiple active Orchestrators controlling the same targets require a future distributed dispatcher design.
+
+C.6 endpoint:
+
+```text
+TLS 1.3
+POST /v1/backend-start
+Bearer token
+strict/bounded JSON
+trusted target revalidation
+Redis fencing
+Pterodactyl dispatch/recovery
+```
+
+TLS trust-all and disabled hostname verification are forbidden.
 
 ---
 
-## 9. Product path intentionally unchanged
+## 9. Production VPS source of truth
 
-Still present in current production composition:
+Authoritative provisioning/rebuild checklist lives in:
+
+```text
+HarriOcho/TheosferaOrchestrator
+docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md
+```
+
+It covers:
+
+- Linux/VPS baseline, SSH/time/firewall;
+- Java 21;
+- Pterodactyl Panel/Wings/Docker Engine;
+- backend instance inventory;
+- dedicated Pterodactyl API credential;
+- Redis ACL/TLS/persistence/backups/keyspace durability;
+- Orchestrator non-root service identity/filesystem;
+- `orchestrator.properties`;
+- environment-only Redis/Pterodactyl/Gateway/TLS secrets;
+- TLS certificate/keystore/Proxy trust;
+- Orchestrator firewall/listener exposure;
+- systemd/autostart/reboot recovery;
+- Proxy Gateway config/trust;
+- Control Channel readiness;
+- exact no-capacity-during-boot ordering;
+- C.7 stale/replay/conflict/crash/multi-Proxy/runtime matrix;
+- real cold Lobby and Skyblock tests;
+- failure matrix;
+- explicit network/port inventory;
+- backups/disaster recovery/rebuild-from-zero;
+- logs/monitoring/alerts;
+- upgrades and secret rotation.
+
+Permanent operational rule:
+
+> Nothing required to rebuild or operate production Theosfera may exist only in chat history or human memory.
+
+Any command, port, certificate step, systemd dependency, restore action or operational workaround discovered during C.7/VPS provisioning must be recorded in the production runbook (or an explicitly linked authoritative document) before that task is considered complete.
+
+Development-only Windows WSL 2, Docker Desktop and Testcontainers must not be confused with Linux production dependencies. Docker Engine required by Pterodactyl/Wings is a separate production component.
+
+---
+
+## 10. Product path intentionally unchanged
+
+Still present until real runtime acceptance:
 
 ```text
 BackendBootstrapRegistry
@@ -405,45 +461,27 @@ legacy cold allocation path
 legacy DistributedPlayerTransferRetryCoordinator bootstrap handling
 ```
 
-Do not remove them until the Gateway runtime exists and B.6 proves the replacement end-to-end.
+Do not remove or half-migrate these pieces before C.7 proves the Orchestrator side-effect boundary.
 
-There is no silent fallback from the future Gateway path to local bootstrap.
-
----
-
-## 10. Remaining real component: Orchestration Gateway runtime
-
-The next technical milestone is NOT another Proxy abstraction.
-
-It is the deployable Gateway that must:
-
-1. authenticate Proxy requests;
-2. validate request schema and configured target;
-3. persist highest accepted bootstrap fencing per Pterodactyl target;
-4. persist exact operation identity for replay detection;
-5. serialize per-target fencing comparison and start acceptance/emission;
-6. return `STALE_AUTHORITY` for older fencing with zero new start;
-7. return idempotent `ACCEPTED` for exact replay with zero duplicate start;
-8. return `CONFLICT` for same fencing/different operation;
-9. call Pterodactyl using credentials unavailable to Proxy;
-10. survive Gateway restart without forgetting fencing/idempotency state.
-
-A purely in-memory Gateway is not production-safe.
+There is no silent fallback from the future Orchestrator path to local bootstrap.
 
 ---
 
-## 11. B.6 runtime matrix
+## 11. C.7 / B.6 runtime matrix
 
-Do not mark PASS until observed against real Gateway + Pterodactyl:
+Do not mark PASS until observed against real Redis + TheosferaOrchestrator + Pterodactyl + Control Channel:
 
 ```text
 cold target selected without capacity reservation       PASS required
 one Proxy acquires bootstrap ownership                  PASS required
 competing Proxy gets TARGET_BUSY                        PASS required
-Gateway starts exact configured Pterodactyl target      PASS required
+Orchestrator starts exact configured target             PASS required
 stale bootstrap fencing causes zero new start           PASS required
 exact replay causes zero duplicate process start        PASS required
-same fencing conflicting identity is rejected           PASS required
+same fencing conflicting identity rejected              PASS required
+Gateway auth/JSON/TLS failures fail closed              PASS required
+Orchestrator restart preserves fencing                  PASS required
+DISPATCHING replay never blindly re-sends START         PASS required
 provider ACCEPTED does not immediately transfer         PASS required
 new Control generation invalidates old health           PASS required
 backend authenticates TLS/HMAC                          PASS required
@@ -453,45 +491,28 @@ ownership loss aborts startup/readiness                 PASS required
 capacity reserved only after readiness + revalidation   PASS required
 ConnectionRequest occurs only after Redis capacity      PASS required
 PLAYER_SERVER_READY completes presence handoff          PASS required
-failed start/readiness leaves no bootstrap residue      PASS required
-Redis/Gateway/Pterodactyl outage fails closed           PASS required
+failed start/readiness leaves no stale residue          PASS required
+Redis/Orchestrator/Pterodactyl outage fails closed      PASS required
 no local bootstrap fallback                             PASS required
+VPS reboot/recovery behavior validated                  PASS required
 ```
 
 ---
 
-## 12. Local gate for the new Proxy adapter
-
-After syncing the branch:
-
-```powershell
-git status
-git diff --check
-
-.\gradlew.bat test --tests "*PterodactylGatewayConfigLoaderTest" --tests "*PterodactylGatewayProviderFactoryTest" --no-daemon
-
-.\gradlew.bat test --tests "*PterodactylGatewayBackendStartActuatorTest" --tests "*JdkPterodactylGatewayTransportTest" --no-daemon
-
-.\gradlew.bat test --no-daemon
-.\gradlew.bat clean build --no-daemon
-```
-
-The Proxy-side Pterodactyl Gateway adapter is not considered validated until these gates are green.
-
----
-
-## 13. Exact continuation point
+## 12. Exact continuation point
 
 ```text
-validate Proxy-side Pterodactyl Gateway adapter locally
-→ implement/deploy durable Theosfera Orchestration Gateway on Pterodactyl node/VPS
-→ prove Gateway atomic fencing + replay semantics
-→ wire Gateway-backed cold-start coordinator into product transfer path
-→ retire legacy local bootstrap authority from cold transfers
+C.1-C.6 locally validated
+→ follow TheosferaOrchestrator production deployment runbook
+→ provision real VPS/Pterodactyl/Redis/TLS/secrets
+→ execute Orchestrator C.7 runtime matrix
+→ prove real cold Lobby + Skyblock
+→ wire Gateway-backed BackendColdStartCoordinator into product cold path
+→ remove legacy local cold bootstrap authority atomically
 → reserve capacity only after B.4 readiness + re-resolution
-→ run full B.6 runtime matrix
-→ final checkpoint / PROJECT_STATE consolidation
-→ PR
+→ execute full Proxy B.6 runtime acceptance
+→ final checkpoints / PROJECT_STATE consolidation
+→ PR only with explicit authorization
 ```
 
-Administrative Player Transfer (`/theosfera send`), raw `/send` hardening and unified TAB/permission visibility remain recorded future work and should not displace this active orchestration boundary unless explicitly reprioritized.
+Administrative Player Transfer (`/theosfera send`), raw `/send` hardening and unified TAB/permission visibility remain recorded future work and should not displace this active orchestration milestone unless explicitly reprioritized.
