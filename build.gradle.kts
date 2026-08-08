@@ -32,6 +32,21 @@ java {
     toolchain.languageVersion.set(JavaLanguageVersion.of(21))
 }
 
+val c7lOrchestratorGatewayTest by tasks.registering(Test::class) {
+    group = "verification"
+    description = "Runs the opt-in localhost Proxy -> Orchestrator HTTPS acceptance test."
+
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform()
+    include("**/C7LocalOrchestratorGatewayAcceptanceTest.class")
+    systemProperty("theosfera.c7l.proxy.gateway", "true")
+
+    // Cross-process/runtime evidence must be fresh on every explicit run.
+    outputs.upToDateWhen { false }
+    outputs.cacheIf { false }
+}
+
 tasks {
     compileJava {
         options.encoding = "UTF-8"
