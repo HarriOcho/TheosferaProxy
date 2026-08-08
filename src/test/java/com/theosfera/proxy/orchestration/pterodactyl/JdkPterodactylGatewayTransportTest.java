@@ -14,6 +14,7 @@ import java.util.concurrent.CompletableFuture;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -27,10 +28,12 @@ class JdkPterodactylGatewayTransportTest {
         HttpResponse<String> response = mock(HttpResponse.class);
         when(response.statusCode()).thenReturn(202);
         when(response.body()).thenReturn("ACCEPTED");
-        when(client.sendAsync(
-                any(HttpRequest.class),
-                any(HttpResponse.BodyHandler.class)
-        )).thenReturn(CompletableFuture.completedFuture(response));
+        doReturn(CompletableFuture.completedFuture(response))
+                .when(client)
+                .sendAsync(
+                        any(HttpRequest.class),
+                        any(HttpResponse.BodyHandler.class)
+                );
 
         PterodactylGatewayConfig config = new PterodactylGatewayConfig(
                 true,
