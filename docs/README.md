@@ -53,13 +53,22 @@ Para continuar desarrollo:
   - startup lifecycle y separación de readiness.
 
 - `BACKEND_ORCHESTRATION_PROVIDER_PRE_RUNTIME_CHECKPOINT.md`
-  - checkpoint incremental más reciente de la rama activa;
-  - B.1, B.2 y B.3 localmente validados;
-  - B.4 readiness por current Control Channel + fresh HEALTHY implementado;
+  - checkpoint incremental autoritativo de la rama activa;
+  - B.1–B.5 foundation validados localmente;
+  - readiness por current Control Channel + fresh HEALTHY;
   - invalidación de health/PING al cambiar generación de Control Channel;
-  - B.5 provider-neutral cold-start foundation y schedulers Velocity;
+  - cold-start coordinator y schedulers Velocity;
+  - Pterodactyl seleccionado como process plane;
+  - Proxy -> Orchestration Gateway adapter implementado y pendiente de gate local;
   - product cold path todavía sin reemplazar;
-  - B.6 runtime pendiente de seleccionar un actuator real.
+  - B.6 pendiente del Gateway real + runtime.
+
+- `PTERODACTYL_ORCHESTRATION_GATEWAY_DESIGN.md`
+  - arquitectura concreta `Proxy -> Gateway -> Pterodactyl Panel/Wings`;
+  - por qué el Proxy no debe llamar directamente al power API;
+  - fencing/replay/conflict requeridos en Gateway;
+  - HTTPS/token/target mapping;
+  - matriz previa a activación productiva.
 
 ## Runtime acceptance y superficies productivas
 
@@ -171,33 +180,38 @@ Estado exacto de continuidad:
 B.1 provider contracts                         VALIDATED
 B.2 fenced provider / actuator strategy        VALIDATED
 B.3 startup operation lifecycle                VALIDATED
-B.4 Control Channel readiness bridge           IMPLEMENTED / LOCAL GATE PENDING
-B.5 provider-neutral cold-start foundation     IMPLEMENTED / LOCAL GATE PENDING
-B.6 real runtime acceptance                    BLOCKED ON REAL ACTUATOR
+B.4 Control Channel readiness bridge           VALIDATED
+B.5 provider-neutral cold-start foundation     VALIDATED
+B.5c Pterodactyl process plane                 SELECTED
+B.5c Proxy -> Gateway adapter                  IMPLEMENTED / LOCAL GATE PENDING
+B.6 real runtime acceptance                    OPEN
 ```
 
 Leer primero:
 
 ```text
 docs/BACKEND_ORCHESTRATION_PROVIDER_PRE_RUNTIME_CHECKPOINT.md
+docs/PTERODACTYL_ORCHESTRATION_GATEWAY_DESIGN.md
 ```
 
 Regla central:
 
 ```text
 bootstrap ownership
+    != provider ACCEPTED
     != process running
     != TLS/HMAC control authentication
     != backend HEALTHY
     != capacity reserved
 ```
 
-Y para el side effect de arranque:
+Concrete process path selected:
 
 ```text
-fencing comparison
-+ process-start side-effect acceptance
-= one atomic actuator/orchestrator decision
+TheosferaProxy
+→ HTTPS Theosfera Orchestration Gateway
+→ Pterodactyl Panel/Wings
+→ backend process/container
 ```
 
-No activar el nuevo cold-start productivo mediante un fallback local o un provider ficticio. El siguiente paso real requiere seleccionar la infraestructura de orchestration y demostrar sus garantías de fencing/idempotencia.
+El Gateway debe preservar atomic fencing + replay/idempotency. El Proxy no obtiene credenciales de Pterodactyl y no existe fallback local silencioso.
