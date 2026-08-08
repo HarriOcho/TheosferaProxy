@@ -2,8 +2,6 @@
 
 ## Status
 
-This checkpoint records the current development state of the Backend Orchestration Provider milestone.
-
 Baseline:
 
 ```text
@@ -17,156 +15,167 @@ Active branch:
 feature/backend-orchestration-provider
 ```
 
-This is deliberately a **pre-runtime** checkpoint. It does not claim that a real backend process has been started by TheosferaProxy yet.
+This remains a **pre-runtime** checkpoint. It does not claim that Theosfera has started a real backend process through orchestration yet.
 
----
-
-## Progress summary
+Current progress:
 
 ```text
-B.1 provider contracts                         LOCALLY VALIDATED
-B.2 fenced provider / actuator strategy        LOCALLY VALIDATED
-B.3 startup operation lifecycle                LOCALLY VALIDATED
-B.4 Control Channel readiness bridge           IMPLEMENTED, PENDING LOCAL GATE
-B.5 provider-neutral cold-start composition    FOUNDATION IMPLEMENTED, PENDING LOCAL GATE
-B.6 real runtime acceptance                    NOT YET POSSIBLE
+B.1 provider contracts                         VALIDATED
+B.2 fenced provider / actuator strategy        VALIDATED
+B.3 startup operation lifecycle                VALIDATED
+B.4 Control Channel readiness bridge           VALIDATED
+B.5 provider-neutral cold-start foundation     VALIDATED
+B.5c concrete process plane                    PTERODACTYL SELECTED
+B.5c Proxy -> Gateway adapter                  IMPLEMENTED, PENDING LOCAL GATE
+B.6 real runtime acceptance                    OPEN
 ```
 
-B.6 remains open because no concrete orchestration technology/actuator has been selected and therefore no real process-start side effect is wired.
+The user's local validation after B.4/B.5 foundation work was fully green:
+
+```text
+BackendControlGenerationResetListenerTest      BUILD SUCCESSFUL
+BackendReadiness* tests                        BUILD SUCCESSFUL
+BackendColdStart* / cold contract / schedulers BUILD SUCCESSFUL
+full test suite                                BUILD SUCCESSFUL
+clean build                                    BUILD SUCCESSFUL
+```
 
 ---
 
-## B.1 — Provider contracts
+## 1. Permanent orchestration invariants
 
-The public provider boundary is asynchronous:
+Never collapse these states:
 
-```java
-CompletionStage<BackendStartResult> requestStart(
-        BackendStartRequest request
-);
+```text
+bootstrap ownership
+    != provider ACCEPTED
+    != process running
+    != TLS/HMAC Control Channel authenticated
+    != fresh PONG / HEALTHY
+    != Redis capacity reserved
+    != player connected/ready
 ```
 
-`BackendStartRequest` carries the exact `BackendBootstrapLease` so the provider receives:
+The correct future cold-start order remains:
 
-- target backend name;
-- bootstrap requestId;
+```text
+select cold target
+→ acquire distributed bootstrap ownership
+→ emit fenced process-start request
+→ renew bootstrap ownership while starting
+→ wait current Control Channel authentication
+→ wait fresh PONG / HEALTHY
+→ exact bootstrap release
+→ re-resolve / revalidate
+→ reserve Redis capacity
+→ register pending transfer
+→ ConnectionRequest
+→ PLAYER_SERVER_READY
+→ presence handoff / exact cleanup
+```
+
+No capacity reservation may be held across the backend startup window.
+
+---
+
+## 2. B.1 — Provider contracts
+
+`BackendOrchestrationProvider` is asynchronous and receives `BackendStartRequest` containing the exact `BackendBootstrapLease`.
+
+The provider therefore receives immutable operation identity including:
+
+- logical target backend;
+- requestId;
 - playerId;
 - exact Proxy membership owner/incarnation/fencing;
-- bootstrap fencing token.
+- backend bootstrap fencing token.
 
-Provider result statuses are explicit and fail-closed.
-
-Important invariant:
-
-```text
-provider ACCEPTED
-    != process running
-    != control authenticated
-    != backend HEALTHY
-    != capacity reserved
-```
+Provider statuses remain explicit and fail-closed.
 
 ---
 
-## B.2 — Atomic fenced actuator boundary
+## 3. B.2 — Atomic fenced actuator boundary
 
-The provider layer now separates:
+The trusted target boundary separates:
 
 ```text
-logical Theosfera backend name
+logical backend name
 ```
 
 from:
 
 ```text
-trusted opaque orchestration target reference
+opaque orchestration target reference
 ```
 
-The lower `BackendStartActuator` contract requires bootstrap fencing comparison and start-side-effect acceptance/emission to be one atomic decision from the orchestrator/actuator point of view.
+`BackendStartActuator.startIfCurrent(...)` represents the boundary where fencing validation and acceptance/emission of the start side effect must be serialized by the real orchestrator.
 
-Explicitly forbidden:
-
-```text
-check Redis fencing
-→ pause/race
-→ perform an unfenced process start later
-```
-
-Required semantics per target:
+Required per-target semantics:
 
 ```text
 older fencing
 → STALE_AUTHORITY
-→ zero side effect
+→ zero new start emission
 
-same fencing + exact immutable operation
+same fencing + exact same immutable operation
 → ACCEPTED replay
-→ zero duplicate start
+→ zero duplicate start emission
 
-same fencing + conflicting immutable operation
+same fencing + conflicting operation
 → CONFLICT
-→ zero side effect
+→ zero new start emission
 
 newer fencing
-→ ACCEPTED
-→ new authoritative side effect may occur once
+→ accept newer authority
+→ emit at most one authoritative start
 ```
 
-The test-only atomic actuator model proves these semantics but is not a production actuator.
+A Redis pre-check followed by an unfenced side effect remains forbidden because of TOCTOU.
 
 ---
 
-## B.3 — Startup operation lifecycle
+## 4. B.3 — Startup lifecycle
 
-`BackendStartupOperationLifecycle` manages the provider-acceptance phase while distributed bootstrap ownership remains active.
+`BackendStartupOperationLifecycle` provides:
 
-States:
+- single-use lifecycle;
+- exact bootstrap-lease capture and revalidation;
+- retry only for `PROVIDER_UNAVAILABLE`;
+- bounded exponential backoff;
+- independent total startup timeout;
+- cancellation;
+- ownership-loss fencing;
+- late-callback protection;
+- cleanup on terminal failures;
+- `START_ACCEPTED` handoff without releasing bootstrap ownership.
 
-```text
-NEW
-STARTING
-RETRY_WAIT
-START_ACCEPTED
-FAILED
-TIMED_OUT
-FENCED
-CANCELLED
-```
-
-Rules:
-
-- lifecycle is single-use;
-- exact bootstrap lease is captured and revalidated;
-- only `PROVIDER_UNAVAILABLE` is retryable;
-- retry uses bounded exponential backoff;
-- total startup timeout is independent from the bootstrap lease TTL;
-- the bootstrap ownership lifecycle continues its own Redis renewal;
-- `STALE_AUTHORITY` fences the operation;
-- conflict/not-found/rejected fail closed;
-- provider exceptions fail closed;
-- a provider that never completes cannot defeat the independent timeout;
-- ownership loss aborts the operation;
-- late callbacks cannot revive a terminal lifecycle;
-- cancellation stops owned bootstrap authority;
-- `START_ACCEPTED` intentionally keeps bootstrap ownership alive for B.4.
-
-User-local validation completed before B.4 work:
-
-```text
-BackendStartupOperationLifecycleTest + BackendStartupPolicyTest
-→ BUILD SUCCESSFUL
-
-full test suite
-→ BUILD SUCCESSFUL
-```
+Bootstrap renewal remains owned by `BackendBootstrapOwnershipLifecycle`; B.3 does not duplicate Redis renewal.
 
 ---
 
-## B.4 — Authoritative readiness bridge
+## 5. B.4 — Authoritative readiness
 
-B.4 does not use process state or TCP reachability as backend readiness.
+Readiness combines existing authoritative sources:
 
-New components:
+```text
+BackendAuthorizationPolicy
++
+BackendIdentityProvider
+(production: current authenticated Control Channel identity)
++
+BackendHealthRegistry
+```
+
+`READY` requires:
+
+```text
+configured target
++ current authenticated identity
++ exact name/type match with static policy
++ HEALTHY / fresh PONG evidence
+```
+
+B.4 introduced:
 
 ```text
 BackendReadinessStatus
@@ -178,83 +187,27 @@ BackendReadinessLifecycleState
 BackendReadinessLifecycle
 ```
 
-### Readiness evidence
-
-`BackendReadinessProbe` combines the already-authoritative runtime sources:
-
-```text
-BackendAuthorizationPolicy
-        +
-BackendIdentityProvider
-(production: current BackendControlIdentityProvider)
-        +
-BackendHealthRegistry
-```
-
-Result is `READY` only when:
-
-```text
-static target is configured
-+ current authenticated Control Channel identity exists
-+ identity name/type matches static policy
-+ current backend health is HEALTHY/fresh
-```
-
-Waiting states distinguish:
-
-```text
-CONTROL_NOT_AUTHENTICATED
-HEALTH_NOT_READY
-```
-
-Policy/identity contradictions are terminal fail-closed outcomes.
-
 ### Control-generation health hardening
 
-B.4 exposed an important generation-boundary issue: `BackendHealthRegistry` is keyed by backend name, so a newly authenticated control generation must not inherit a fresh timestamp created by an older generation.
+`BackendHealthRegistry` is name-scoped, therefore a new Control Channel generation must never inherit health produced by an older generation.
 
-The branch now adds `BackendControlGenerationResetListener` and wires it into `BackendControlRuntime`.
-
-Whenever a new authenticated control generation becomes current:
+`BackendControlGenerationResetListener` is now wired into `BackendControlRuntime`:
 
 ```text
-remove pending PING for backend
-→ remove previous name-scoped health evidence
-→ invoke the pre-existing authenticated identity listener
+new authenticated Control generation becomes current
+→ remove pending PING for backend
+→ remove previous health evidence for backend
+→ invoke existing authenticated-identity listener
+→ require new correlated PING/PONG
 ```
 
-Therefore the new generation must complete a new correlated PING/PONG before it can become `HEALTHY` and satisfy B.4 readiness.
-
-This hardening applies globally, not only to cold-start readiness.
-
-### Readiness lifecycle
-
-`BackendReadinessLifecycle`:
-
-- is single-use;
-- requires the exact current bootstrap lease;
-- listens to bootstrap ownership termination;
-- has an independent readiness timeout;
-- polls readiness using a one-shot scheduler;
-- waits separately for control authentication and fresh health;
-- `READY` does not itself release bootstrap ownership;
-- timeout/cancel/contract failure performs exact owned cleanup;
-- ownership fencing or unexpected lease replacement cannot cause release of an unknown generation;
-- late timers cannot revive terminal state.
-
-Automated coverage was added for probe semantics, timing policy, lifecycle races, exact lease replacement and control-generation health invalidation.
-
-B.4 is pending the user's local Gradle gate after this checkpoint.
+This hardening is global to backend health, not specific to cold startup.
 
 ---
 
-## B.5 — Provider-neutral cold-start foundation
+## 6. B.5 — Provider-neutral cold-start foundation
 
-B.5 cannot be activated productively until a real fenced orchestration actuator is selected.
-
-The branch therefore implements only provider-neutral pieces and intentionally leaves the legacy product path active.
-
-### New cold-start boundary
+New provider-neutral boundary:
 
 ```text
 BackendColdStartService
@@ -268,62 +221,183 @@ UnavailableBackendColdStartService
 ```text
 exact distributed bootstrap ownership
 → B.3 provider acceptance
-→ B.4 current Control Channel + HEALTHY readiness
+→ B.4 Control Channel + HEALTHY readiness
 → exact bootstrap ownership release
 → READY
 ```
 
-Capacity is deliberately outside this coordinator.
+Capacity deliberately remains outside this coordinator.
 
-A `READY` result is only returned after readiness was proven and exact bootstrap ownership release was confirmed.
-
-After `READY`, future product wiring must:
-
-```text
-re-resolve / revalidate target
-→ reserve Redis capacity
-→ register pending transfer
-→ Velocity ConnectionRequest
-→ PLAYER_SERVER_READY
-→ presence handoff / exact release
-```
-
-### Velocity timing adapters
-
-Provider-neutral one-shot Velocity adapters were added:
+One-shot Velocity adapters exist for startup and readiness timing:
 
 ```text
 VelocityBackendStartupScheduler
 VelocityBackendReadinessScheduler
 ```
 
-They use Velocity delayed tasks, support cancellation and fail closed on invalid/null scheduling results.
+`DistributedPlayerTransferTargetAllocation` has a future `bootstrapRequired(...)` outcome capable of representing a cold target with no pending transfer and no capacity reservation yet.
 
-### Pre-capacity allocation contract
-
-`DistributedPlayerTransferTargetAllocation` now supports a future explicit `bootstrapRequired(...)` outcome with:
-
-```text
-cold target known
-+ no PendingPlayerTransfer yet
-+ no BackendCapacityReserveRequest yet
-```
-
-This contract exists so future product wiring can represent the correct ordering without holding the current ~20 second capacity reservation through backend startup.
-
-The current productive allocation service was deliberately restored after design work so existing transfers are not silently changed before a real actuator exists.
+The current productive `DistributedPlayerTransferTargetAllocationService` remains unchanged from `main`. The legacy local cold branch is intentionally still active until a real actuator is deployable and testable.
 
 ---
 
-## Product path intentionally unchanged
+## 7. Concrete process plane selected: Pterodactyl
 
-At this checkpoint, the existing production cold branch still behaves through the historical local bootstrap path.
+Theosfera's concrete backend process plane is now selected as:
 
-This is intentional.
+```text
+Pterodactyl Panel/Wings
+```
 
-The branch does **not** yet replace product transfer composition because doing so without a real actuator would either break cold transfers or tempt a silent local fallback.
+However TheosferaProxy MUST NOT call the Pterodactyl power API directly.
 
-Still present in product composition:
+The selected architecture is:
+
+```text
+TheosferaProxy
+    → HTTPS
+Theosfera Orchestration Gateway
+    → Pterodactyl Panel/Wings
+    → backend container/process
+```
+
+Reason: the normal Pterodactyl process-start surface does not provide Theosfera bootstrap fencing semantics. A direct Proxy → Panel call would reopen the TOCTOU race forbidden by B.2.
+
+Canonical design:
+
+```text
+docs/PTERODACTYL_ORCHESTRATION_GATEWAY_DESIGN.md
+```
+
+### Responsibility split
+
+TheosferaProxy:
+
+- owns Redis bootstrap lease;
+- owns B.3 retry/timeout;
+- owns B.4 readiness;
+- never holds Pterodactyl credentials.
+
+Orchestration Gateway:
+
+- owns durable highest-fencing/idempotency state per target;
+- serializes exact replay/conflict/stale decisions;
+- owns Pterodactyl credentials;
+- accepts/emits the actual Pterodactyl start side effect.
+
+Pterodactyl:
+
+- owns Wings/container/process lifecycle;
+- does not become Theosfera backend identity or health authority.
+
+---
+
+## 8. Proxy-side Pterodactyl Gateway adapter
+
+Implemented under:
+
+```text
+com.theosfera.proxy.orchestration.pterodactyl
+```
+
+Components:
+
+```text
+PterodactylGatewayConfig
+PterodactylGatewayConfigLoader
+PterodactylGatewayTargetResolver
+PterodactylGatewayStartCommand
+PterodactylGatewayTransport
+JdkPterodactylGatewayTransport
+PterodactylGatewayBackendStartActuator
+PterodactylGatewayProviderFactory
+```
+
+### Config
+
+Proxy data file:
+
+```text
+orchestration.properties
+```
+
+Default is disabled.
+
+Expected production shape:
+
+```properties
+enabled=true
+gateway-uri=https://orchestration.internal.example:25610
+request-timeout-seconds=5
+gateway-token-env=THEOSFERA_ORCHESTRATION_GATEWAY_TOKEN
+
+target.lobby-1=<pterodactyl-server-reference>
+target.lobby-2=<pterodactyl-server-reference>
+target.skyblock-1=<pterodactyl-server-reference>
+```
+
+Rules enforced by Proxy config:
+
+- enabled Gateway requires HTTPS;
+- URI cannot contain credentials/query/fragment/application path;
+- bearer token value comes only from environment;
+- missing token fails closed;
+- target backend must exist in static backend policy;
+- AUTH cannot be configured as ordinary gameplay cold-start target;
+- duplicate Pterodactyl target reference is rejected;
+- missing target mapping resolves as `TARGET_NOT_FOUND`, never arbitrary shell/process input.
+
+### Gateway start request
+
+Proxy sends exact operation identity:
+
+```text
+backendName
+pterodactylTarget
+requestId
+playerId
+proxyName
+proxyIncarnationId
+membershipFencingToken
+bootstrapFencingToken
+```
+
+Transport:
+
+- HTTPS endpoint is fixed by config;
+- endpoint: `POST /v1/backend-start`;
+- JDK async `HttpClient`;
+- request timeout;
+- redirects disabled;
+- dedicated Gateway bearer token;
+- no Pterodactyl API token in Proxy.
+
+Semantic response body:
+
+```text
+ACCEPTED
+STALE_AUTHORITY
+CONFLICT
+REJECTED
+```
+
+Mapping:
+
+```text
+2xx + recognized semantic token -> B.2 result
+408 / 425 / 429 / 5xx         -> ACTUATOR_UNAVAILABLE
+network/timeout                 -> ACTUATOR_UNAVAILABLE
+other 4xx / redirect            -> REJECTED
+malformed 2xx response           -> REJECTED
+```
+
+`ACTUATOR_UNAVAILABLE` is the only result B.3 retries.
+
+---
+
+## 9. Product path intentionally unchanged
+
+Still present in current production composition:
 
 ```text
 BackendBootstrapRegistry
@@ -331,94 +405,93 @@ legacy cold allocation path
 legacy DistributedPlayerTransferRetryCoordinator bootstrap handling
 ```
 
-They are now compatibility debt to be removed only when the real fenced actuator is selected and B.5 product wiring can be validated end-to-end.
+Do not remove them until the Gateway runtime exists and B.6 proves the replacement end-to-end.
+
+There is no silent fallback from the future Gateway path to local bootstrap.
 
 ---
 
-## Why B.6 is not closed
+## 10. Remaining real component: Orchestration Gateway runtime
 
-Real runtime acceptance requires an actual platform-specific actuator capable of preserving B.2 fencing semantics.
+The next technical milestone is NOT another Proxy abstraction.
 
-Examples of possible infrastructure categories include Docker, systemd, a hosting panel, Kubernetes or another orchestrator, but this branch deliberately does not guess which Theosfera deployment will use.
+It is the deployable Gateway that must:
 
-Before product activation, the operator/deployment architecture must decide:
+1. authenticate Proxy requests;
+2. validate request schema and configured target;
+3. persist highest accepted bootstrap fencing per Pterodactyl target;
+4. persist exact operation identity for replay detection;
+5. serialize per-target fencing comparison and start acceptance/emission;
+6. return `STALE_AUTHORITY` for older fencing with zero new start;
+7. return idempotent `ACCEPTED` for exact replay with zero duplicate start;
+8. return `CONFLICT` for same fencing/different operation;
+9. call Pterodactyl using credentials unavailable to Proxy;
+10. survive Gateway restart without forgetting fencing/idempotency state.
 
-- concrete orchestration platform;
-- trusted backend-name → target mapping source;
-- how the actuator atomically persists/compares bootstrap fencing;
-- how exact replay/idempotency is implemented;
-- credentials/secrets location outside Git;
-- process start invocation mechanism;
-- operational timeout values based on observed startup behavior.
-
-Only then may B.5c wire a real actuator into `TheosferaProxy`.
+A purely in-memory Gateway is not production-safe.
 
 ---
 
-## Runtime acceptance matrix reserved for B.6
+## 11. B.6 runtime matrix
 
-The final milestone must prove at least:
+Do not mark PASS until observed against real Gateway + Pterodactyl:
 
 ```text
 cold target selected without capacity reservation       PASS required
 one Proxy acquires bootstrap ownership                  PASS required
 competing Proxy gets TARGET_BUSY                        PASS required
-stale bootstrap fencing causes zero start side effect   PASS required
-exact provider replay causes no duplicate process start PASS required
-provider accepted != immediate transfer                 PASS required
-new control generation invalidates previous health      PASS required
-backend must authenticate TLS/HMAC                      PASS required
-backend must produce fresh PONG/HEALTHY                  PASS required
-bootstrap ownership renews throughout startup           PASS required
-ownership loss aborts startup/readiness                  PASS required
+Gateway starts exact configured Pterodactyl target      PASS required
+stale bootstrap fencing causes zero new start           PASS required
+exact replay causes zero duplicate process start        PASS required
+same fencing conflicting identity is rejected           PASS required
+provider ACCEPTED does not immediately transfer         PASS required
+new Control generation invalidates old health           PASS required
+backend authenticates TLS/HMAC                          PASS required
+backend produces fresh PONG / HEALTHY                   PASS required
+bootstrap ownership renews during startup               PASS required
+ownership loss aborts startup/readiness                 PASS required
 capacity reserved only after readiness + revalidation   PASS required
 ConnectionRequest occurs only after Redis capacity      PASS required
 PLAYER_SERVER_READY completes presence handoff          PASS required
 failed start/readiness leaves no bootstrap residue      PASS required
-Redis/provider outage fails closed                      PASS required
+Redis/Gateway/Pterodactyl outage fails closed           PASS required
 no local bootstrap fallback                             PASS required
 ```
 
-Do not mark these PASS until observed in real runtime with the selected actuator.
-
 ---
 
-## Local gate for the next session
+## 12. Local gate for the new Proxy adapter
 
-After syncing the branch, run:
+After syncing the branch:
 
 ```powershell
 git status
 git diff --check
 
-.\gradlew.bat test --tests "*BackendControlGenerationResetListenerTest" --no-daemon
+.\gradlew.bat test --tests "*PterodactylGatewayConfigLoaderTest" --tests "*PterodactylGatewayProviderFactoryTest" --no-daemon
 
-.\gradlew.bat test --tests "*BackendReadinessProbeTest" --tests "*BackendReadinessPolicyTest" --tests "*BackendReadinessLifecycleTest" --no-daemon
-
-.\gradlew.bat test --tests "*BackendColdStartCoordinatorTest" --tests "*DistributedPlayerTransferTargetAllocationColdStartContractTest" --tests "*VelocityBackendOrchestrationSchedulersTest" --no-daemon
+.\gradlew.bat test --tests "*PterodactylGatewayBackendStartActuatorTest" --tests "*JdkPterodactylGatewayTransportTest" --no-daemon
 
 .\gradlew.bat test --no-daemon
 .\gradlew.bat clean build --no-daemon
 ```
 
-The branch must not be considered merge-ready until these gates are green and the remaining actuator/product-runtime boundary is resolved.
+The Proxy-side Pterodactyl Gateway adapter is not considered validated until these gates are green.
 
 ---
 
-## Exact continuation point
-
-After local B.4/B.5 foundation validation:
+## 13. Exact continuation point
 
 ```text
-choose concrete fenced orchestration platform
-→ implement platform-specific BackendStartTargetResolver / BackendStartActuator
-→ prove atomic fencing + replay semantics against that platform
-→ wire provider-neutral cold-start coordinator into product transfer path
-→ remove/retire legacy local bootstrap authority from product cold path
+validate Proxy-side Pterodactyl Gateway adapter locally
+→ implement/deploy durable Theosfera Orchestration Gateway on Pterodactyl node/VPS
+→ prove Gateway atomic fencing + replay semantics
+→ wire Gateway-backed cold-start coordinator into product transfer path
+→ retire legacy local bootstrap authority from cold transfers
 → reserve capacity only after B.4 readiness + re-resolution
-→ runtime B.6 matrix
-→ final checkpoint
+→ run full B.6 runtime matrix
+→ final checkpoint / PROJECT_STATE consolidation
 → PR
 ```
 
-Do not jump to Administrative Player Transfer, Maintenance, Friends/Parties or other product systems until this orchestration boundary is closed, unless explicitly reprioritized.
+Administrative Player Transfer (`/theosfera send`), raw `/send` hardening and unified TAB/permission visibility remain recorded future work and should not displace this active orchestration boundary unless explicitly reprioritized.
