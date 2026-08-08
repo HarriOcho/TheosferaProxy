@@ -14,6 +14,14 @@ Para continuar desarrollo:
 4. checkpoint/diseño del milestone activo;
 5. documentos específicos de la frontera que se va a modificar.
 
+Para provisioning/rebuild de la futura VPS de orchestration, además leer en el repo `HarriOcho/TheosferaOrchestrator`:
+
+```text
+docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md
+```
+
+Ese documento es la fuente autoritativa para Linux/VPS baseline, Pterodactyl/Wings/Docker Engine, Redis durable, secrets, TLS/trust, firewall, systemd, backups/disaster recovery, monitoring y C.7 runtime acceptance.
+
 ## Estado y arquitectura distribuida
 
 - `DISTRIBUTED_COORDINATION_BOUNDARY.md`
@@ -59,9 +67,10 @@ Para continuar desarrollo:
   - invalidación de health/PING al cambiar generación de Control Channel;
   - cold-start coordinator y schedulers Velocity;
   - Pterodactyl seleccionado como process plane;
-  - Proxy -> Orchestration Gateway adapter implementado y pendiente de gate local;
+  - Proxy -> Orchestration Gateway adapter validado localmente;
+  - TheosferaOrchestrator C.1–C.6 validado localmente, incluyendo Redis real vía Testcontainers;
   - product cold path todavía sin reemplazar;
-  - B.6 pendiente del Gateway real + runtime.
+  - B.6/C.7 pendientes del runtime real.
 
 - `PTERODACTYL_ORCHESTRATION_GATEWAY_DESIGN.md`
   - arquitectura concreta `Proxy -> Gateway -> Pterodactyl Panel/Wings`;
@@ -123,6 +132,19 @@ Este documento registra una feature futura; no significa que `/theosfera send` o
 - `THEOSFERA_VISUAL_MESSAGING_STANDARD.md`
   - estándar visual/mensajería de Theosfera para superficies del Proxy.
 
+Cross-repo production runbook:
+
+```text
+HarriOcho/TheosferaOrchestrator
+docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md
+```
+
+Regla operacional permanente:
+
+> Nada requerido para reconstruir u operar Theosfera en producción puede existir únicamente en chats o memoria humana.
+
+Cualquier comando, puerto, certificado, trust step, systemd dependency, restore action o particularidad descubierta durante C.7/VPS provisioning debe quedar documentada antes de cerrar la tarea.
+
 ## Checkpoints históricos
 
 Los checkpoints anteriores permanecen válidos como **evidencia histórica de su momento**, pero pueden contener estados que fueron superseded después.
@@ -183,8 +205,9 @@ B.3 startup operation lifecycle                VALIDATED
 B.4 Control Channel readiness bridge           VALIDATED
 B.5 provider-neutral cold-start foundation     VALIDATED
 B.5c Pterodactyl process plane                 SELECTED
-B.5c Proxy -> Gateway adapter                  IMPLEMENTED / LOCAL GATE PENDING
-B.6 real runtime acceptance                    OPEN
+B.5c Proxy -> Gateway adapter                  VALIDATED
+TheosferaOrchestrator C.1-C.6                  VALIDATED
+B.6 / Orchestrator C.7 real runtime            OPEN
 ```
 
 Leer primero:
@@ -192,6 +215,7 @@ Leer primero:
 ```text
 docs/BACKEND_ORCHESTRATION_PROVIDER_PRE_RUNTIME_CHECKPOINT.md
 docs/PTERODACTYL_ORCHESTRATION_GATEWAY_DESIGN.md
+HarriOcho/TheosferaOrchestrator/docs/PRODUCTION_DEPLOYMENT_RUNBOOK.md
 ```
 
 Regla central:
@@ -209,9 +233,9 @@ Concrete process path selected:
 
 ```text
 TheosferaProxy
-→ HTTPS Theosfera Orchestration Gateway
+→ HTTPS TheosferaOrchestrator
 → Pterodactyl Panel/Wings
 → backend process/container
 ```
 
-El Gateway debe preservar atomic fencing + replay/idempotency. El Proxy no obtiene credenciales de Pterodactyl y no existe fallback local silencioso.
+TheosferaOrchestrator preserva durable fencing + replay/idempotency. El Proxy no obtiene credenciales de Pterodactyl y no existe fallback local silencioso.
